@@ -11,17 +11,31 @@ A self-managing todo app powered by Claude. It watches your [Claude Code](https:
 
 ## Quick Start
 
-**Prerequisites:** Python 3.9+, Node.js 20.19+, [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed
+**Prerequisites:** Python 3.9+, Node.js 20.19+, [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
+
+### Option 1: Let Claude do it
+
+Clone the repo and open Claude Code inside it:
 
 ```bash
-git clone git@github.com:eranhirs/todo-today.git
+git clone https://github.com/eranhirs/todo-today.git
+cd todo-today
+claude
+```
+
+Then just ask Claude to install and run the project. It has all the context it needs.
+
+### Option 2: Run it yourself
+
+```bash
+git clone https://github.com/eranhirs/todo-today.git
 cd todo-today
 ./start.sh
 ```
 
 Open http://localhost:5151.
 
-Or run in development mode (with hot reload):
+### Option 3: Development mode (with hot reload)
 
 ```bash
 # Terminal 1
