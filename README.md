@@ -2,6 +2,8 @@
 
 A self-managing todo app powered by Claude. It watches your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions and automatically discovers what you're working on — marking tasks complete, suggesting next steps, and tracking new projects.
 
+![Todo Today screenshot](docs/images/screenshot.jpeg)
+
 ## How It Works
 
 1. A background scheduler scans your Claude Code sessions every 5 minutes (`~/.claude/projects/`)
