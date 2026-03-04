@@ -36,6 +36,7 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
 
   const isOverride = selectedModel !== metadata.analysis_model;
 
@@ -90,11 +91,33 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
     setShowSessions(false);
   };
 
+  const toggleProject = (name: string) => {
+    setExpandedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const toggleAllInProject = (projectSessions: SessionInfo[]) => {
+    setSelectedKeys((prev) => {
+      const next = new Set(prev);
+      const allSelected = projectSessions.every((s) => next.has(s.key));
+      for (const s of projectSessions) {
+        if (allSelected) next.delete(s.key);
+        else next.add(s.key);
+      }
+      return next;
+    });
+  };
+
   // Group sessions by project_name
   const sessionsByProject: Record<string, SessionInfo[]> = {};
   for (const s of sessions) {
     (sessionsByProject[s.project_name] ??= []).push(s);
   }
+  const projectCount = Object.keys(sessionsByProject).length;
 
   const handleIntervalChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     await api.setAnalysisInterval(Number(e.target.value));
@@ -160,55 +183,80 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
           {metadata.last_analysis.model && ` (${metadata.last_analysis.model})`} — {metadata.last_analysis.summary}
         </div>
       )}
-      <div style={{ display: "flex", gap: "6px", marginTop: "8px" }}>
-        <button className="btn-wake" style={{ flex: 1, marginTop: 0 }} onClick={() => handleWake()} disabled={waking}>
-          {waking ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}
+      <button className="btn-wake" onClick={() => handleWake()} disabled={waking}>
+        {waking ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}
+      </button>
+      <div className="session-picker-section">
+        <button className="btn-link session-picker-toggle" onClick={handleBrowseSessions} disabled={loadingSessions}>
+          {loadingSessions ? "Loading..." : showSessions ? "▾ Pick specific sessions" : "▸ Pick specific sessions"}
         </button>
-        <button
-          className="btn-wake"
-          style={{ flex: 0, marginTop: 0, whiteSpace: "nowrap", fontSize: "0.8rem" }}
-          onClick={handleBrowseSessions}
-          disabled={loadingSessions}
-        >
-          {loadingSessions ? "..." : showSessions ? "Close" : "📂 Sessions"}
-        </button>
-      </div>
-      {showSessions && (
-        <div className="session-picker">
-          <div className="session-picker-header">
-            <span>All Sessions ({sessions.length})</span>
-            <button
-              className="btn-wake"
-              style={{ padding: "4px 10px", fontSize: "0.75rem", marginTop: 0 }}
-              onClick={handleAnalyzeSelected}
-              disabled={selectedKeys.size === 0 || waking}
-            >
-              Analyze Selected ({selectedKeys.size})
-            </button>
+        {!showSessions && (
+          <div className="status-detail" style={{ marginTop: "2px" }}>
+            By default, Wake analyzes only sessions changed in the last 24h.
+            Use this to re-analyze older sessions or pick specific ones.
+            Sessions are grouped by their working directory from <code style={{ fontSize: "0.7rem" }}>~/.claude/projects/</code>.
           </div>
-          {Object.entries(sessionsByProject).map(([projectName, projectSessions]) => (
-            <div key={projectName} className="session-group">
-              <div className="session-group-name">{projectName}</div>
-              {projectSessions.map((s) => (
-                <label key={s.key} className="session-item">
-                  <input
-                    type="checkbox"
-                    className="session-checkbox"
-                    checked={selectedKeys.has(s.key)}
-                    onChange={() => toggleSessionKey(s.key)}
-                  />
-                  <span className="session-id" title={s.session_id}>
-                    {s.session_id.slice(0, 8)}...
-                  </span>
-                  <span className="session-meta">
-                    {s.message_count} msgs · {formatTime(s.mtime)}
-                  </span>
-                </label>
-              ))}
+        )}
+        {showSessions && (
+          <div className="session-picker">
+            <div className="session-picker-header">
+              <span>{projectCount} projects, {sessions.length} sessions</span>
+              <button
+                className="btn-wake"
+                style={{ padding: "4px 10px", fontSize: "0.75rem", marginTop: 0 }}
+                onClick={handleAnalyzeSelected}
+                disabled={selectedKeys.size === 0 || waking}
+              >
+                Analyze Selected ({selectedKeys.size})
+              </button>
             </div>
-          ))}
-        </div>
-      )}
+            {Object.entries(sessionsByProject).map(([projectName, projectSessions]) => {
+              const isExpanded = expandedProjects.has(projectName);
+              const allSelected = projectSessions.every((s) => selectedKeys.has(s.key));
+              const someSelected = projectSessions.some((s) => selectedKeys.has(s.key));
+              return (
+                <div key={projectName} className="session-group">
+                  <div className="session-group-header">
+                    <button
+                      className="session-group-toggle"
+                      onClick={() => toggleProject(projectName)}
+                      title={projectSessions[0]?.source_path}
+                    >
+                      {isExpanded ? "▾" : "▸"} {projectName}
+                      <span className="session-group-path-inline">{projectSessions[0]?.project_dir}</span>
+                      <span className="session-group-count">{projectSessions.length}</span>
+                    </button>
+                    <input
+                      type="checkbox"
+                      className="session-checkbox"
+                      checked={allSelected}
+                      ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                      onChange={() => toggleAllInProject(projectSessions)}
+                      title="Select all sessions in this project"
+                    />
+                  </div>
+                  {isExpanded && projectSessions.map((s) => (
+                    <label key={s.key} className="session-item">
+                      <input
+                        type="checkbox"
+                        className="session-checkbox"
+                        checked={selectedKeys.has(s.key)}
+                        onChange={() => toggleSessionKey(s.key)}
+                      />
+                      <span className="session-id" title={s.session_id}>
+                        {s.session_id.slice(0, 8)}...
+                      </span>
+                      <span className="session-meta">
+                        {s.message_count} msgs · {formatTime(s.mtime)}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
       {metadata.total_analyses > 0 && (
         <div className="usage-totals">
           Total: {metadata.total_analyses} analyses | ${metadata.total_cost_usd.toFixed(2)} | {((metadata.total_input_tokens + metadata.total_output_tokens) / 1000).toFixed(1)}k tokens

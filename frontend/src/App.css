@@ -174,7 +174,6 @@ body {
 
 .btn-link.section-header {
   font-size: 0.8rem;
-  text-transform: uppercase;
   letter-spacing: 0.05em;
   font-weight: 600;
   margin-top: 4px;
@@ -414,6 +413,15 @@ body {
 
 /* Session Picker */
 
+.session-picker-section {
+  margin-top: 8px;
+}
+
+.session-picker-toggle {
+  font-size: 0.75rem !important;
+  color: var(--text-dim) !important;
+}
+
 .session-picker {
   margin-top: 8px;
   max-height: 300px;
@@ -436,16 +444,53 @@ body {
 }
 
 .session-group {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
-.session-group-name {
+.session-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.session-group-toggle {
+  background: none;
+  border: none;
+  color: var(--accent-light);
   font-size: 0.7rem;
   font-weight: 600;
-  color: var(--accent-light);
   text-transform: uppercase;
   letter-spacing: 0.03em;
-  padding: 4px 0 2px;
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+}
+.session-group-toggle:hover { color: var(--text); }
+
+.session-group-path-inline {
+  font-size: 0.55rem;
+  color: var(--text-dim);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.session-group-count {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 0.6rem;
+  color: var(--text-dim);
+  font-weight: 400;
+  text-transform: none;
 }
 
 .session-item {

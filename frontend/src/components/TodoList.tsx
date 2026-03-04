@@ -46,7 +46,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       {selectedProjectId && <AddTodo projectId={selectedProjectId} onRefresh={onRefresh} />}
 
       <button className="btn-link section-header" onClick={() => setShowTodos(!showTodos)}>
-        {showTodos ? "▾" : "▸"} Todos ({active.length})
+        {showTodos ? "▾" : "▸"} TODOs ({active.length})
       </button>
 
       {showTodos && (
