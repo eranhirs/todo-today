@@ -22,5 +22,8 @@ logs/
 # OS
 .DS_Store
 
+# Local scripts
+start-local.sh
+
 # Claude Code
 .claude/

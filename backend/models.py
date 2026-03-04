@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 def _id(prefix: str) -> str:
@@ -68,13 +68,6 @@ class AnalysisEntry(BaseModel):
     new_project_names: List[str] = []
     insights: List[str] = []
     prompt_length: int = 0
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_suggestions(cls, data: dict) -> dict:  # type: ignore[type-arg]
-        if isinstance(data, dict) and "suggestions" in data:
-            data.setdefault("insights", data.pop("suggestions"))
-        return data
 
 
 class Metadata(BaseModel):
@@ -142,10 +135,3 @@ class ClaudeAnalysisResult(BaseModel):
     project_summaries: Dict[str, str] = {}
     new_projects: List[ClaudeNewProject] = []
     insights: List[str] = []
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_suggestions(cls, data: dict) -> dict:  # type: ignore[type-arg]
-        if isinstance(data, dict) and "suggestions" in data:
-            data.setdefault("insights", data.pop("suggestions"))
-        return data

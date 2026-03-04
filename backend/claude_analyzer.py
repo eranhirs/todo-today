@@ -249,6 +249,47 @@ def _invoke_claude(prompt: str) -> tuple["ClaudeAnalysisResult | None", dict]:
         return None, {"error": str(e)}
 
 
+# ── Project ID resolution ─────────────────────────────────────
+
+
+def _resolve_project_id(pid: str, projects: list["Project"]) -> str | None:
+    """Resolve a possibly-wrong project identifier to a valid project ID.
+
+    Claude sometimes returns project names or directory names instead of the
+    actual ``proj_*`` IDs.  This helper builds lookup maps and attempts a
+    case-insensitive match by:
+      1. Exact ``proj_*`` ID
+      2. Project name (case-insensitive)
+      3. Last path component of ``source_path`` (case-insensitive)
+
+    Returns the resolved project ID, or ``None`` if unresolvable.
+    """
+    by_id: dict[str, str] = {}
+    by_name: dict[str, str] = {}
+    by_dir: dict[str, str] = {}
+
+    for p in projects:
+        by_id[p.id] = p.id
+        by_name[p.name.lower()] = p.id
+        if p.source_path:
+            by_dir[Path(p.source_path).name.lower()] = p.id
+
+    # 1. Already a valid project ID
+    if pid in by_id:
+        return pid
+
+    # 2. Match by project name (case-insensitive)
+    low = pid.lower()
+    if low in by_name:
+        return by_name[low]
+
+    # 3. Match by directory name (case-insensitive)
+    if low in by_dir:
+        return by_dir[low]
+
+    return None
+
+
 # ── Apply results ──────────────────────────────────────────────
 
 
@@ -334,6 +375,17 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
                     todos_completed += 1
                     completed_todo_ids.append(tid)
 
+        # Repair orphaned todos (invalid project_id from prior analyses)
+        valid_ids = {p.id for p in ctx.store.projects}
+        for t in ctx.store.todos:
+            if t.project_id not in valid_ids:
+                resolved = _resolve_project_id(t.project_id, ctx.store.projects)
+                if resolved:
+                    log.warning("Repaired orphaned todo %s: %r -> %s", t.id, t.project_id, resolved)
+                    t.project_id = resolved
+                else:
+                    log.warning("Cannot resolve orphaned todo %s project_id=%r", t.id, t.project_id)
+
         # Add new todos
         existing_texts = {(t.project_id, t.text.lower()) for t in ctx.store.todos}
         for nt in result.new_todos:
@@ -343,6 +395,16 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
                 path = pid[4:]
                 pid = new_proj_map.get(path, "")
                 if not pid:
+                    continue
+
+            # Resolve non-ID values (e.g. project names returned by Claude)
+            if not pid.startswith("proj_"):
+                resolved = _resolve_project_id(pid, ctx.store.projects)
+                if resolved:
+                    log.warning("Resolved project ref %r -> %s for new todo", pid, resolved)
+                    pid = resolved
+                else:
+                    log.warning("Skipping new todo with unresolvable project_id=%r: %s", pid, nt.text)
                     continue
 
             if (pid, nt.text.lower()) in existing_texts:

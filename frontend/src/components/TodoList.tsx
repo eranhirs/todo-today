@@ -19,7 +19,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     : todos;
 
   const active = filtered.filter((t) => !t.completed);
-  const done = filtered.filter((t) => t.completed);
+  const done = filtered
+    .filter((t) => t.completed)
+    .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
 
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? "Unknown";
 

@@ -34,6 +34,18 @@ Metadata tracks running totals:
 
 These are displayed in the ClaudeStatus component below the Wake button.
 
+## Project ID Resolution
+
+Claude (Haiku) sometimes returns project **names** or directory names instead of actual `proj_*` IDs in `new_todos`. The `_resolve_project_id()` helper handles this with a fuzzy matching fallback:
+
+1. **Exact ID** — if the value is already a valid `proj_*` ID, use it directly
+2. **Project name** — case-insensitive match against `project.name`
+3. **Directory name** — case-insensitive match against the last component of `project.source_path`
+
+If none match, the todo is skipped and a warning is logged.
+
+On each analysis run, existing todos with invalid `project_id` values are also repaired using the same resolution logic. This fixes orphaned todos that were created before this safeguard existed.
+
 ## Triggers
 
 - **Automatic**: APScheduler runs analysis every 5 minutes
