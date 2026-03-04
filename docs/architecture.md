@@ -33,7 +33,7 @@ todo_today/
 │   └── routers/
 │       ├── projects.py      # CRUD /api/projects
 │       ├── todos.py         # CRUD /api/todos
-│       └── claude.py        # /api/claude/wake, /status, /history
+│       └── claude.py        # /api/claude/wake, /status, /history, /insights
 ├── frontend/
 │   └── src/
 │       ├── App.tsx           # Root component, state polling
@@ -45,6 +45,7 @@ todo_today/
 │           ├── TodoList.tsx        # Main todo view (active + completed)
 │           ├── TodoItem.tsx        # Single todo with checkbox/delete
 │           ├── AddTodo.tsx         # New todo input form
+│           ├── Insights.tsx        # Dismissible insights banner above todos
 │           └── UpdateHistory.tsx   # Expandable analysis history with detail view
 ├── data/
 │   ├── todos.json            # Projects + todos

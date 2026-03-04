@@ -15,6 +15,7 @@ from .models import (
     AnalysisEntry,
     ClaudeAnalysisResult,
     ClaudeNewTodo,
+    Insight,
     Project,
     Todo,
     _now,
@@ -176,18 +177,19 @@ def _build_prompt(sessions: list[dict], store_snapshot: dict) -> str:
 
 Based on the session activity above, return a JSON object with:
 1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed
-2. `new_todos`: new todo items. Each has `project_id`, `text`, and `completed` (boolean). For new projects not yet tracked, use project_id "NEW:<source_path>". There are two kinds:
+2. `new_todos`: concrete actionable tasks. Each has `project_id`, `text`, and `completed` (boolean). For new projects not yet tracked, use project_id "NEW:<source_path>". There are two kinds:
    - **Completed work** (`completed: true`): things the user accomplished in their sessions. These are important for tracking what was done, even though they're already finished. Examples: "Implemented dark mode", "Fixed login timeout bug", "Refactored API routes to use versioning"
-   - **Next steps** (`completed: false`): actionable suggestions for future work. Prefix with "Next: " or "Consider: "
+   - **Next steps** (`completed: false`): actionable tasks for future work. Prefix with "Next: " or "Consider: "
 3. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
 4. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
-5. `suggestions`: rare, high-value improvement tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items.
+5. `insights`: meta-level observations about workflow, patterns, or improvements — NOT tasks, but observations worth surfacing. These are rare, high-value tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items. Examples: "You're repeating the same debug cycle — consider adding a test first", "This project has no README which slows onboarding"
 
 Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
 - Only mark existing todos as completed (via completed_todo_ids) if the session clearly shows the work is done
 - Keep todo text concise and actionable
 - Don't duplicate existing todos
+- `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
 
 Return ONLY valid JSON, no markdown fences.""")
 
@@ -358,6 +360,15 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
         for pid, summary in result.project_summaries.items():
             ctx.metadata.project_summaries[pid] = summary
 
+        # Persist new insights (dedup by text)
+        existing_texts = {i.text.lower() for i in ctx.metadata.insights}
+        for text in result.insights:
+            if text.lower() not in existing_texts:
+                ctx.metadata.insights.append(
+                    Insight(text=text, source_analysis_timestamp=_now())
+                )
+                existing_texts.add(text.lower())
+
     entry = AnalysisEntry(
         duration_seconds=round(time.time() - start, 1),
         sessions_analyzed=len(sessions),
@@ -371,7 +382,7 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
         completed_todo_ids=completed_todo_ids,
         added_todos=added_todo_texts,
         new_project_names=new_project_names,
-        suggestions=result.suggestions,
+        insights=result.insights,
         prompt_length=len(prompt),
     )
     _record_entry(entry)

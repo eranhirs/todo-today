@@ -15,6 +15,14 @@ export interface Todo {
   completed_at: string | null;
 }
 
+export interface Insight {
+  id: string;
+  text: string;
+  source_analysis_timestamp: string;
+  dismissed: boolean;
+  created_at: string;
+}
+
 export interface AnalysisEntry {
   timestamp: string;
   duration_seconds: number;
@@ -30,7 +38,7 @@ export interface AnalysisEntry {
   completed_todo_ids: string[];
   added_todos: string[];
   new_project_names: string[];
-  suggestions: string[];
+  insights: string[];
   prompt_length: number;
 }
 
@@ -45,6 +53,7 @@ export interface Metadata {
   total_output_tokens: number;
   total_analyses: number;
   analysis_interval_minutes: number;
+  insights: Insight[];
 }
 
 export interface FullState {

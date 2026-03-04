@@ -39,10 +39,10 @@ function EntryDetail({ entry }: { entry: AnalysisEntry }) {
           <strong>New projects:</strong> {entry.new_project_names.join(", ")}
         </div>
       )}
-      {entry.suggestions?.length > 0 && (
-        <div className="history-detail-section history-suggestions">
-          <strong>Suggestions:</strong>
-          <ul>{entry.suggestions.map((s, i) => <li key={i}>{s}</li>)}</ul>
+      {entry.insights?.length > 0 && (
+        <div className="history-detail-section history-insights">
+          <strong>Insights:</strong>
+          <ul>{entry.insights.map((s, i) => <li key={i}>{s}</li>)}</ul>
         </div>
       )}
     </div>

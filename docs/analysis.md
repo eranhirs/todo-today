@@ -6,7 +6,7 @@
 2. **Message Extraction** — reads the last 20 user/assistant messages from each session (truncated to 2000 chars each)
 3. **Prompt Building** — combines current todos/projects state + session transcripts into a structured prompt
 4. **Claude Invocation** — calls `claude -p --output-format json --model haiku` via subprocess
-5. **Result Parsing** — extracts JSON response with completed todos, new todos, project summaries, new projects
+5. **Result Parsing** — extracts JSON response with completed todos, new todos, project summaries, new projects, insights
 6. **Apply Changes** — atomically updates the store (mark completed, add todos, create projects, update summaries)
 7. **Record Metadata** — saves analysis entry with duration, cost, token counts, what changed
 
@@ -22,6 +22,7 @@ Each analysis records:
 - `completed_todo_ids` — IDs of todos marked done
 - `added_todos` — text of new todos created
 - `new_project_names` — names of newly discovered projects
+- `insights` — meta-level observations about workflow or patterns
 - `prompt_length` — character count of prompt sent
 
 ## Cumulative Usage

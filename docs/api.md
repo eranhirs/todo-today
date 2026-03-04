@@ -64,3 +64,7 @@ Returns scheduler status, heartbeat, and last analysis entry.
 
 ### `GET /api/claude/history`
 Returns list of past analysis entries (up to 50).
+
+### `PUT /api/claude/insights/{id}/dismiss`
+Dismiss an insight so it no longer appears in the UI.
+Returns `{ "status": "ok" }` on success, 404 if insight not found.

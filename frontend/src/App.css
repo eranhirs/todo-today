@@ -325,8 +325,49 @@ body {
   font-size: 0.7rem;
 }
 
-.history-suggestions strong { color: var(--claude) !important; }
-.history-suggestions ul { color: var(--claude) !important; }
+.history-insights strong { color: var(--claude) !important; }
+.history-insights ul { color: var(--claude) !important; }
+
+/* Insights banner */
+
+.insights-banner {
+  margin-bottom: 20px;
+}
+
+.insights-header {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--claude);
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.insight-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 6px;
+  background: var(--claude-bg);
+  border-left: 3px solid var(--claude);
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.insight-text {
+  flex: 1;
+}
+
+.btn-dismiss-insight {
+  color: var(--text-dim);
+  font-size: 1.2rem;
+  flex-shrink: 0;
+}
+.btn-dismiss-insight:hover {
+  color: var(--text);
+}
 
 .usage-totals {
   margin-top: 8px;

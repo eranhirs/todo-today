@@ -46,4 +46,9 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ minutes }),
     }),
+
+  dismissInsight: (id: string) =>
+    request<{ status: string }>(`/claude/insights/${id}/dismiss`, {
+      method: "PUT",
+    }),
 };

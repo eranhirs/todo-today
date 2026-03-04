@@ -37,3 +37,13 @@ def update_interval(body: IntervalUpdate) -> dict:
 def history() -> list[AnalysisEntry]:
     with StorageContext() as ctx:
         return ctx.metadata.history
+
+
+@router.put("/insights/{insight_id}/dismiss")
+def dismiss_insight(insight_id: str) -> dict:
+    with StorageContext() as ctx:
+        for insight in ctx.metadata.insights:
+            if insight.id == insight_id:
+                insight.dismissed = True
+                return {"status": "ok"}
+    raise HTTPException(status_code=404, detail="Insight not found")

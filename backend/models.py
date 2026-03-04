@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _id(prefix: str) -> str:
@@ -43,6 +43,14 @@ class TodoStore(BaseModel):
 # ── Metadata ───────────────────────────────────────────────────
 
 
+class Insight(BaseModel):
+    id: str = Field(default_factory=lambda: _id("ins"))
+    text: str
+    source_analysis_timestamp: str = ""
+    dismissed: bool = False
+    created_at: str = Field(default_factory=_now)
+
+
 class AnalysisEntry(BaseModel):
     timestamp: str = Field(default_factory=_now)
     duration_seconds: float = 0.0
@@ -58,8 +66,15 @@ class AnalysisEntry(BaseModel):
     completed_todo_ids: List[str] = []
     added_todos: List[str] = []
     new_project_names: List[str] = []
-    suggestions: List[str] = []
+    insights: List[str] = []
     prompt_length: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_suggestions(cls, data: dict) -> dict:  # type: ignore[type-arg]
+        if isinstance(data, dict) and "suggestions" in data:
+            data.setdefault("insights", data.pop("suggestions"))
+        return data
 
 
 class Metadata(BaseModel):
@@ -74,6 +89,7 @@ class Metadata(BaseModel):
     total_analyses: int = 0
     last_session_mtime: float = 0.0
     analysis_interval_minutes: int = 5
+    insights: List[Insight] = []
 
 
 # ── API request/response helpers ───────────────────────────────
@@ -125,4 +141,11 @@ class ClaudeAnalysisResult(BaseModel):
     new_todos: List[ClaudeNewTodo] = []
     project_summaries: Dict[str, str] = {}
     new_projects: List[ClaudeNewProject] = []
-    suggestions: List[str] = []
+    insights: List[str] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_suggestions(cls, data: dict) -> dict:  # type: ignore[type-arg]
+        if isinstance(data, dict) and "suggestions" in data:
+            data.setdefault("insights", data.pop("suggestions"))
+        return data
