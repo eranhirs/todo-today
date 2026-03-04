@@ -43,6 +43,22 @@ def _extract_project_name(source_path: str) -> str:
     return Path(source_path).name
 
 
+def _latest_session_mtime() -> float:
+    """Return the latest modification time (epoch) across all recent session files."""
+    if not CLAUDE_DIR.is_dir():
+        return 0.0
+    cutoff = datetime.now(timezone.utc) - SESSION_MAX_AGE
+    latest = 0.0
+    for proj_dir in CLAUDE_DIR.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        for jsonl_file in proj_dir.glob("*.jsonl"):
+            mtime = jsonl_file.stat().st_mtime
+            if datetime.fromtimestamp(mtime, tz=timezone.utc) >= cutoff:
+                latest = max(latest, mtime)
+    return latest
+
+
 def discover_sessions() -> list[dict]:
     """Return a list of recent sessions with their messages.
 
@@ -228,9 +244,21 @@ def _invoke_claude(prompt: str) -> tuple["ClaudeAnalysisResult | None", dict]:
 # ── Apply results ──────────────────────────────────────────────
 
 
-def run_analysis() -> AnalysisEntry:
-    """Full analysis cycle: discover sessions, invoke Claude, apply results."""
+def run_analysis(force: bool = False) -> AnalysisEntry | None:
+    """Full analysis cycle: discover sessions, invoke Claude, apply results.
+
+    Returns None if skipped (no changes since last run).
+    Pass force=True to skip the staleness check (e.g. manual wake).
+    """
     start = time.time()
+
+    # Check if anything changed since last analysis
+    if not force:
+        latest_mtime = _latest_session_mtime()
+        with StorageContext() as ctx:
+            if latest_mtime > 0 and latest_mtime <= ctx.metadata.last_session_mtime:
+                log.info("No session changes since last analysis, skipping")
+                return None
 
     sessions = discover_sessions()
     if not sessions:
@@ -346,6 +374,7 @@ def _record_entry(entry: AnalysisEntry) -> None:
         ctx.metadata.history.insert(0, entry)
         ctx.metadata.history = ctx.metadata.history[:50]
         ctx.metadata.heartbeat = _now()
+        ctx.metadata.last_session_mtime = _latest_session_mtime()
         # Increment cumulative totals
         ctx.metadata.total_analyses += 1
         ctx.metadata.total_cost_usd += entry.cost_usd

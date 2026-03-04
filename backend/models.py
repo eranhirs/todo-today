@@ -71,6 +71,7 @@ class Metadata(BaseModel):
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_analyses: int = 0
+    last_session_mtime: float = 0.0
 
 
 # ── API request/response helpers ───────────────────────────────

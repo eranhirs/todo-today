@@ -28,7 +28,10 @@ async def _analysis_job() -> None:
             ctx.metadata.heartbeat = _now()
         log.info("Starting scheduled analysis")
         entry = await asyncio.to_thread(run_analysis)
-        log.info("Analysis complete: %s", entry.summary)
+        if entry is None:
+            log.info("Analysis skipped — no session changes")
+        else:
+            log.info("Analysis complete: %s", entry.summary)
 
 
 async def trigger_analysis() -> dict:
@@ -36,7 +39,7 @@ async def trigger_analysis() -> dict:
     if _analysis_lock.locked():
         return {"status": "busy", "message": "Analysis already in progress"}
     async with _analysis_lock:
-        entry = await asyncio.to_thread(run_analysis)
+        entry = await asyncio.to_thread(run_analysis, force=True)
         return {"status": "ok", "entry": entry.model_dump()}
 
 
