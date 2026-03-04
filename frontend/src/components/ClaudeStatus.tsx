@@ -15,6 +15,8 @@ function timeAgo(iso: string): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+const INTERVAL_OPTIONS = [1, 2, 5, 10, 15, 30, 60];
+
 export function ClaudeStatus({ metadata, onRefresh }: Props) {
   const [waking, setWaking] = useState(false);
 
@@ -28,6 +30,11 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
     }
   };
 
+  const handleIntervalChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    await api.setAnalysisInterval(Number(e.target.value));
+    onRefresh();
+  };
+
   const isRecent = metadata.heartbeat &&
     (Date.now() - new Date(metadata.heartbeat).getTime()) < 10 * 60 * 1000;
 
@@ -38,6 +45,16 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
         <span className="status-label">
           Claude {metadata.scheduler_status === "running" ? "active" : "stopped"}
         </span>
+        <select
+          className="interval-select"
+          value={metadata.analysis_interval_minutes}
+          onChange={handleIntervalChange}
+          title="Analysis interval"
+        >
+          {INTERVAL_OPTIONS.map((m) => (
+            <option key={m} value={m}>{m}m</option>
+          ))}
+        </select>
       </div>
       {metadata.heartbeat && (
         <div className="status-detail">Last heartbeat: {timeAgo(metadata.heartbeat)}</div>

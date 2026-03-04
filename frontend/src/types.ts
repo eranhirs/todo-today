@@ -43,6 +43,7 @@ export interface Metadata {
   total_input_tokens: number;
   total_output_tokens: number;
   total_analyses: number;
+  analysis_interval_minutes: number;
 }
 
 export interface FullState {

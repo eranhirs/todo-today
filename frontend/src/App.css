@@ -76,7 +76,19 @@ body {
 .status-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .status-dot.inactive { background: var(--text-dim); }
 
-.status-label { font-weight: 600; font-size: 0.9rem; }
+.status-label { font-weight: 600; font-size: 0.9rem; flex: 1; }
+
+.interval-select {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  cursor: pointer;
+  outline: none;
+}
+.interval-select:hover { border-color: var(--accent); color: var(--text); }
 .status-detail { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; }
 
 .btn-wake {

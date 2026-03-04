@@ -16,8 +16,6 @@ log = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 _analysis_lock = asyncio.Lock()
 
-INTERVAL_MINUTES = 5
-
 
 async def _analysis_job() -> None:
     if _analysis_lock.locked():
@@ -44,16 +42,26 @@ async def trigger_analysis() -> dict:
 
 
 def start_scheduler() -> None:
+    with StorageContext() as ctx:
+        minutes = ctx.metadata.analysis_interval_minutes
     scheduler.add_job(
         _analysis_job,
         "interval",
-        minutes=INTERVAL_MINUTES,
+        minutes=minutes,
         id="claude_analysis",
         max_instances=1,
         replace_existing=True,
     )
     scheduler.start()
-    log.info("Scheduler started (interval=%dm)", INTERVAL_MINUTES)
+    log.info("Scheduler started (interval=%dm)", minutes)
+
+
+def set_interval(minutes: int) -> None:
+    """Update the analysis interval and reschedule the job."""
+    with StorageContext() as ctx:
+        ctx.metadata.analysis_interval_minutes = minutes
+    scheduler.reschedule_job("claude_analysis", trigger="interval", minutes=minutes)
+    log.info("Analysis interval changed to %dm", minutes)
 
 
 def stop_scheduler() -> None:

@@ -40,4 +40,10 @@ export const api = {
     request<void>(`/todos/${id}`, { method: "DELETE" }),
 
   wakeUpClaude: () => request<{ status: string; message?: string }>("/claude/wake", { method: "POST" }),
+
+  setAnalysisInterval: (minutes: number) =>
+    request<{ minutes: number }>("/claude/interval", {
+      method: "PUT",
+      body: JSON.stringify({ minutes }),
+    }),
 };

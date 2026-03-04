@@ -1,10 +1,15 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from ..models import AnalysisEntry, Metadata
-from ..scheduler import trigger_analysis
+from ..scheduler import set_interval, trigger_analysis
 from ..storage import StorageContext
 
 router = APIRouter(prefix="/api/claude", tags=["claude"])
+
+
+class IntervalUpdate(BaseModel):
+    minutes: int = Field(ge=1, le=60)
 
 
 @router.post("/wake")
@@ -20,6 +25,12 @@ def status() -> dict:
             "heartbeat": ctx.metadata.heartbeat,
             "last_analysis": ctx.metadata.last_analysis.model_dump() if ctx.metadata.last_analysis else None,
         }
+
+
+@router.put("/interval")
+def update_interval(body: IntervalUpdate) -> dict:
+    set_interval(body.minutes)
+    return {"minutes": body.minutes}
 
 
 @router.get("/history")
