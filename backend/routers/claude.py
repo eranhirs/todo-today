@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -12,9 +14,25 @@ class IntervalUpdate(BaseModel):
     minutes: int = Field(ge=1, le=60)
 
 
+class WakeRequest(BaseModel):
+    model: Optional[str] = None
+    force: bool = False
+
+
+class ModelUpdate(BaseModel):
+    model: str
+
+
 @router.post("/wake")
-async def wake() -> dict:
-    return await trigger_analysis()
+async def wake(body: WakeRequest = WakeRequest()) -> dict:
+    return await trigger_analysis(model=body.model, force=body.force)
+
+
+@router.put("/model")
+def update_model(body: ModelUpdate) -> dict:
+    with StorageContext() as ctx:
+        ctx.metadata.analysis_model = body.model
+    return {"model": body.model}
 
 
 @router.get("/status")

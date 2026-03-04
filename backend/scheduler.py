@@ -32,12 +32,26 @@ async def _analysis_job() -> None:
             log.info("Analysis complete: %s", entry.summary)
 
 
-async def trigger_analysis() -> dict:
-    """Manual wake-up trigger. Returns the analysis entry."""
+async def trigger_analysis(model: str | None = None, force: bool = False) -> dict:
+    """Manual wake-up trigger. Returns the analysis entry.
+
+    If model is provided, it overrides the persisted analysis_model for this run.
+    Force skips the staleness check (model override also implies force).
+    """
     if _analysis_lock.locked():
         return {"status": "busy", "message": "Analysis already in progress"}
+
+    # Model override also implies force
+    if not force:
+        with StorageContext() as ctx:
+            persisted_model = ctx.metadata.analysis_model
+        if model is not None and model != persisted_model:
+            force = True
+
     async with _analysis_lock:
-        entry = await asyncio.to_thread(run_analysis, force=True)
+        entry = await asyncio.to_thread(run_analysis, force=force, model=model)
+        if entry is None:
+            return {"status": "skipped", "message": "No session changes since last analysis"}
         return {"status": "ok", "entry": entry.model_dump()}
 
 

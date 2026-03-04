@@ -25,7 +25,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     ? insights.filter((i) => i.project_id === selectedProjectId || i.project_id === "")
     : insights;
 
-  const active = filtered.filter((t) => !t.completed);
+  const active = filtered
+    .filter((t) => !t.completed)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
   const done = filtered
     .filter((t) => t.completed)
     .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));

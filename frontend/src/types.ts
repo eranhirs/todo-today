@@ -30,7 +30,9 @@ export interface AnalysisEntry {
   sessions_analyzed: number;
   todos_added: number;
   todos_completed: number;
+  todos_modified: number;
   summary: string;
+  model: string;
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;
@@ -38,6 +40,7 @@ export interface AnalysisEntry {
   error: string | null;
   completed_todo_ids: string[];
   added_todos: string[];
+  modified_todos: string[];
   new_project_names: string[];
   insights: string[];
   prompt_length: number;
@@ -54,6 +57,7 @@ export interface Metadata {
   total_output_tokens: number;
   total_analyses: number;
   analysis_interval_minutes: number;
+  analysis_model: string;
   insights: Insight[];
 }
 

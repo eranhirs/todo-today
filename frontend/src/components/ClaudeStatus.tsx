@@ -16,14 +16,25 @@ function timeAgo(iso: string): string {
 }
 
 const INTERVAL_OPTIONS = [1, 2, 5, 10, 15, 30, 60];
+const MODEL_OPTIONS = ["haiku", "sonnet", "opus"];
 
 export function ClaudeStatus({ metadata, onRefresh }: Props) {
   const [waking, setWaking] = useState(false);
+  const [selectedModel, setSelectedModel] = useState(metadata.analysis_model);
+  const [wakeMessage, setWakeMessage] = useState<string | null>(null);
 
-  const handleWake = async () => {
+  const isOverride = selectedModel !== metadata.analysis_model;
+
+  const handleWake = async (force = false) => {
     setWaking(true);
+    setWakeMessage(null);
     try {
-      await api.wakeUpClaude();
+      const res = await api.wakeUpClaude(isOverride ? selectedModel : undefined, force || undefined);
+      if (res.status === "skipped") {
+        setWakeMessage(res.message ?? "No changes since last analysis");
+      } else {
+        setWakeMessage(null);
+      }
       onRefresh();
     } finally {
       setWaking(false);
@@ -32,6 +43,11 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
 
   const handleIntervalChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
     await api.setAnalysisInterval(Number(e.target.value));
+    onRefresh();
+  };
+
+  const handleMakePermanent = async () => {
+    await api.setAnalysisModel(selectedModel);
     onRefresh();
   };
 
@@ -55,16 +71,41 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
             <option key={m} value={m}>{m}m</option>
           ))}
         </select>
+        <select
+          className="model-select"
+          value={selectedModel}
+          onChange={(e) => setSelectedModel(e.target.value)}
+          title="Analysis model"
+        >
+          {MODEL_OPTIONS.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
       </div>
+      {isOverride && (
+        <div className="status-detail model-override-note">
+          Using <strong>{selectedModel}</strong> for this wake only.{" "}
+          <button className="btn-link" onClick={handleMakePermanent}>Make permanent</button>
+        </div>
+      )}
+      {wakeMessage && (
+        <div className="status-detail wake-message">
+          {wakeMessage}{" "}
+          <button className="btn-link" onClick={() => handleWake(true)} disabled={waking}>
+            Force analyze
+          </button>
+        </div>
+      )}
       {metadata.heartbeat && (
         <div className="status-detail">Last heartbeat: {timeAgo(metadata.heartbeat)}</div>
       )}
       {metadata.last_analysis && (
         <div className="status-detail">
-          Last analysis: {timeAgo(metadata.last_analysis.timestamp)} — {metadata.last_analysis.summary}
+          Last analysis: {timeAgo(metadata.last_analysis.timestamp)}
+          {metadata.last_analysis.model && ` (${metadata.last_analysis.model})`} — {metadata.last_analysis.summary}
         </div>
       )}
-      <button className="btn-wake" onClick={handleWake} disabled={waking}>
+      <button className="btn-wake" onClick={() => handleWake()} disabled={waking}>
         {waking ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}
       </button>
       {metadata.total_analyses > 0 && (

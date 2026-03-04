@@ -1,13 +1,25 @@
 import type { Insight } from "../types";
 import { api } from "../api";
 
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 interface Props {
   insights: Insight[];
   onRefresh: () => void;
 }
 
 export function Insights({ insights, onRefresh }: Props) {
-  const active = insights.filter((i) => !i.dismissed);
+  const active = insights
+    .filter((i) => !i.dismissed)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
   if (active.length === 0) return null;
 
   const handleDismiss = async (id: string) => {
@@ -25,6 +37,9 @@ export function Insights({ insights, onRefresh }: Props) {
       {active.map((insight) => (
         <div key={insight.id} className="insight-card">
           <span className="insight-text">{insight.text}</span>
+          <span className="insight-timestamp" title={insight.created_at}>
+            {formatDate(insight.created_at)} {formatTime(insight.created_at)}
+          </span>
           <button
             className="btn-icon btn-dismiss-insight"
             onClick={() => handleDismiss(insight.id)}

@@ -15,6 +15,7 @@ from .models import (
     AnalysisEntry,
     ClaudeAnalysisResult,
     ClaudeNewTodo,
+    ClaudeTodoUpdate,
     Insight,
     Project,
     Todo,
@@ -29,9 +30,23 @@ CLAUDE_DIR = Path.home() / ".claude" / "projects"
 SESSION_MAX_AGE = timedelta(hours=24)
 # Max messages to extract per session for the prompt
 MAX_MESSAGES_PER_SESSION = 20
-# Exclude our own project from analysis (claude -p creates session files that
-# would otherwise trigger an infinite analysis loop)
+# Track session files created by our own `claude -p` invocations so we can
+# exclude them (but not the user's interactive sessions in the same project).
 _SELF_PROJECT_DIRNAME = str(Path.cwd()).replace("/", "-")
+_self_session_files: set[str] = set()
+
+
+def _snapshot_self_sessions() -> set[str]:
+    """Return current set of session filenames in our own project dir."""
+    self_dir = CLAUDE_DIR / _SELF_PROJECT_DIRNAME
+    if not self_dir.is_dir():
+        return set()
+    return {f.name for f in self_dir.glob("*.jsonl")}
+
+
+def _is_self_session(proj_dirname: str, filename: str) -> bool:
+    """Check if a session file was created by our analysis subprocess."""
+    return proj_dirname == _SELF_PROJECT_DIRNAME and filename in _self_session_files
 
 
 # ── Session discovery ──────────────────────────────────────────
@@ -54,9 +69,11 @@ def _latest_session_mtime() -> float:
     cutoff = datetime.now(timezone.utc) - SESSION_MAX_AGE
     latest = 0.0
     for proj_dir in CLAUDE_DIR.iterdir():
-        if not proj_dir.is_dir() or proj_dir.name == _SELF_PROJECT_DIRNAME:
+        if not proj_dir.is_dir():
             continue
         for jsonl_file in proj_dir.glob("*.jsonl"):
+            if _is_self_session(proj_dir.name, jsonl_file.name):
+                continue
             mtime = jsonl_file.stat().st_mtime
             if datetime.fromtimestamp(mtime, tz=timezone.utc) >= cutoff:
                 latest = max(latest, mtime)
@@ -76,11 +93,13 @@ def discover_sessions() -> list[dict]:
     sessions = []
 
     for proj_dir in CLAUDE_DIR.iterdir():
-        if not proj_dir.is_dir() or proj_dir.name == _SELF_PROJECT_DIRNAME:
+        if not proj_dir.is_dir():
             continue
         source_path = _decode_project_dir(proj_dir.name)
 
         for jsonl_file in proj_dir.glob("*.jsonl"):
+            if _is_self_session(proj_dir.name, jsonl_file.name):
+                continue
             # Check modification time
             mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime, tz=timezone.utc)
             if mtime < cutoff:
@@ -164,6 +183,13 @@ def _build_prompt(sessions: list[dict], store_snapshot: dict) -> str:
     parts.append(json.dumps(store_snapshot, indent=2))
     parts.append("\n")
 
+    # Active insights (so Claude can avoid duplicating them)
+    insights_data = store_snapshot.get("insights", [])
+    if insights_data:
+        parts.append("## Active Insights\n")
+        parts.append(json.dumps(insights_data, indent=2))
+        parts.append("\n")
+
     # Session summaries
     parts.append("## Recent Session Activity\n")
     for sess in sessions:
@@ -183,12 +209,13 @@ Based on the session activity above, return a JSON object with:
 3. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
 4. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
 5. `insights`: meta-level observations about workflow, patterns, or improvements — NOT tasks, but observations worth surfacing. Each has `project_id` (the project it relates to, or "" for general observations) and `text`. These are rare, high-value tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items. Examples: {"project_id": "proj_abc123", "text": "You're repeating the same debug cycle — consider adding a test first"}, {"project_id": "", "text": "Consider using consistent branch naming across projects"}
+6. `modified_todos`: existing todos whose text or project assignment should change. Each has `id` and optionally `text` and/or `project_id`. Use sparingly — only when a todo is clearly outdated or mis-assigned.
 
 Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
 - Only mark existing todos as completed (via completed_todo_ids) if the session clearly shows the work is done
 - Keep todo text concise and actionable
-- Don't duplicate existing todos
+- Don't duplicate existing todos or existing insights
 - `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
 
 Return ONLY valid JSON, no markdown fences.""")
@@ -196,7 +223,7 @@ Return ONLY valid JSON, no markdown fences.""")
     return "\n".join(parts)
 
 
-def _invoke_claude(prompt: str) -> tuple["ClaudeAnalysisResult | None", dict]:
+def _invoke_claude(prompt: str, model: str = "haiku") -> tuple["ClaudeAnalysisResult | None", dict]:
     """Call Claude CLI in print mode and parse the JSON response.
 
     Returns (result, usage_info) where usage_info contains cost/token data.
@@ -205,7 +232,7 @@ def _invoke_claude(prompt: str) -> tuple["ClaudeAnalysisResult | None", dict]:
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         result = subprocess.run(
-            ["claude", "-p", "--output-format", "json", "--model", "haiku"],
+            ["claude", "-p", "--output-format", "json", "--model", model],
             input=prompt,
             capture_output=True,
             text=True,
@@ -293,11 +320,12 @@ def _resolve_project_id(pid: str, projects: list["Project"]) -> str | None:
 # ── Apply results ──────────────────────────────────────────────
 
 
-def run_analysis(force: bool = False) -> AnalysisEntry | None:
+def run_analysis(force: bool = False, model: str | None = None) -> AnalysisEntry | None:
     """Full analysis cycle: discover sessions, invoke Claude, apply results.
 
     Returns None if skipped (no changes since last run).
     Pass force=True to skip the staleness check (e.g. manual wake).
+    If model is None, reads from metadata.analysis_model.
     """
     start = time.time()
 
@@ -309,12 +337,18 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
                 log.info("No session changes since last analysis, skipping")
                 return None
 
+    # Resolve model
+    if model is None:
+        with StorageContext() as ctx:
+            model = ctx.metadata.analysis_model
+
     sessions = discover_sessions()
     if not sessions:
         entry = AnalysisEntry(
             duration_seconds=round(time.time() - start, 1),
             sessions_analyzed=0,
             summary="No active sessions found",
+            model=model,
         )
         _record_entry(entry)
         return entry
@@ -324,10 +358,18 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
         store_snapshot = {
             "projects": [p.model_dump() for p in ctx.store.projects],
             "todos": [t.model_dump() for t in ctx.store.todos],
+            "insights": [
+                {"project_id": i.project_id, "text": i.text}
+                for i in ctx.metadata.insights if not i.dismissed
+            ],
         }
 
     prompt = _build_prompt(sessions, store_snapshot)
-    result, usage_info = _invoke_claude(prompt)
+    # Track session files before/after so we can exclude the one claude -p creates
+    before = _snapshot_self_sessions()
+    result, usage_info = _invoke_claude(prompt, model=model)
+    after = _snapshot_self_sessions()
+    _self_session_files.update(after - before)
 
     if result is None:
         error_msg = usage_info.get("error", "Claude analysis failed — see logs")
@@ -335,6 +377,7 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
             duration_seconds=round(time.time() - start, 1),
             sessions_analyzed=len(sessions),
             summary="Claude analysis failed — see logs",
+            model=model,
             error=error_msg,
             prompt_length=len(prompt),
             cost_usd=usage_info.get("cost_usd", 0.0),
@@ -348,8 +391,10 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
     # Apply results
     todos_added = 0
     todos_completed = 0
+    todos_modified = 0
     added_todo_texts: list[str] = []
     completed_todo_ids: list[str] = []
+    modified_todo_texts: list[str] = []
     new_project_names: list[str] = []
 
     with StorageContext() as ctx:
@@ -418,6 +463,28 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
             todos_added += 1
             added_todo_texts.append(nt.text)
 
+        # Modify existing todos
+        todo_by_id = {t.id: t for t in ctx.store.todos}
+        for mod in result.modified_todos:
+            t = todo_by_id.get(mod.id)
+            if t is None:
+                log.warning("modified_todos: unknown todo id=%s, skipping", mod.id)
+                continue
+            changed = False
+            if mod.text is not None and mod.text != t.text:
+                t.text = mod.text
+                changed = True
+            if mod.project_id is not None and mod.project_id != t.project_id:
+                resolved = _resolve_project_id(mod.project_id, ctx.store.projects)
+                if resolved:
+                    t.project_id = resolved
+                    changed = True
+                else:
+                    log.warning("modified_todos: unresolvable project_id=%r for todo %s", mod.project_id, mod.id)
+            if changed:
+                todos_modified += 1
+                modified_todo_texts.append(t.text)
+
         # Update summaries
         for pid, summary in result.project_summaries.items():
             ctx.metadata.project_summaries[pid] = summary
@@ -443,13 +510,16 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
         sessions_analyzed=len(sessions),
         todos_added=todos_added,
         todos_completed=todos_completed,
-        summary=f"Analyzed {len(sessions)} sessions: +{todos_added} todos, {todos_completed} completed",
+        todos_modified=todos_modified,
+        summary=f"Analyzed {len(sessions)} sessions: +{todos_added} todos, {todos_completed} completed, {todos_modified} modified",
+        model=model,
         cost_usd=usage_info.get("cost_usd", 0.0),
         input_tokens=usage_info.get("input_tokens", 0),
         output_tokens=usage_info.get("output_tokens", 0),
         cache_read_tokens=usage_info.get("cache_read_tokens", 0),
         completed_todo_ids=completed_todo_ids,
         added_todos=added_todo_texts,
+        modified_todos=modified_todo_texts,
         new_project_names=new_project_names,
         insights=[ci.text for ci in result.insights],
         prompt_length=len(prompt),

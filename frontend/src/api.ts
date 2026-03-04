@@ -39,12 +39,22 @@ export const api = {
   deleteTodo: (id: string) =>
     request<void>(`/todos/${id}`, { method: "DELETE" }),
 
-  wakeUpClaude: () => request<{ status: string; message?: string }>("/claude/wake", { method: "POST" }),
+  wakeUpClaude: (model?: string, force?: boolean) =>
+    request<{ status: string; message?: string }>("/claude/wake", {
+      method: "POST",
+      body: JSON.stringify({ ...(model ? { model } : {}), ...(force ? { force } : {}) }),
+    }),
 
   setAnalysisInterval: (minutes: number) =>
     request<{ minutes: number }>("/claude/interval", {
       method: "PUT",
       body: JSON.stringify({ minutes }),
+    }),
+
+  setAnalysisModel: (model: string) =>
+    request<{ model: string }>("/claude/model", {
+      method: "PUT",
+      body: JSON.stringify({ model }),
     }),
 
   dismissInsight: (id: string) =>

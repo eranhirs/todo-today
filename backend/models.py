@@ -58,7 +58,9 @@ class AnalysisEntry(BaseModel):
     sessions_analyzed: int = 0
     todos_added: int = 0
     todos_completed: int = 0
+    todos_modified: int = 0
     summary: str = ""
+    model: str = ""
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -66,6 +68,7 @@ class AnalysisEntry(BaseModel):
     error: Optional[str] = None
     completed_todo_ids: List[str] = []
     added_todos: List[str] = []
+    modified_todos: List[str] = []
     new_project_names: List[str] = []
     insights: List[str] = []
     prompt_length: int = 0
@@ -83,6 +86,7 @@ class Metadata(BaseModel):
     total_analyses: int = 0
     last_session_mtime: float = 0.0
     analysis_interval_minutes: int = 5
+    analysis_model: str = "haiku"
     insights: List[Insight] = []
 
 
@@ -135,9 +139,16 @@ class ClaudeInsight(BaseModel):
     text: str
 
 
+class ClaudeTodoUpdate(BaseModel):
+    id: str
+    text: Optional[str] = None
+    project_id: Optional[str] = None
+
+
 class ClaudeAnalysisResult(BaseModel):
     completed_todo_ids: List[str] = []
     new_todos: List[ClaudeNewTodo] = []
+    modified_todos: List[ClaudeTodoUpdate] = []
     project_summaries: Dict[str, str] = {}
     new_projects: List[ClaudeNewProject] = []
     insights: List[ClaudeInsight] = []

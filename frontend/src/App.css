@@ -89,7 +89,21 @@ body {
   outline: none;
 }
 .interval-select:hover { border-color: var(--accent); color: var(--text); }
+.model-select {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  cursor: pointer;
+  outline: none;
+  margin-left: 4px;
+}
+.model-select:hover { border-color: var(--accent); color: var(--text); }
 .status-detail { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; }
+.model-override-note { color: var(--accent); }
+.wake-message { color: var(--text-dim); font-style: italic; }
 
 .btn-wake {
   margin-top: 8px;
@@ -366,6 +380,13 @@ body {
 
 .insight-text {
   flex: 1;
+}
+
+.insight-timestamp {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .btn-dismiss-insight {
