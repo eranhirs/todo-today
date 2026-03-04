@@ -1,0 +1,84 @@
+# Todo Today — Setup & Operations
+
+## Prerequisites
+
+- Python 3.9+
+- Node.js 20.19+ or 22+
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed and on your `PATH`
+
+## Quick Start
+
+The easiest way to get running:
+
+```bash
+./start.sh
+```
+
+This will install dependencies, build the frontend, and start the server on http://localhost:5151.
+
+## Manual Setup
+
+```bash
+# Backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+# Frontend
+cd frontend
+npm install
+```
+
+### Development Mode (two terminals)
+
+```bash
+# Terminal 1: Backend (port 5151)
+.venv/bin/python -m uvicorn backend.main:app --port 5151
+
+# Terminal 2: Frontend dev server (port 5173, proxies /api to backend)
+cd frontend && npm run dev
+```
+
+### Production Mode (single process)
+
+```bash
+# Build frontend and serve everything from the backend
+cd frontend && npm run build && cd ..
+cp -r frontend/dist backend/static
+.venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 5151
+```
+
+## Auto-Start on Login (macOS)
+
+To run Todo Today automatically on login, create two launchd plists in `~/Library/LaunchAgents/`. Example templates are in [`docs/launchd/`](launchd/).
+
+```bash
+# Load them
+launchctl load ~/Library/LaunchAgents/com.todotoday.backend.plist
+launchctl load ~/Library/LaunchAgents/com.todotoday.frontend.plist
+
+# Unload to stop
+launchctl unload ~/Library/LaunchAgents/com.todotoday.backend.plist
+launchctl unload ~/Library/LaunchAgents/com.todotoday.frontend.plist
+```
+
+Key things to configure in the plists:
+- `ProgramArguments` — absolute paths to your Python/Node executables
+- `WorkingDirectory` — absolute path to the project root
+- `EnvironmentVariables.PATH` — must include the directory containing the `claude` CLI
+
+## Data Storage
+
+All runtime data is stored in `data/` (gitignored):
+- `todos.json` — projects and todos
+- `metadata.json` — analysis history, scheduler state, cumulative usage
+
+The `data/` directory is created automatically on first run.
+
+## Ports
+
+| Service  | Port | Notes |
+|----------|------|-------|
+| Backend  | 5151 | FastAPI + scheduler |
+| Frontend | 5173 | Vite dev server (development only) |
+
+In production mode, only port 5151 is used (frontend is served as static files).

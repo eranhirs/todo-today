@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node
+node_modules/
+
+# Build output
+frontend/dist/
+backend/static/
+
+# Runtime data (personal session data & analysis history)
+data/
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Claude Code
+.claude/

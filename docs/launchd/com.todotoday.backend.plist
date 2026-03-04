@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.todotoday.backend</string>
+    <key>ProgramArguments</key>
+    <array>
+        <!-- UPDATE: absolute path to your .venv/bin/python -->
+        <string>/path/to/todo-today/.venv/bin/python</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>backend.main:app</string>
+        <string>--port</string>
+        <string>5151</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <!-- UPDATE: include the directory containing the 'claude' CLI -->
+        <string>/usr/local/bin:/usr/bin:/bin:~/.local/bin</string>
+    </dict>
+    <!-- UPDATE: absolute path to the project root -->
+    <key>WorkingDirectory</key>
+    <string>/path/to/todo-today</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/path/to/todo-today/logs/backend.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/todo-today/logs/backend.log</string>
+</dict>
+</plist>
