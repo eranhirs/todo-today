@@ -112,6 +112,7 @@ class FullState(BaseModel):
 class ClaudeNewTodo(BaseModel):
     project_id: str
     text: str
+    completed: bool = False
 
 
 class ClaudeNewProject(BaseModel):

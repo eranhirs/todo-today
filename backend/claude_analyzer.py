@@ -176,15 +176,17 @@ def _build_prompt(sessions: list[dict], store_snapshot: dict) -> str:
 
 Based on the session activity above, return a JSON object with:
 1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed
-2. `new_todos`: new todo items (both completed work worth recording and next-step suggestions). Each has `project_id` and `text`. For new projects not yet tracked, use project_id "NEW:<source_path>"
+2. `new_todos`: new todo items. Each has `project_id`, `text`, and `completed` (boolean). For new projects not yet tracked, use project_id "NEW:<source_path>". There are two kinds:
+   - **Completed work** (`completed: true`): things the user accomplished in their sessions. These are important for tracking what was done, even though they're already finished. Examples: "Implemented dark mode", "Fixed login timeout bug", "Refactored API routes to use versioning"
+   - **Next steps** (`completed: false`): actionable suggestions for future work. Prefix with "Next: " or "Consider: "
 3. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
 4. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
 5. `suggestions`: rare, high-value improvement tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items.
 
 Important:
-- Only mark todos as completed if the session clearly shows the work is done
-- Keep new todo text concise and actionable
-- For suggestions/next steps, prefix with "Consider: " or "Next: "
+- Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
+- Only mark existing todos as completed (via completed_todo_ids) if the session clearly shows the work is done
+- Keep todo text concise and actionable
 - Don't duplicate existing todos
 
 Return ONLY valid JSON, no markdown fences.""")
@@ -345,6 +347,9 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
                 continue
 
             todo = Todo(project_id=pid, text=nt.text, source="claude")
+            if nt.completed:
+                todo.completed = True
+                todo.completed_at = _now()
             ctx.store.todos.append(todo)
             todos_added += 1
             added_todo_texts.append(nt.text)
