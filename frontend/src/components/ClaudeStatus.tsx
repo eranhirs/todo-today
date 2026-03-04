@@ -190,15 +190,13 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
         <button className="btn-link session-picker-toggle" onClick={handleBrowseSessions} disabled={loadingSessions}>
           {loadingSessions ? "Loading..." : showSessions ? "▾ Pick specific sessions" : "▸ Pick specific sessions"}
         </button>
-        {!showSessions && (
-          <div className="status-detail" style={{ marginTop: "2px" }}>
-            By default, Wake analyzes only sessions changed in the last 24h.
-            Use this to re-analyze older sessions or pick specific ones.
-            Sessions are grouped by their working directory from <code style={{ fontSize: "0.7rem" }}>~/.claude/projects/</code>.
-          </div>
-        )}
         {showSessions && (
           <div className="session-picker">
+            <div className="status-detail" style={{ marginBottom: "6px" }}>
+              By default, Wake analyzes only sessions changed in the last 24h.
+              Use this to re-analyze older sessions or pick specific ones.
+              Sessions are grouped by their working directory from <code style={{ fontSize: "0.7rem" }}>~/.claude/projects/</code>.
+            </div>
             <div className="session-picker-header">
               <span>{projectCount} projects, {sessions.length} sessions</span>
               <button
