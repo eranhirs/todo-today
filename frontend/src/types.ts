@@ -30,6 +30,7 @@ export interface AnalysisEntry {
   completed_todo_ids: string[];
   added_todos: string[];
   new_project_names: string[];
+  suggestions: string[];
   prompt_length: number;
 }
 

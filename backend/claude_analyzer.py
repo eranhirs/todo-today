@@ -176,6 +176,7 @@ Based on the session activity above, return a JSON object with:
 2. `new_todos`: new todo items (both completed work worth recording and next-step suggestions). Each has `project_id` and `text`. For new projects not yet tracked, use project_id "NEW:<source_path>"
 3. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
 4. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
+5. `suggestions`: rare, high-value improvement tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items.
 
 Important:
 - Only mark todos as completed if the session clearly shows the work is done
@@ -362,6 +363,7 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
         completed_todo_ids=completed_todo_ids,
         added_todos=added_todo_texts,
         new_project_names=new_project_names,
+        suggestions=result.suggestions,
         prompt_length=len(prompt),
     )
     _record_entry(entry)

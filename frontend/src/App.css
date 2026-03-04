@@ -250,6 +250,13 @@ body {
   gap: 4px;
 }
 
+.todo-timestamp {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.todo-completed-at { color: var(--green); }
+
 .badge-claude { font-size: 0.8rem; }
 
 .todo-project-label {
@@ -257,6 +264,18 @@ body {
   font-size: 0.7rem;
   color: var(--accent-light);
   margin-left: 12px;
+  margin-bottom: 2px;
+}
+
+/* Done groups */
+
+.done-group-header {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 10px 0 4px 12px;
+  border-bottom: 1px solid var(--border);
   margin-bottom: 2px;
 }
 
@@ -305,6 +324,9 @@ body {
   color: var(--text-dim);
   font-size: 0.7rem;
 }
+
+.history-suggestions strong { color: var(--claude) !important; }
+.history-suggestions ul { color: var(--claude) !important; }
 
 .usage-totals {
   margin-top: 8px;

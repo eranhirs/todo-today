@@ -48,13 +48,27 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
           <button className="btn-link" onClick={() => setShowDone(!showDone)}>
             {showDone ? "▾" : "▸"} Completed ({done.length})
           </button>
-          {showDone &&
-            done.map((t) => (
-              <div key={t.id}>
-                {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                <TodoItem todo={t} onRefresh={onRefresh} />
+          {showDone && (() => {
+            const groups = new Map<string, Todo[]>();
+            for (const t of done) {
+              const day = t.completed_at
+                ? new Date(t.completed_at).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })
+                : "Unknown";
+              if (!groups.has(day)) groups.set(day, []);
+              groups.get(day)!.push(t);
+            }
+            return Array.from(groups.entries()).map(([day, items]) => (
+              <div key={day} className="done-group">
+                <div className="done-group-header">{day}</div>
+                {items.map((t) => (
+                  <div key={t.id}>
+                    {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
+                    <TodoItem todo={t} onRefresh={onRefresh} />
+                  </div>
+                ))}
               </div>
-            ))}
+            ));
+          })()}
         </>
       )}
     </div>

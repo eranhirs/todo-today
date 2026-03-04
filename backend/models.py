@@ -58,6 +58,7 @@ class AnalysisEntry(BaseModel):
     completed_todo_ids: List[str] = []
     added_todos: List[str] = []
     new_project_names: List[str] = []
+    suggestions: List[str] = []
     prompt_length: int = 0
 
 
@@ -123,3 +124,4 @@ class ClaudeAnalysisResult(BaseModel):
     new_todos: List[ClaudeNewTodo] = []
     project_summaries: Dict[str, str] = {}
     new_projects: List[ClaudeNewProject] = []
+    suggestions: List[str] = []
