@@ -80,16 +80,19 @@ def _latest_session_mtime() -> float:
     return latest
 
 
-def discover_sessions() -> list[dict]:
+def discover_sessions(max_age: timedelta | None = SESSION_MAX_AGE) -> list[dict]:
     """Return a list of recent sessions with their messages.
 
-    Each entry: {"project_dir": str, "source_path": str, "session_id": str, "messages": [...]}
+    Each entry: {"project_dir": str, "source_path": str, "session_id": str,
+                 "mtime": float, "messages": [...]}
+
+    When max_age is None, no age cutoff is applied (discover all sessions).
     """
     if not CLAUDE_DIR.is_dir():
         log.warning("Claude projects dir not found: %s", CLAUDE_DIR)
         return []
 
-    cutoff = datetime.now(timezone.utc) - SESSION_MAX_AGE
+    cutoff = datetime.now(timezone.utc) - max_age if max_age is not None else None
     sessions = []
 
     for proj_dir in CLAUDE_DIR.iterdir():
@@ -100,10 +103,12 @@ def discover_sessions() -> list[dict]:
         for jsonl_file in proj_dir.glob("*.jsonl"):
             if _is_self_session(proj_dir.name, jsonl_file.name):
                 continue
+            stat_mtime = jsonl_file.stat().st_mtime
             # Check modification time
-            mtime = datetime.fromtimestamp(jsonl_file.stat().st_mtime, tz=timezone.utc)
-            if mtime < cutoff:
-                continue
+            if cutoff is not None:
+                mtime_dt = datetime.fromtimestamp(stat_mtime, tz=timezone.utc)
+                if mtime_dt < cutoff:
+                    continue
 
             messages = _parse_session_messages(jsonl_file)
             if messages:
@@ -111,6 +116,7 @@ def discover_sessions() -> list[dict]:
                     "project_dir": proj_dir.name,
                     "source_path": source_path,
                     "session_id": jsonl_file.stem,
+                    "mtime": stat_mtime,
                     "messages": messages,
                 })
 
@@ -171,6 +177,71 @@ def _parse_session_messages(path: Path) -> list[dict]:
     return messages[-MAX_MESSAGES_PER_SESSION:]
 
 
+def _session_key(sess: dict) -> str:
+    """Return a unique key for a session: 'project_dir/session_id'."""
+    return f"{sess['project_dir']}/{sess['session_id']}"
+
+
+def filter_changed_sessions(
+    sessions: list[dict], last_mtimes: dict[str, float]
+) -> list[dict]:
+    """Keep only sessions whose file mtime exceeds the last-analyzed mtime."""
+    changed = []
+    for s in sessions:
+        key = _session_key(s)
+        stored = last_mtimes.get(key)
+        if stored is None or s["mtime"] > stored:
+            changed.append(s)
+    return changed
+
+
+def list_all_sessions() -> list[dict]:
+    """Return lightweight metadata for all sessions (no age cutoff, no messages)."""
+    if not CLAUDE_DIR.is_dir():
+        return []
+
+    sessions = []
+    for proj_dir in CLAUDE_DIR.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        source_path = _decode_project_dir(proj_dir.name)
+        project_name = _extract_project_name(source_path)
+
+        for jsonl_file in proj_dir.glob("*.jsonl"):
+            if _is_self_session(proj_dir.name, jsonl_file.name):
+                continue
+            stat_mtime = jsonl_file.stat().st_mtime
+            # Count messages (lightweight — just count qualifying lines)
+            msg_count = 0
+            try:
+                with open(jsonl_file) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if entry.get("type") in ("user", "assistant"):
+                            msg_count += 1
+            except Exception:
+                pass
+
+            sessions.append({
+                "key": f"{proj_dir.name}/{jsonl_file.stem}",
+                "project_dir": proj_dir.name,
+                "source_path": source_path,
+                "project_name": project_name,
+                "session_id": jsonl_file.stem,
+                "mtime": stat_mtime,
+                "message_count": msg_count,
+            })
+
+    sessions.sort(key=lambda s: s["mtime"], reverse=True)
+    return sessions
+
+
 # ── Claude invocation ──────────────────────────────────────────
 
 
@@ -208,7 +279,7 @@ Based on the session activity above, return a JSON object with:
    - **Next steps** (`completed: false`): actionable tasks for future work. Prefix with "Next: " or "Consider: "
 3. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
 4. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
-5. `insights`: meta-level observations about workflow, patterns, or improvements — NOT tasks, but observations worth surfacing. Each has `project_id` (the project it relates to, or "" for general observations) and `text`. These are rare, high-value tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items. Examples: {"project_id": "proj_abc123", "text": "You're repeating the same debug cycle — consider adding a test first"}, {"project_id": "", "text": "Consider using consistent branch naming across projects"}
+5. `insights`: critical observations that could change how the user works — NOT praise, NOT descriptions of what was done, NOT "nice pattern" commentary. Only flag problems, risks, or missed opportunities. Each has `project_id` (or "" for general) and `text`. Return an empty list unless you spot something genuinely wrong or risky. Max 1 item. Good examples: {"project_id": "proj_abc123", "text": "You've retried the same failing approach 3 times — step back and check the upstream dependency"}, {"project_id": "", "text": "Two projects have diverging copies of the auth module — consider extracting a shared lib"}. BAD examples (never do these): "Great use of X pattern", "The separation of Y is clean", "Good approach to Z"
 6. `modified_todos`: existing todos whose text or project assignment should change. Each has `id` and optionally `text` and/or `project_id`. Use sparingly — only when a todo is clearly outdated or mis-assigned.
 
 Important:
@@ -320,29 +391,48 @@ def _resolve_project_id(pid: str, projects: list["Project"]) -> str | None:
 # ── Apply results ──────────────────────────────────────────────
 
 
-def run_analysis(force: bool = False, model: str | None = None) -> AnalysisEntry | None:
+def run_analysis(
+    force: bool = False,
+    model: str | None = None,
+    session_keys: list[str] | None = None,
+) -> AnalysisEntry | None:
     """Full analysis cycle: discover sessions, invoke Claude, apply results.
 
     Returns None if skipped (no changes since last run).
     Pass force=True to skip the staleness check (e.g. manual wake).
     If model is None, reads from metadata.analysis_model.
+    If session_keys is provided, only those sessions are analyzed (implies force, no age cutoff).
     """
     start = time.time()
-
-    # Check if anything changed since last analysis
-    if not force:
-        latest_mtime = _latest_session_mtime()
-        with StorageContext() as ctx:
-            if latest_mtime > 0 and latest_mtime <= ctx.metadata.last_session_mtime:
-                log.info("No session changes since last analysis, skipping")
-                return None
 
     # Resolve model
     if model is None:
         with StorageContext() as ctx:
             model = ctx.metadata.analysis_model
 
-    sessions = discover_sessions()
+    # When specific sessions are requested, discover all and filter to those keys
+    if session_keys is not None:
+        sessions = discover_sessions(max_age=None)
+        key_set = set(session_keys)
+        sessions = [s for s in sessions if _session_key(s) in key_set]
+    else:
+        # Check if anything changed since last analysis (coarse check)
+        if not force:
+            latest_mtime = _latest_session_mtime()
+            with StorageContext() as ctx:
+                if latest_mtime > 0 and latest_mtime <= ctx.metadata.last_session_mtime:
+                    log.info("No session changes since last analysis, skipping")
+                    return None
+
+        sessions = discover_sessions()
+
+        # Per-session mtime filter: skip unchanged sessions (unless force)
+        if not force and sessions:
+            with StorageContext() as ctx:
+                sessions = filter_changed_sessions(sessions, ctx.metadata.session_mtimes)
+            if not sessions:
+                log.info("All sessions unchanged since last analysis, skipping")
+                return None
     if not sessions:
         entry = AnalysisEntry(
             duration_seconds=round(time.time() - start, 1),
@@ -392,8 +482,10 @@ def run_analysis(force: bool = False, model: str | None = None) -> AnalysisEntry
     todos_added = 0
     todos_completed = 0
     todos_modified = 0
-    added_todo_texts: list[str] = []
+    added_active_texts: list[str] = []
+    added_completed_texts: list[str] = []
     completed_todo_ids: list[str] = []
+    completed_todo_texts: list[str] = []
     modified_todo_texts: list[str] = []
     new_project_names: list[str] = []
 
@@ -419,6 +511,7 @@ def run_analysis(force: bool = False, model: str | None = None) -> AnalysisEntry
                     t.completed_at = _now()
                     todos_completed += 1
                     completed_todo_ids.append(tid)
+                    completed_todo_texts.append(t.text)
 
         # Repair orphaned todos (invalid project_id from prior analyses)
         valid_ids = {p.id for p in ctx.store.projects}
@@ -461,7 +554,10 @@ def run_analysis(force: bool = False, model: str | None = None) -> AnalysisEntry
                 todo.completed_at = _now()
             ctx.store.todos.append(todo)
             todos_added += 1
-            added_todo_texts.append(nt.text)
+            if nt.completed:
+                added_completed_texts.append(nt.text)
+            else:
+                added_active_texts.append(nt.text)
 
         # Modify existing todos
         todo_by_id = {t.id: t for t in ctx.store.todos}
@@ -505,6 +601,11 @@ def run_analysis(force: bool = False, model: str | None = None) -> AnalysisEntry
                 )
                 existing_keys.add((pid, ci.text.lower()))
 
+    # Persist per-session mtimes for analyzed sessions
+    with StorageContext() as ctx:
+        for s in sessions:
+            ctx.metadata.session_mtimes[_session_key(s)] = s["mtime"]
+
     entry = AnalysisEntry(
         duration_seconds=round(time.time() - start, 1),
         sessions_analyzed=len(sessions),
@@ -518,7 +619,9 @@ def run_analysis(force: bool = False, model: str | None = None) -> AnalysisEntry
         output_tokens=usage_info.get("output_tokens", 0),
         cache_read_tokens=usage_info.get("cache_read_tokens", 0),
         completed_todo_ids=completed_todo_ids,
-        added_todos=added_todo_texts,
+        completed_todo_texts=completed_todo_texts,
+        added_todos_active=added_active_texts,
+        added_todos_completed=added_completed_texts,
         modified_todos=modified_todo_texts,
         new_project_names=new_project_names,
         insights=[ci.text for ci in result.insights],

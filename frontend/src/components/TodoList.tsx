@@ -15,7 +15,7 @@ interface Props {
 
 export function TodoList({ todos, projects, selectedProjectId, projectSummaries, insights, onRefresh }: Props) {
   const [showTodos, setShowTodos] = useState(true);
-  const [showDone, setShowDone] = useState(false);
+  const [showDone, setShowDone] = useState(true);
 
   const filtered = selectedProjectId
     ? todos.filter((t) => t.project_id === selectedProjectId)

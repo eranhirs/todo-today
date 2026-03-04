@@ -67,7 +67,9 @@ class AnalysisEntry(BaseModel):
     cache_read_tokens: int = 0
     error: Optional[str] = None
     completed_todo_ids: List[str] = []
-    added_todos: List[str] = []
+    completed_todo_texts: List[str] = []
+    added_todos_active: List[str] = []
+    added_todos_completed: List[str] = []
     modified_todos: List[str] = []
     new_project_names: List[str] = []
     insights: List[str] = []
@@ -85,6 +87,7 @@ class Metadata(BaseModel):
     total_output_tokens: int = 0
     total_analyses: int = 0
     last_session_mtime: float = 0.0
+    session_mtimes: Dict[str, float] = {}
     analysis_interval_minutes: int = 5
     analysis_model: str = "haiku"
     insights: List[Insight] = []

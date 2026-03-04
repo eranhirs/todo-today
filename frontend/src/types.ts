@@ -39,7 +39,9 @@ export interface AnalysisEntry {
   cache_read_tokens: number;
   error: string | null;
   completed_todo_ids: string[];
-  added_todos: string[];
+  completed_todo_texts: string[];
+  added_todos_active: string[];
+  added_todos_completed: string[];
   modified_todos: string[];
   new_project_names: string[];
   insights: string[];
@@ -59,6 +61,16 @@ export interface Metadata {
   analysis_interval_minutes: number;
   analysis_model: string;
   insights: Insight[];
+}
+
+export interface SessionInfo {
+  key: string;
+  project_dir: string;
+  source_path: string;
+  project_name: string;
+  session_id: string;
+  mtime: number;
+  message_count: number;
 }
 
 export interface FullState {

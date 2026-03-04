@@ -1,4 +1,4 @@
-import type { FullState, Project, Todo } from "./types";
+import type { FullState, Project, SessionInfo, Todo } from "./types";
 
 const BASE = "/api";
 
@@ -39,11 +39,17 @@ export const api = {
   deleteTodo: (id: string) =>
     request<void>(`/todos/${id}`, { method: "DELETE" }),
 
-  wakeUpClaude: (model?: string, force?: boolean) =>
+  wakeUpClaude: (model?: string, force?: boolean, sessionKeys?: string[]) =>
     request<{ status: string; message?: string }>("/claude/wake", {
       method: "POST",
-      body: JSON.stringify({ ...(model ? { model } : {}), ...(force ? { force } : {}) }),
+      body: JSON.stringify({
+        ...(model ? { model } : {}),
+        ...(force ? { force } : {}),
+        ...(sessionKeys ? { session_keys: sessionKeys } : {}),
+      }),
     }),
+
+  getSessions: () => request<SessionInfo[]>("/claude/sessions"),
 
   setAnalysisInterval: (minutes: number) =>
     request<{ minutes: number }>("/claude/interval", {

@@ -242,7 +242,7 @@ body {
   transition: background 0.15s;
 }
 .todo-item:hover { background: var(--card-bg); }
-.todo-item.completed .todo-text { text-decoration: line-through; color: var(--text-dim); }
+.todo-item.completed { opacity: 0.85; }
 
 .todo-item.source-claude {
   border-left: 3px solid var(--claude);
@@ -350,6 +350,20 @@ body {
 .history-insights strong { color: var(--claude) !important; }
 .history-insights ul { color: var(--claude) !important; }
 
+.history-raw-json {
+  margin-top: 6px;
+  padding: 8px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.65rem;
+  background: #0a0c12;
+  color: var(--text-dim);
+  border-radius: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 /* Insights banner */
 
 .insights-banner {
@@ -396,6 +410,75 @@ body {
 }
 .btn-dismiss-insight:hover {
   color: var(--text);
+}
+
+/* Session Picker */
+
+.session-picker {
+  margin-top: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--bg);
+}
+
+.session-picker-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.session-group {
+  margin-bottom: 6px;
+}
+
+.session-group-name {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--accent-light);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 4px 0 2px;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.session-item:hover { background: var(--card-bg); }
+
+.session-checkbox {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.session-id {
+  color: var(--text);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.7rem;
+}
+
+.session-meta {
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  margin-left: auto;
+  white-space: nowrap;
 }
 
 .usage-totals {

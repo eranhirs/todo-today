@@ -1,8 +1,9 @@
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from ..claude_analyzer import list_all_sessions
 from ..models import AnalysisEntry, Metadata
 from ..scheduler import set_interval, trigger_analysis
 from ..storage import StorageContext
@@ -17,6 +18,7 @@ class IntervalUpdate(BaseModel):
 class WakeRequest(BaseModel):
     model: Optional[str] = None
     force: bool = False
+    session_keys: Optional[List[str]] = None
 
 
 class ModelUpdate(BaseModel):
@@ -25,7 +27,14 @@ class ModelUpdate(BaseModel):
 
 @router.post("/wake")
 async def wake(body: WakeRequest = WakeRequest()) -> dict:
-    return await trigger_analysis(model=body.model, force=body.force)
+    return await trigger_analysis(
+        model=body.model, force=body.force, session_keys=body.session_keys,
+    )
+
+
+@router.get("/sessions")
+def sessions() -> list[dict]:
+    return list_all_sessions()
 
 
 @router.put("/model")

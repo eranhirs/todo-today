@@ -11,6 +11,8 @@ function formatTokens(n: number): string {
 }
 
 function EntryDetail({ entry }: { entry: AnalysisEntry }) {
+  const [showRaw, setShowRaw] = useState(false);
+
   return (
     <div className="history-detail">
       <div className="history-detail-row">
@@ -22,19 +24,31 @@ function EntryDetail({ entry }: { entry: AnalysisEntry }) {
       {entry.error && (
         <div className="history-detail-error">Error: {entry.error}</div>
       )}
-      {entry.completed_todo_ids.length > 0 && (
+      {entry.completed_todo_texts?.length > 0 && (
         <div className="history-detail-section">
-          <strong>Completed ({entry.completed_todo_ids.length}):</strong>
-          <ul>{entry.completed_todo_ids.map((id) => <li key={id}>{id}</li>)}</ul>
+          <strong>Marked done ({entry.completed_todo_texts.length}):</strong>
+          <ul>{entry.completed_todo_texts.map((t, i) => <li key={i}>{t}</li>)}</ul>
         </div>
       )}
-      {entry.added_todos.length > 0 && (
+      {entry.added_todos_active?.length > 0 && (
         <div className="history-detail-section">
-          <strong>Added ({entry.added_todos.length}):</strong>
-          <ul>{entry.added_todos.map((t, i) => <li key={i}>{t}</li>)}</ul>
+          <strong>Added — next steps ({entry.added_todos_active.length}):</strong>
+          <ul>{entry.added_todos_active.map((t, i) => <li key={i}>{t}</li>)}</ul>
         </div>
       )}
-      {entry.new_project_names.length > 0 && (
+      {entry.added_todos_completed?.length > 0 && (
+        <div className="history-detail-section">
+          <strong>Added — done ({entry.added_todos_completed.length}):</strong>
+          <ul>{entry.added_todos_completed.map((t, i) => <li key={i}>{t}</li>)}</ul>
+        </div>
+      )}
+      {entry.modified_todos?.length > 0 && (
+        <div className="history-detail-section">
+          <strong>Modified ({entry.modified_todos.length}):</strong>
+          <ul>{entry.modified_todos.map((t, i) => <li key={i}>{t}</li>)}</ul>
+        </div>
+      )}
+      {entry.new_project_names?.length > 0 && (
         <div className="history-detail-section">
           <strong>New projects:</strong> {entry.new_project_names.join(", ")}
         </div>
@@ -44,6 +58,16 @@ function EntryDetail({ entry }: { entry: AnalysisEntry }) {
           <strong>Insights:</strong>
           <ul>{entry.insights.map((s, i) => <li key={i}>{s}</li>)}</ul>
         </div>
+      )}
+      <button
+        className="btn-link"
+        style={{ marginTop: 6, fontSize: "0.65rem" }}
+        onClick={(e) => { e.stopPropagation(); setShowRaw(!showRaw); }}
+      >
+        {showRaw ? "Hide" : "Show"} Raw JSON
+      </button>
+      {showRaw && (
+        <pre className="history-raw-json">{JSON.stringify(entry, null, 2)}</pre>
       )}
     </div>
   );
@@ -62,25 +86,39 @@ export function UpdateHistory({ history }: Props) {
       </button>
       {expanded && (
         <div className="history-list">
-          {history.map((entry, i) => (
-            <div
-              key={i}
-              className={`history-entry ${expandedEntry === i ? "history-entry-expanded" : ""}`}
-              onClick={() => setExpandedEntry(expandedEntry === i ? null : i)}
-            >
-              <div className="history-time">
-                {new Date(entry.timestamp).toLocaleString()}
-                <span className="history-duration">({entry.duration_seconds}s)</span>
-                {entry.cost_usd > 0 && <span className="history-cost">${entry.cost_usd.toFixed(4)}</span>}
-                {entry.error && <span className="history-error-badge">error</span>}
+          {history.map((entry, i) => {
+            const activeCount = entry.added_todos_active?.length ?? 0;
+            const doneCount = entry.added_todos_completed?.length ?? 0;
+            const markedDone = entry.completed_todo_texts?.length ?? entry.todos_completed;
+            const modified = entry.todos_modified;
+
+            const statParts: string[] = [];
+            if (activeCount > 0) statParts.push(`+${activeCount} active`);
+            if (doneCount > 0) statParts.push(`+${doneCount} done`);
+            if (markedDone > 0) statParts.push(`${markedDone} marked done`);
+            if (modified > 0) statParts.push(`${modified} modified`);
+
+            return (
+              <div
+                key={i}
+                className={`history-entry ${expandedEntry === i ? "history-entry-expanded" : ""}`}
+                onClick={() => setExpandedEntry(expandedEntry === i ? null : i)}
+              >
+                <div className="history-time">
+                  {new Date(entry.timestamp).toLocaleString()}
+                  <span className="history-duration">({entry.duration_seconds}s)</span>
+                  {entry.cost_usd > 0 && <span className="history-cost">${entry.cost_usd.toFixed(4)}</span>}
+                  {entry.error && <span className="history-error-badge">error</span>}
+                </div>
+                <div className="history-summary">{entry.summary}</div>
+                <div className="history-stats">
+                  Sessions: {entry.sessions_analyzed}
+                  {statParts.length > 0 && ` | ${statParts.join(" | ")}`}
+                </div>
+                {expandedEntry === i && <EntryDetail entry={entry} />}
               </div>
-              <div className="history-summary">{entry.summary}</div>
-              <div className="history-stats">
-                Sessions: {entry.sessions_analyzed} | +{entry.todos_added} added | {entry.todos_completed} completed
-              </div>
-              {expandedEntry === i && <EntryDetail entry={entry} />}
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
