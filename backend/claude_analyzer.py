@@ -182,7 +182,7 @@ Based on the session activity above, return a JSON object with:
    - **Next steps** (`completed: false`): actionable tasks for future work. Prefix with "Next: " or "Consider: "
 3. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
 4. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
-5. `insights`: meta-level observations about workflow, patterns, or improvements — NOT tasks, but observations worth surfacing. These are rare, high-value tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items. Examples: "You're repeating the same debug cycle — consider adding a test first", "This project has no README which slows onboarding"
+5. `insights`: meta-level observations about workflow, patterns, or improvements — NOT tasks, but observations worth surfacing. Each has `project_id` (the project it relates to, or "" for general observations) and `text`. These are rare, high-value tips about how the user works with Claude or the project itself. Only include when genuinely useful — most analyses should return an empty list. Max 1-2 items. Examples: {"project_id": "proj_abc123", "text": "You're repeating the same debug cycle — consider adding a test first"}, {"project_id": "", "text": "Consider using consistent branch naming across projects"}
 
 Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
@@ -422,14 +422,21 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
         for pid, summary in result.project_summaries.items():
             ctx.metadata.project_summaries[pid] = summary
 
-        # Persist new insights (dedup by text)
-        existing_texts = {i.text.lower() for i in ctx.metadata.insights}
-        for text in result.insights:
-            if text.lower() not in existing_texts:
+        # Persist new insights (dedup by project_id + text)
+        existing_keys = {(i.project_id, i.text.lower()) for i in ctx.metadata.insights}
+        for ci in result.insights:
+            pid = ci.project_id
+            if pid and not pid.startswith("proj_"):
+                resolved = _resolve_project_id(pid, ctx.store.projects)
+                if resolved:
+                    pid = resolved
+                else:
+                    pid = ""
+            if (pid, ci.text.lower()) not in existing_keys:
                 ctx.metadata.insights.append(
-                    Insight(text=text, source_analysis_timestamp=_now())
+                    Insight(project_id=pid, text=ci.text, source_analysis_timestamp=_now())
                 )
-                existing_texts.add(text.lower())
+                existing_keys.add((pid, ci.text.lower()))
 
     entry = AnalysisEntry(
         duration_seconds=round(time.time() - start, 1),
@@ -444,7 +451,7 @@ def run_analysis(force: bool = False) -> AnalysisEntry | None:
         completed_todo_ids=completed_todo_ids,
         added_todos=added_todo_texts,
         new_project_names=new_project_names,
-        insights=result.insights,
+        insights=[ci.text for ci in result.insights],
         prompt_length=len(prompt),
     )
     _record_entry(entry)

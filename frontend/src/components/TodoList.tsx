@@ -1,6 +1,7 @@
 import { useState } from "react";
-import type { Project, Todo } from "../types";
+import type { Insight, Project, Todo } from "../types";
 import { AddTodo } from "./AddTodo";
+import { Insights } from "./Insights";
 import { TodoItem } from "./TodoItem";
 
 interface Props {
@@ -8,15 +9,21 @@ interface Props {
   projects: Project[];
   selectedProjectId: string | null;
   projectSummaries: Record<string, string>;
+  insights: Insight[];
   onRefresh: () => void;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, insights, onRefresh }: Props) {
+  const [showTodos, setShowTodos] = useState(true);
   const [showDone, setShowDone] = useState(false);
 
   const filtered = selectedProjectId
     ? todos.filter((t) => t.project_id === selectedProjectId)
     : todos;
+
+  const filteredInsights = selectedProjectId
+    ? insights.filter((i) => i.project_id === selectedProjectId || i.project_id === "")
+    : insights;
 
   const active = filtered.filter((t) => !t.completed);
   const done = filtered
@@ -32,18 +39,28 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       <h2>{selectedProjectId ? projectName(selectedProjectId) : "All Projects"}</h2>
       {summary && <p className="project-summary">{summary}</p>}
 
+      <Insights insights={filteredInsights} onRefresh={onRefresh} />
+
       {selectedProjectId && <AddTodo projectId={selectedProjectId} onRefresh={onRefresh} />}
 
-      {active.length === 0 && done.length === 0 && (
-        <p className="empty">No todos yet. {selectedProjectId ? "Add one above!" : "Select a project to add todos."}</p>
-      )}
+      <button className="btn-link section-header" onClick={() => setShowTodos(!showTodos)}>
+        {showTodos ? "▾" : "▸"} Todos ({active.length})
+      </button>
 
-      {active.map((t) => (
-        <div key={t.id}>
-          {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-          <TodoItem todo={t} onRefresh={onRefresh} />
-        </div>
-      ))}
+      {showTodos && (
+        <>
+          {active.length === 0 && done.length === 0 && (
+            <p className="empty">No todos yet. {selectedProjectId ? "Add one above!" : "Select a project to add todos."}</p>
+          )}
+
+          {active.map((t) => (
+            <div key={t.id}>
+              {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
+              <TodoItem todo={t} onRefresh={onRefresh} />
+            </div>
+          ))}
+        </>
+      )}
 
       {done.length > 0 && (
         <>

@@ -158,6 +158,14 @@ body {
 }
 .btn-link:hover { color: var(--text); }
 
+.btn-link.section-header {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
 /* Add forms */
 
 .add-form, .add-todo {

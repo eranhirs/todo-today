@@ -5,7 +5,6 @@ import { ProjectList } from "./components/ProjectList";
 import { TodoList } from "./components/TodoList";
 import { ClaudeStatus } from "./components/ClaudeStatus";
 import { UpdateHistory } from "./components/UpdateHistory";
-import { Insights } from "./components/Insights";
 import "./App.css";
 
 const POLL_INTERVAL = 10_000;
@@ -45,12 +44,12 @@ function App() {
         <UpdateHistory history={state.metadata.history} />
       </aside>
       <main className="main">
-        <Insights insights={state.metadata.insights} onRefresh={refresh} />
         <TodoList
           todos={state.todos}
           projects={state.projects}
           selectedProjectId={selectedProject}
           projectSummaries={state.metadata.project_summaries}
+          insights={state.metadata.insights}
           onRefresh={refresh}
         />
       </main>

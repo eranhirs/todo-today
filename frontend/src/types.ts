@@ -17,6 +17,7 @@ export interface Todo {
 
 export interface Insight {
   id: string;
+  project_id: string;
   text: string;
   source_analysis_timestamp: string;
   dismissed: boolean;

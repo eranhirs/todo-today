@@ -22,7 +22,7 @@ Each analysis records:
 - `completed_todo_ids` — IDs of todos marked done
 - `added_todos` — text of new todos created
 - `new_project_names` — names of newly discovered projects
-- `insights` — meta-level observations about workflow or patterns
+- `insights` — meta-level observations about workflow or patterns (text only in history entries)
 - `prompt_length` — character count of prompt sent
 
 ## Cumulative Usage
@@ -33,6 +33,12 @@ Metadata tracks running totals:
 - `total_input_tokens` / `total_output_tokens` — cumulative token usage
 
 These are displayed in the ClaudeStatus component below the Wake button.
+
+## Per-Project Insights
+
+Insights are tied to specific projects via `project_id`. Claude returns insights as `{project_id, text}` objects. The `project_id` is resolved using the same fuzzy matching as todos. An empty `project_id` means the insight is general (not project-specific).
+
+In the frontend, insights are displayed within the TodoList component, filtered by the selected project. When a specific project is selected, only that project's insights plus general insights (empty `project_id`) are shown. When "All Projects" is selected, all insights are shown.
 
 ## Project ID Resolution
 

@@ -45,6 +45,7 @@ class TodoStore(BaseModel):
 
 class Insight(BaseModel):
     id: str = Field(default_factory=lambda: _id("ins"))
+    project_id: str = ""
     text: str
     source_analysis_timestamp: str = ""
     dismissed: bool = False
@@ -129,9 +130,14 @@ class ClaudeNewProject(BaseModel):
     source_path: str
 
 
+class ClaudeInsight(BaseModel):
+    project_id: str = ""
+    text: str
+
+
 class ClaudeAnalysisResult(BaseModel):
     completed_todo_ids: List[str] = []
     new_todos: List[ClaudeNewTodo] = []
     project_summaries: Dict[str, str] = {}
     new_projects: List[ClaudeNewProject] = []
-    insights: List[str] = []
+    insights: List[ClaudeInsight] = []
