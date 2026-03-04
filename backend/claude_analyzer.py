@@ -28,6 +28,9 @@ CLAUDE_DIR = Path.home() / ".claude" / "projects"
 SESSION_MAX_AGE = timedelta(hours=24)
 # Max messages to extract per session for the prompt
 MAX_MESSAGES_PER_SESSION = 20
+# Exclude our own project from analysis (claude -p creates session files that
+# would otherwise trigger an infinite analysis loop)
+_SELF_PROJECT_DIRNAME = str(Path.cwd()).replace("/", "-")
 
 
 # ── Session discovery ──────────────────────────────────────────
@@ -50,7 +53,7 @@ def _latest_session_mtime() -> float:
     cutoff = datetime.now(timezone.utc) - SESSION_MAX_AGE
     latest = 0.0
     for proj_dir in CLAUDE_DIR.iterdir():
-        if not proj_dir.is_dir():
+        if not proj_dir.is_dir() or proj_dir.name == _SELF_PROJECT_DIRNAME:
             continue
         for jsonl_file in proj_dir.glob("*.jsonl"):
             mtime = jsonl_file.stat().st_mtime
@@ -72,7 +75,7 @@ def discover_sessions() -> list[dict]:
     sessions = []
 
     for proj_dir in CLAUDE_DIR.iterdir():
-        if not proj_dir.is_dir():
+        if not proj_dir.is_dir() or proj_dir.name == _SELF_PROJECT_DIRNAME:
             continue
         source_path = _decode_project_dir(proj_dir.name)
 
