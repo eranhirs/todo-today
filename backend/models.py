@@ -34,6 +34,7 @@ class Todo(BaseModel):
     text: str
     status: TodoStatus = "next"
     source: Literal["claude", "user"] = "user"
+    session_id: Optional[str] = None
     created_at: str = Field(default_factory=_now)
     completed_at: Optional[str] = None
 
@@ -148,6 +149,7 @@ class ClaudeNewTodo(BaseModel):
     project_id: str = ""
     text: str
     status: TodoStatus = "next"
+    session_id: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod

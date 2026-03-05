@@ -112,7 +112,9 @@ export function TodoItem({ todo, onRefresh }: Props) {
             ✓ {formatTime(todo.completed_at)}
           </span>
         )}
-        {todo.source === "claude" && <span className="badge badge-claude" title="Added by Claude">🤖</span>}
+        {todo.source === "claude" && (
+          <span className="badge badge-claude" title={todo.session_id ? `Session: ${todo.session_id}` : "Added by Claude"}>🤖</span>
+        )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>
     </div>

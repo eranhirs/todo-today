@@ -424,7 +424,7 @@ You are analyzing sessions for project "{project.name}" (ID: {project.id}).
 Based on the session activity above, return a JSON object with:
 1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed (backward compat shortcut — these get status set to "completed")
 2. `status_updates`: change the status of existing todos. Each has `id` and `status`. Valid statuses: "next", "in_progress", "completed", "consider", "waiting", "stale". Use this for any status transition (e.g. marking something in_progress, stale, etc.)
-3. `new_todos`: concrete actionable tasks. Each has `text` and `status` (one of: "next", "in_progress", "completed", "consider", "waiting", "stale"). All todos will be assigned to project {project.id} automatically — do NOT include a `project_id` field. There are two kinds:
+3. `new_todos`: concrete actionable tasks. Each has `text`, `status` (one of: "next", "in_progress", "completed", "consider", "waiting", "stale"), and an optional `session_id` (the session ID that prompted this todo — include it for "waiting" todos so we can link back to the source session). All todos will be assigned to project {project.id} automatically — do NOT include a `project_id` field. There are two kinds:
    - **Completed work** (`status: "completed"`): things the user accomplished in their sessions. These are important for tracking what was done, even though they're already finished. Examples: "Implemented dark mode", "Fixed login timeout bug", "Refactored API routes to use versioning"
    - **Next steps** (`status: "next"`): actionable tasks for future work
    - **Ideas** (`status: "consider"`): things worth evaluating but not yet committed to
@@ -437,7 +437,7 @@ Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
 - Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
 - Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
-- If a session's last message is from the assistant and it asks a question or requests user input (e.g. confirmation, a choice, clarification), create a `"waiting"` todo like "Respond to Claude: <brief description of what it's asking>". This helps the user remember they have sessions that need a reply.
+- Only create a `"waiting"` todo when a session's state is `waiting_for_user` — meaning Claude finished its turn (`end_turn`) and the last text asks the user a question or requests input. Use the format "Respond to Claude: <brief description of what it's asking>". Do NOT create waiting todos for `waiting_for_tool` (Claude requested a tool and is waiting for approval/execution) or `waiting_for_response` (a tool ran and Claude hasn't replied yet) — those are normal in-flight states, not places the user needs to act.
 - Don't duplicate existing todos or existing insights
 - `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
 - **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
@@ -449,62 +449,6 @@ First, write a brief analysis of what you observe in the sessions (2-4 sentences
 
 # ── Claude invocation ──────────────────────────────────────────
 
-
-def _build_prompt(sessions: list[dict], store_snapshot: dict) -> str:
-    """Build the analysis prompt for Claude."""
-    parts = ["You are analyzing Claude Code sessions to update a todo list.\n"]
-
-    # Current state
-    parts.append("## Current Projects and Todos\n")
-    parts.append(json.dumps(store_snapshot, indent=2))
-    parts.append("\n")
-
-    # Active insights (so Claude can avoid duplicating them)
-    insights_data = store_snapshot.get("insights", [])
-    if insights_data:
-        parts.append("## Active Insights\n")
-        parts.append(json.dumps(insights_data, indent=2))
-        parts.append("\n")
-
-    # Session summaries
-    parts.append("## Recent Session Activity\n")
-    for sess in sessions:
-        parts.append(f"### Project: {_extract_project_name(sess['source_path'])} ({sess['source_path']})")
-        parts.append(f"Session: {sess['session_id']}\n")
-        for msg in sess["messages"]:
-            parts.append(f"[{msg['role']}]: {msg['text'][:500]}\n")
-        state_info = sess.get("state_info")
-        if state_info:
-            parts.append(_format_session_state_line(state_info))
-        parts.append("")
-
-    parts.append("""## Instructions
-
-Based on the session activity above, return a JSON object with:
-1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed (backward compat shortcut — these get status set to "completed")
-2. `status_updates`: change the status of existing todos. Each has `id` and `status`. Valid statuses: "next", "in_progress", "completed", "consider", "waiting", "stale". Use this for any status transition (e.g. marking something in_progress, stale, etc.)
-3. `new_todos`: concrete actionable tasks. Each has `project_id`, `text`, and `status` (one of: "next", "in_progress", "completed", "consider", "waiting", "stale"). For new projects not yet tracked, use project_id "NEW:<source_path>". There are two kinds:
-   - **Completed work** (`status: "completed"`): things the user accomplished in their sessions. These are important for tracking what was done, even though they're already finished. Examples: "Implemented dark mode", "Fixed login timeout bug", "Refactored API routes to use versioning"
-   - **Next steps** (`status: "next"`): actionable tasks for future work
-   - **Ideas** (`status: "consider"`): things worth evaluating but not yet committed to
-   - Do NOT prefix todo text with "Next:", "Consider:", etc. — the `status` field handles this
-4. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
-5. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
-6. `insights`: critical observations that could change how the user works — NOT praise, NOT descriptions of what was done, NOT "nice pattern" commentary. Only flag problems, risks, or missed opportunities. Each has `project_id` (or "" for general) and `text`. Return an empty list unless you spot something genuinely wrong or risky. Max 1 item. Good examples: {"project_id": "proj_abc123", "text": "You've retried the same failing approach 3 times — step back and check the upstream dependency"}, {"project_id": "", "text": "Two projects have diverging copies of the auth module — consider extracting a shared lib"}. BAD examples (never do these): "Great use of X pattern", "The separation of Y is clean", "Good approach to Z"
-7. `modified_todos`: existing todos whose text, project assignment, or status should change. Each has `id` and optionally `text`, `project_id`, and/or `status`. Use sparingly — only when a todo is clearly outdated or mis-assigned.
-
-Important:
-- Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
-- Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
-- Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
-- If a session's last message is from the assistant and it asks a question or requests user input (e.g. confirmation, a choice, clarification), create a `"waiting"` todo like "Respond to Claude: <brief description of what it's asking>". This helps the user remember they have sessions that need a reply.
-- Don't duplicate existing todos or existing insights
-- `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
-- **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text, project, or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
-
-Return ONLY valid JSON, no markdown fences.""")
-
-    return "\n".join(parts)
 
 
 def _invoke_claude(prompt: str, model: str = "haiku") -> tuple["ClaudeAnalysisResult | None", dict]:
@@ -692,7 +636,7 @@ def _apply_result(
         if (project_id, text.lower()) in existing_texts:
             continue
 
-        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude")
+        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=nt.session_id)
         if nt.status == "completed":
             todo.completed_at = _now()
         ctx.store.todos.append(todo)

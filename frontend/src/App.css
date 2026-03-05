@@ -551,9 +551,51 @@ body {
   white-space: nowrap;
 }
 
+.session-changed-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 0.55rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
 .usage-totals {
   margin-top: 8px;
   font-size: 0.7rem;
   color: var(--text-dim);
   text-align: center;
+}
+
+/* Toast notifications */
+
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
+
+.toast {
+  padding: 12px 16px;
+  background: var(--claude-bg);
+  border-left: 3px solid var(--amber);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.85rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  animation: toast-in 0.3s ease-out;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
 }

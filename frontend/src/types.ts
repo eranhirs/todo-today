@@ -13,6 +13,7 @@ export interface Todo {
   text: string;
   status: TodoStatus;
   source: "claude" | "user";
+  session_id: string | null;
   created_at: string;
   completed_at: string | null;
 }
@@ -76,6 +77,7 @@ export interface SessionInfo {
   session_id: string;
   mtime: number;
   message_count: number;
+  last_analyzed_mtime: number | null;
 }
 
 export interface FullState {
