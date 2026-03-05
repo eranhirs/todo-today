@@ -1,4 +1,4 @@
-import type { FullState, Project, SessionInfo, Todo } from "./types";
+import type { FullState, Project, SessionInfo, Todo, TodoStatus } from "./types";
 
 const BASE = "/api";
 
@@ -30,7 +30,7 @@ export const api = {
       body: JSON.stringify({ project_id, text }),
     }),
 
-  updateTodo: (id: string, data: { text?: string; completed?: boolean }) =>
+  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user" }) =>
     request<Todo>(`/todos/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),

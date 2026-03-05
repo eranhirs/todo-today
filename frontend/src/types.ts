@@ -1,3 +1,5 @@
+export type TodoStatus = "next" | "in_progress" | "completed" | "consider" | "waiting" | "stale";
+
 export interface Project {
   id: string;
   name: string;
@@ -9,7 +11,7 @@ export interface Todo {
   id: string;
   project_id: string;
   text: string;
-  completed: boolean;
+  status: TodoStatus;
   source: "claude" | "user";
   created_at: string;
   completed_at: string | null;
@@ -46,6 +48,9 @@ export interface AnalysisEntry {
   new_project_names: string[];
   insights: string[];
   prompt_length: number;
+  prompt_text: string;
+  claude_response: string;
+  claude_reasoning: string;
 }
 
 export interface Metadata {

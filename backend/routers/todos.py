@@ -19,7 +19,9 @@ def list_todos(project_id: Optional[str] = None) -> list[Todo]:
 
 @router.post("", status_code=201)
 def create_todo(body: TodoCreate) -> Todo:
-    todo = Todo(project_id=body.project_id, text=body.text, source="user")
+    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user")
+    if todo.status == "completed":
+        todo.completed_at = _now()
     with StorageContext() as ctx:
         if not any(p.id == body.project_id for p in ctx.store.projects):
             raise HTTPException(404, "Project not found")
@@ -45,13 +47,15 @@ def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                     t.text = body.text
                 if body.project_id is not None:
                     t.project_id = body.project_id
-                if body.completed is not None:
-                    was = t.completed
-                    t.completed = body.completed
-                    if body.completed and not was:
+                if body.status is not None:
+                    was_completed = t.status == "completed"
+                    t.status = body.status
+                    if body.status == "completed" and not was_completed:
                         t.completed_at = _now()
-                    elif not body.completed:
+                    elif body.status != "completed" and was_completed:
                         t.completed_at = None
+                if body.source is not None:
+                    t.source = body.source
                 return t
     raise HTTPException(404, "Todo not found")
 

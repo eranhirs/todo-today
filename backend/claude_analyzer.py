@@ -15,6 +15,7 @@ from .models import (
     AnalysisEntry,
     ClaudeAnalysisResult,
     ClaudeNewTodo,
+    ClaudeTodoStatusUpdate,
     ClaudeTodoUpdate,
     Insight,
     Project,
@@ -112,12 +113,15 @@ def discover_sessions(max_age: timedelta | None = SESSION_MAX_AGE) -> list[dict]
 
             messages = _parse_session_messages(jsonl_file)
             if messages:
+                state_info = _detect_session_state(jsonl_file)
                 sessions.append({
                     "project_dir": proj_dir.name,
                     "source_path": source_path,
                     "session_id": jsonl_file.stem,
                     "mtime": stat_mtime,
                     "messages": messages,
+                    "state": state_info["state"],
+                    "state_info": state_info,
                 })
 
     log.info("Discovered %d active sessions across %d project dirs", len(sessions), len({s["project_dir"] for s in sessions}))
@@ -177,6 +181,106 @@ def _parse_session_messages(path: Path) -> list[dict]:
     return messages[-MAX_MESSAGES_PER_SESSION:]
 
 
+def _detect_session_state(path: Path) -> dict:
+    """Classify the current state of a session by inspecting the last few JSONL entries.
+
+    Returns {"state": str, "last_assistant_text": str | None}.
+    States: "ended", "waiting_for_user", "waiting_for_tool",
+            "waiting_for_response", "unknown".
+    """
+    # Read last ~5 user/assistant entries
+    tail_entries: list[dict] = []
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") in ("user", "assistant"):
+                    tail_entries.append(entry)
+                    if len(tail_entries) > 5:
+                        tail_entries.pop(0)
+    except Exception:
+        log.exception("Error reading session file for state detection: %s", path)
+        return {"state": "unknown", "last_assistant_text": None}
+
+    if not tail_entries:
+        return {"state": "unknown", "last_assistant_text": None}
+
+    last = tail_entries[-1]
+    last_type = last.get("type")
+    msg = last.get("message", {})
+    content = msg.get("content", [])
+    stop_reason = msg.get("stop_reason")
+
+    # Extract last text block from last assistant message (for context)
+    last_assistant_text = None
+    for entry in reversed(tail_entries):
+        if entry.get("type") == "assistant":
+            c = entry.get("message", {}).get("content", [])
+            if isinstance(c, list):
+                for block in reversed(c):
+                    if isinstance(block, dict) and block.get("type") == "text" and block.get("text", "").strip():
+                        last_assistant_text = block["text"].strip()[-200:]
+                        break
+            elif isinstance(c, str) and c.strip():
+                last_assistant_text = c.strip()[-200:]
+            if last_assistant_text:
+                break
+
+    if last_type == "assistant":
+        if stop_reason == "tool_use":
+            # Assistant requested a tool call, waiting for user to approve/execute
+            tool_name = None
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_name = block.get("name", "a tool")
+            detail = f"Claude wants to use {tool_name}" if tool_name else "Claude is waiting for tool approval"
+            return {"state": "waiting_for_tool", "last_assistant_text": last_assistant_text, "detail": detail}
+        if stop_reason == "end_turn":
+            # Check if the last text ends with a question mark
+            if last_assistant_text and last_assistant_text.rstrip().endswith("?"):
+                return {"state": "waiting_for_user", "last_assistant_text": last_assistant_text}
+            return {"state": "ended", "last_assistant_text": last_assistant_text}
+
+    if last_type == "user":
+        # Check if this is a tool_result (tool ran, Claude hasn't responded yet)
+        if isinstance(content, list):
+            has_tool_result = any(
+                isinstance(block, dict) and block.get("type") == "tool_result"
+                for block in content
+            )
+            if has_tool_result:
+                return {"state": "waiting_for_response", "last_assistant_text": last_assistant_text}
+
+    return {"state": "unknown", "last_assistant_text": last_assistant_text}
+
+
+def _format_session_state_line(state_info: dict) -> str:
+    """Format a session state dict into a line for the prompt."""
+    state = state_info["state"]
+    text = state_info.get("last_assistant_text")
+    detail = state_info.get("detail")
+
+    if state == "ended":
+        return "[Session state: ended]"
+    elif state == "waiting_for_user":
+        snippet = text[:100] if text else "?"
+        return f'[Session state: waiting_for_user — last assistant message: "{snippet}"]'
+    elif state == "waiting_for_tool":
+        ctx = detail or "Claude is waiting for tool approval"
+        return f"[Session state: waiting_for_tool — {ctx}]"
+    elif state == "waiting_for_response":
+        return "[Session state: waiting_for_response — a tool ran, waiting for Claude to continue]"
+    else:
+        return "[Session state: unknown]"
+
+
 def _session_key(sess: dict) -> str:
     """Return a unique key for a session: 'project_dir/session_id'."""
     return f"{sess['project_dir']}/{sess['session_id']}"
@@ -228,6 +332,7 @@ def list_all_sessions() -> list[dict]:
             except Exception:
                 pass
 
+            state_info = _detect_session_state(jsonl_file)
             sessions.append({
                 "key": f"{proj_dir.name}/{jsonl_file.stem}",
                 "project_dir": proj_dir.name,
@@ -236,10 +341,110 @@ def list_all_sessions() -> list[dict]:
                 "session_id": jsonl_file.stem,
                 "mtime": stat_mtime,
                 "message_count": msg_count,
+                "state": state_info["state"],
             })
 
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
     return sessions
+
+
+# ── Session → Project matching ─────────────────────────────────
+
+
+def _match_sessions_to_projects(
+    sessions: list[dict], ctx: "StorageContext"
+) -> dict[str, list[dict]]:
+    """Map sessions to project IDs by matching source_path.
+
+    Sessions whose source_path doesn't match any existing project cause a new
+    project to be auto-created.  Returns ``{project_id: [sessions...]}``.
+    """
+    # Build lookup: source_path → project_id
+    path_to_pid: dict[str, str] = {}
+    for p in ctx.store.projects:
+        if p.source_path:
+            path_to_pid[p.source_path] = p.id
+
+    result: dict[str, list[dict]] = {}
+    for sess in sessions:
+        sp = sess["source_path"]
+        pid = path_to_pid.get(sp)
+        if pid is None:
+            # Auto-create project
+            proj = Project(name=_extract_project_name(sp), source_path=sp)
+            ctx.store.projects.append(proj)
+            path_to_pid[sp] = proj.id
+            pid = proj.id
+            log.info("Auto-created project %s (%s) for unmatched session", proj.name, proj.id)
+        result.setdefault(pid, []).append(sess)
+    return result
+
+
+# ── Per-project prompt ─────────────────────────────────────────
+
+
+def _build_project_prompt(
+    project: "Project",
+    todos: list[dict],
+    insights: list[dict],
+    sessions: list[dict],
+) -> str:
+    """Build an analysis prompt scoped to a single project."""
+    parts = ["You are analyzing Claude Code sessions to update a todo list.\n"]
+
+    parts.append(f"## Project\n")
+    parts.append(f"ID: {project.id}")
+    parts.append(f"Name: {project.name}")
+    parts.append(f"Source: {project.source_path}\n")
+
+    if todos:
+        parts.append("## Current Todos for This Project\n")
+        parts.append(json.dumps(todos, indent=2))
+        parts.append("")
+
+    if insights:
+        parts.append("## Active Insights\n")
+        parts.append(json.dumps(insights, indent=2))
+        parts.append("")
+
+    parts.append("## Recent Session Activity\n")
+    for sess in sessions:
+        parts.append(f"### Session: {sess['session_id']}\n")
+        for msg in sess["messages"]:
+            parts.append(f"[{msg['role']}]: {msg['text'][:500]}\n")
+        state_info = sess.get("state_info")
+        if state_info:
+            parts.append(_format_session_state_line(state_info))
+        parts.append("")
+
+    parts.append(f"""## Instructions
+
+You are analyzing sessions for project "{project.name}" (ID: {project.id}).
+
+Based on the session activity above, return a JSON object with:
+1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed (backward compat shortcut — these get status set to "completed")
+2. `status_updates`: change the status of existing todos. Each has `id` and `status`. Valid statuses: "next", "in_progress", "completed", "consider", "waiting", "stale". Use this for any status transition (e.g. marking something in_progress, stale, etc.)
+3. `new_todos`: concrete actionable tasks. Each has `text` and `status` (one of: "next", "in_progress", "completed", "consider", "waiting", "stale"). All todos will be assigned to project {project.id} automatically — do NOT include a `project_id` field. There are two kinds:
+   - **Completed work** (`status: "completed"`): things the user accomplished in their sessions. These are important for tracking what was done, even though they're already finished. Examples: "Implemented dark mode", "Fixed login timeout bug", "Refactored API routes to use versioning"
+   - **Next steps** (`status: "next"`): actionable tasks for future work
+   - **Ideas** (`status: "consider"`): things worth evaluating but not yet committed to
+   - Do NOT prefix todo text with "Next:", "Consider:", etc. — the `status` field handles this
+4. `project_summaries`: a dict with a single entry: `{{"{project.id}": "1-2 sentence summary of current work"}}`
+5. `insights`: critical observations that could change how the user works — NOT praise, NOT descriptions of what was done, NOT "nice pattern" commentary. Only flag problems, risks, or missed opportunities. Each has `text` only. Return an empty list unless you spot something genuinely wrong or risky. Max 1 item.
+6. `modified_todos`: existing todos whose text or status should change. Each has `id` and optionally `text` and/or `status`. Use sparingly — only when a todo is clearly outdated.
+
+Important:
+- Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
+- Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
+- Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
+- If a session's last message is from the assistant and it asks a question or requests user input (e.g. confirmation, a choice, clarification), create a `"waiting"` todo like "Respond to Claude: <brief description of what it's asking>". This helps the user remember they have sessions that need a reply.
+- Don't duplicate existing todos or existing insights
+- `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
+- **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
+
+First, write a brief analysis of what you observe in the sessions (2-4 sentences). Then output the JSON inside a ```json fenced code block.""")
+
+    return "\n".join(parts)
 
 
 # ── Claude invocation ──────────────────────────────────────────
@@ -268,26 +473,34 @@ def _build_prompt(sessions: list[dict], store_snapshot: dict) -> str:
         parts.append(f"Session: {sess['session_id']}\n")
         for msg in sess["messages"]:
             parts.append(f"[{msg['role']}]: {msg['text'][:500]}\n")
+        state_info = sess.get("state_info")
+        if state_info:
+            parts.append(_format_session_state_line(state_info))
         parts.append("")
 
     parts.append("""## Instructions
 
 Based on the session activity above, return a JSON object with:
-1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed
-2. `new_todos`: concrete actionable tasks. Each has `project_id`, `text`, and `completed` (boolean). For new projects not yet tracked, use project_id "NEW:<source_path>". There are two kinds:
-   - **Completed work** (`completed: true`): things the user accomplished in their sessions. These are important for tracking what was done, even though they're already finished. Examples: "Implemented dark mode", "Fixed login timeout bug", "Refactored API routes to use versioning"
-   - **Next steps** (`completed: false`): actionable tasks for future work. Prefix with "Next: " or "Consider: "
-3. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
-4. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
-5. `insights`: critical observations that could change how the user works — NOT praise, NOT descriptions of what was done, NOT "nice pattern" commentary. Only flag problems, risks, or missed opportunities. Each has `project_id` (or "" for general) and `text`. Return an empty list unless you spot something genuinely wrong or risky. Max 1 item. Good examples: {"project_id": "proj_abc123", "text": "You've retried the same failing approach 3 times — step back and check the upstream dependency"}, {"project_id": "", "text": "Two projects have diverging copies of the auth module — consider extracting a shared lib"}. BAD examples (never do these): "Great use of X pattern", "The separation of Y is clean", "Good approach to Z"
-6. `modified_todos`: existing todos whose text or project assignment should change. Each has `id` and optionally `text` and/or `project_id`. Use sparingly — only when a todo is clearly outdated or mis-assigned.
+1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed (backward compat shortcut — these get status set to "completed")
+2. `status_updates`: change the status of existing todos. Each has `id` and `status`. Valid statuses: "next", "in_progress", "completed", "consider", "waiting", "stale". Use this for any status transition (e.g. marking something in_progress, stale, etc.)
+3. `new_todos`: concrete actionable tasks. Each has `project_id`, `text`, and `status` (one of: "next", "in_progress", "completed", "consider", "waiting", "stale"). For new projects not yet tracked, use project_id "NEW:<source_path>". There are two kinds:
+   - **Completed work** (`status: "completed"`): things the user accomplished in their sessions. These are important for tracking what was done, even though they're already finished. Examples: "Implemented dark mode", "Fixed login timeout bug", "Refactored API routes to use versioning"
+   - **Next steps** (`status: "next"`): actionable tasks for future work
+   - **Ideas** (`status: "consider"`): things worth evaluating but not yet committed to
+   - Do NOT prefix todo text with "Next:", "Consider:", etc. — the `status` field handles this
+4. `project_summaries`: a dict mapping project_id to a 1-2 sentence summary of current work
+5. `new_projects`: projects discovered in sessions but not yet in the project list. Each has `name` and `source_path`
+6. `insights`: critical observations that could change how the user works — NOT praise, NOT descriptions of what was done, NOT "nice pattern" commentary. Only flag problems, risks, or missed opportunities. Each has `project_id` (or "" for general) and `text`. Return an empty list unless you spot something genuinely wrong or risky. Max 1 item. Good examples: {"project_id": "proj_abc123", "text": "You've retried the same failing approach 3 times — step back and check the upstream dependency"}, {"project_id": "", "text": "Two projects have diverging copies of the auth module — consider extracting a shared lib"}. BAD examples (never do these): "Great use of X pattern", "The separation of Y is clean", "Good approach to Z"
+7. `modified_todos`: existing todos whose text, project assignment, or status should change. Each has `id` and optionally `text`, `project_id`, and/or `status`. Use sparingly — only when a todo is clearly outdated or mis-assigned.
 
 Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
-- Only mark existing todos as completed (via completed_todo_ids) if the session clearly shows the work is done
-- Keep todo text concise and actionable
+- Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
+- Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
+- If a session's last message is from the assistant and it asks a question or requests user input (e.g. confirmation, a choice, clarification), create a `"waiting"` todo like "Respond to Claude: <brief description of what it's asking>". This helps the user remember they have sessions that need a reply.
 - Don't duplicate existing todos or existing insights
 - `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
+- **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text, project, or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
 
 Return ONLY valid JSON, no markdown fences.""")
 
@@ -330,13 +543,23 @@ def _invoke_claude(prompt: str, model: str = "haiku") -> tuple["ClaudeAnalysisRe
         except json.JSONDecodeError:
             text = result.stdout
 
-        # Try to parse the actual analysis JSON from Claude's response
-        # Strip markdown fences if present
+        # Split reasoning from JSON.  The prompt asks Claude to write a brief
+        # analysis first, then output JSON in a ```json fenced block.
         text = text.strip()
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
+        fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", text, re.DOTALL)
+        if fence_match:
+            reasoning = text[: fence_match.start()].strip()
+            json_text = fence_match.group(1).strip()
+        else:
+            # Fallback: no fenced block, try to parse the whole thing as JSON
+            reasoning = ""
+            json_text = text
+            json_text = re.sub(r"^```(?:json)?\s*", "", json_text)
+            json_text = re.sub(r"\s*```$", "", json_text)
 
-        data = json.loads(text)
+        usage_info["claude_response"] = text
+        usage_info["claude_reasoning"] = reasoning
+        data = json.loads(json_text)
         return ClaudeAnalysisResult.model_validate(data), usage_info
 
     except subprocess.TimeoutExpired:
@@ -388,7 +611,153 @@ def _resolve_project_id(pid: str, projects: list["Project"]) -> str | None:
     return None
 
 
-# ── Apply results ──────────────────────────────────────────────
+# ── Apply results (per-project) ────────────────────────────────
+
+
+class _Counters:
+    """Mutable accumulator for per-project apply stats."""
+
+    def __init__(self) -> None:
+        self.todos_added = 0
+        self.todos_completed = 0
+        self.todos_modified = 0
+        self.added_active_texts: list[str] = []
+        self.added_completed_texts: list[str] = []
+        self.completed_todo_ids: list[str] = []
+        self.completed_todo_texts: list[str] = []
+        self.modified_todo_texts: list[str] = []
+        self.new_project_names: list[str] = []
+        self.insight_texts: list[str] = []
+
+
+def _apply_result(
+    ctx: "StorageContext",
+    result: "ClaudeAnalysisResult",
+    project_id: str,
+    counters: _Counters,
+) -> None:
+    """Apply a per-project Claude result to the store, scoped to *project_id*."""
+
+    project_todo_ids = {t.id for t in ctx.store.todos if t.project_id == project_id}
+
+    # Mark completed (backward compat: completed_todo_ids → status="completed")
+    for tid in result.completed_todo_ids:
+        if tid not in project_todo_ids:
+            log.warning("completed_todo_ids: todo %s not in project %s, skipping", tid, project_id)
+            continue
+        for t in ctx.store.todos:
+            if t.id == tid and t.status != "completed":
+                if t.source == "user":
+                    log.warning("completed_todo_ids: skipping user todo %s", tid)
+                    continue
+                t.status = "completed"
+                t.completed_at = _now()
+                counters.todos_completed += 1
+                counters.completed_todo_ids.append(tid)
+                counters.completed_todo_texts.append(t.text)
+
+    # Apply status_updates
+    todo_by_id = {t.id: t for t in ctx.store.todos}
+    for su in result.status_updates:
+        if su.id not in project_todo_ids:
+            log.warning("status_updates: todo %s not in project %s, skipping", su.id, project_id)
+            continue
+        t = todo_by_id.get(su.id)
+        if t is None:
+            log.warning("status_updates: unknown todo id=%s, skipping", su.id)
+            continue
+        if t.source == "user" and su.status != "stale":
+            log.warning("status_updates: skipping non-stale status %r for user todo %s", su.status, su.id)
+            continue
+        if t.status == su.status:
+            continue
+        was_completed = t.status == "completed"
+        t.status = su.status
+        if su.status == "completed" and not was_completed:
+            t.completed_at = _now()
+            counters.todos_completed += 1
+            counters.completed_todo_ids.append(su.id)
+            counters.completed_todo_texts.append(t.text)
+        elif su.status != "completed" and was_completed:
+            t.completed_at = None
+        counters.todos_modified += 1
+        counters.modified_todo_texts.append(t.text)
+
+    # Add new todos — project_id is set automatically
+    existing_texts = {(t.project_id, t.text.lower()) for t in ctx.store.todos}
+    for nt in result.new_todos:
+        # Strip leftover "Next:"/"Consider:" prefixes defensively
+        text = re.sub(r"^(Next|Consider|Waiting|Stale):\s*", "", nt.text, flags=re.IGNORECASE)
+
+        if (project_id, text.lower()) in existing_texts:
+            continue
+
+        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude")
+        if nt.status == "completed":
+            todo.completed_at = _now()
+        ctx.store.todos.append(todo)
+        existing_texts.add((project_id, text.lower()))
+        counters.todos_added += 1
+        if nt.status == "completed":
+            counters.added_completed_texts.append(text)
+        else:
+            counters.added_active_texts.append(text)
+
+    # Modify existing todos
+    for mod in result.modified_todos:
+        if mod.id not in project_todo_ids:
+            log.warning("modified_todos: todo %s not in project %s, skipping", mod.id, project_id)
+            continue
+        t = todo_by_id.get(mod.id)
+        if t is None:
+            log.warning("modified_todos: unknown todo id=%s, skipping", mod.id)
+            continue
+        if t.source == "user":
+            log.warning("modified_todos: skipping user todo %s", mod.id)
+            continue
+        changed = False
+        if mod.text is not None and mod.text != t.text:
+            t.text = mod.text
+            changed = True
+        if mod.project_id is not None and mod.project_id != t.project_id:
+            resolved = _resolve_project_id(mod.project_id, ctx.store.projects)
+            if resolved:
+                t.project_id = resolved
+                changed = True
+            else:
+                log.warning("modified_todos: unresolvable project_id=%r for todo %s", mod.project_id, mod.id)
+        if mod.status is not None and mod.status != t.status:
+            was_completed = t.status == "completed"
+            t.status = mod.status
+            if mod.status == "completed" and not was_completed:
+                t.completed_at = _now()
+            elif mod.status != "completed" and was_completed:
+                t.completed_at = None
+            changed = True
+        if changed:
+            counters.todos_modified += 1
+            counters.modified_todo_texts.append(t.text)
+
+    # Update summaries
+    for pid, summary in result.project_summaries.items():
+        # Resolve in case Claude used project name instead of ID
+        resolved = _resolve_project_id(pid, ctx.store.projects)
+        ctx.metadata.project_summaries[resolved or pid] = summary
+
+    # Persist new insights (dedup by project_id + text)
+    existing_keys = {(i.project_id, i.text.lower()) for i in ctx.metadata.insights}
+    for ci in result.insights:
+        # Per-project prompt doesn't ask for project_id in insights, so we set it
+        pid = project_id
+        if (pid, ci.text.lower()) not in existing_keys:
+            ctx.metadata.insights.append(
+                Insight(project_id=pid, text=ci.text, source_analysis_timestamp=_now())
+            )
+            existing_keys.add((pid, ci.text.lower()))
+            counters.insight_texts.append(ci.text)
+
+
+# ── Main analysis loop ─────────────────────────────────────────
 
 
 def run_analysis(
@@ -396,7 +765,7 @@ def run_analysis(
     model: str | None = None,
     session_keys: list[str] | None = None,
 ) -> AnalysisEntry | None:
-    """Full analysis cycle: discover sessions, invoke Claude, apply results.
+    """Full analysis cycle: discover sessions, invoke Claude per-project, apply results.
 
     Returns None if skipped (no changes since last run).
     Pass force=True to skip the staleness check (e.g. manual wake).
@@ -443,77 +812,23 @@ def run_analysis(
         _record_entry(entry)
         return entry
 
-    # Snapshot current state for the prompt
-    with StorageContext() as ctx:
-        store_snapshot = {
-            "projects": [p.model_dump() for p in ctx.store.projects],
-            "todos": [t.model_dump() for t in ctx.store.todos],
-            "insights": [
-                {"project_id": i.project_id, "text": i.text}
-                for i in ctx.metadata.insights if not i.dismissed
-            ],
-        }
-
-    prompt = _build_prompt(sessions, store_snapshot)
-    # Track session files before/after so we can exclude the one claude -p creates
-    before = _snapshot_self_sessions()
-    result, usage_info = _invoke_claude(prompt, model=model)
-    after = _snapshot_self_sessions()
-    _self_session_files.update(after - before)
-
-    if result is None:
-        error_msg = usage_info.get("error", "Claude analysis failed — see logs")
-        entry = AnalysisEntry(
-            duration_seconds=round(time.time() - start, 1),
-            sessions_analyzed=len(sessions),
-            summary="Claude analysis failed — see logs",
-            model=model,
-            error=error_msg,
-            prompt_length=len(prompt),
-            cost_usd=usage_info.get("cost_usd", 0.0),
-            input_tokens=usage_info.get("input_tokens", 0),
-            output_tokens=usage_info.get("output_tokens", 0),
-            cache_read_tokens=usage_info.get("cache_read_tokens", 0),
-        )
-        _record_entry(entry)
-        return entry
-
-    # Apply results
-    todos_added = 0
-    todos_completed = 0
-    todos_modified = 0
-    added_active_texts: list[str] = []
-    added_completed_texts: list[str] = []
-    completed_todo_ids: list[str] = []
-    completed_todo_texts: list[str] = []
-    modified_todo_texts: list[str] = []
-    new_project_names: list[str] = []
+    # ── Per-project analysis loop ──
+    counters = _Counters()
+    all_prompts: list[str] = []
+    all_responses: list[str] = []
+    all_reasoning: list[str] = []
+    total_cost = 0.0
+    total_input = 0
+    total_output = 0
+    total_cache_read = 0
+    errors: list[str] = []
+    projects_analyzed = 0
 
     with StorageContext() as ctx:
-        # Create new projects
-        new_proj_map: dict[str, str] = {}  # source_path -> project_id
-        for np in result.new_projects:
-            # Check if already exists
-            existing = next((p for p in ctx.store.projects if p.source_path == np.source_path), None)
-            if existing:
-                new_proj_map[np.source_path] = existing.id
-            else:
-                proj = Project(name=np.name, source_path=np.source_path)
-                ctx.store.projects.append(proj)
-                new_proj_map[np.source_path] = proj.id
-                new_project_names.append(np.name)
+        # Match sessions to projects (auto-creates missing projects)
+        proj_sessions = _match_sessions_to_projects(sessions, ctx)
 
-        # Mark completed
-        for tid in result.completed_todo_ids:
-            for t in ctx.store.todos:
-                if t.id == tid and not t.completed:
-                    t.completed = True
-                    t.completed_at = _now()
-                    todos_completed += 1
-                    completed_todo_ids.append(tid)
-                    completed_todo_texts.append(t.text)
-
-        # Repair orphaned todos (invalid project_id from prior analyses)
+        # Repair orphaned todos before analysis
         valid_ids = {p.id for p in ctx.store.projects}
         for t in ctx.store.todos:
             if t.project_id not in valid_ids:
@@ -524,108 +839,98 @@ def run_analysis(
                 else:
                     log.warning("Cannot resolve orphaned todo %s project_id=%r", t.id, t.project_id)
 
-        # Add new todos
-        existing_texts = {(t.project_id, t.text.lower()) for t in ctx.store.todos}
-        for nt in result.new_todos:
-            pid = nt.project_id
-            # Resolve "NEW:<path>" references
-            if pid.startswith("NEW:"):
-                path = pid[4:]
-                pid = new_proj_map.get(path, "")
-                if not pid:
-                    continue
+        # Build project lookup
+        proj_by_id = {p.id: p for p in ctx.store.projects}
 
-            # Resolve non-ID values (e.g. project names returned by Claude)
-            if not pid.startswith("proj_"):
-                resolved = _resolve_project_id(pid, ctx.store.projects)
-                if resolved:
-                    log.warning("Resolved project ref %r -> %s for new todo", pid, resolved)
-                    pid = resolved
-                else:
-                    log.warning("Skipping new todo with unresolvable project_id=%r: %s", pid, nt.text)
-                    continue
-
-            if (pid, nt.text.lower()) in existing_texts:
+        for pid, proj_sess in proj_sessions.items():
+            project = proj_by_id.get(pid)
+            if project is None:
+                log.warning("Project %s disappeared, skipping", pid)
                 continue
 
-            todo = Todo(project_id=pid, text=nt.text, source="claude")
-            if nt.completed:
-                todo.completed = True
-                todo.completed_at = _now()
-            ctx.store.todos.append(todo)
-            todos_added += 1
-            if nt.completed:
-                added_completed_texts.append(nt.text)
-            else:
-                added_active_texts.append(nt.text)
+            # Build per-project snapshot
+            proj_todos = [
+                t.model_dump() for t in ctx.store.todos if t.project_id == pid
+            ]
+            proj_insights = [
+                {"text": i.text}
+                for i in ctx.metadata.insights
+                if not i.dismissed and (i.project_id == pid or i.project_id == "")
+            ]
 
-        # Modify existing todos
-        todo_by_id = {t.id: t for t in ctx.store.todos}
-        for mod in result.modified_todos:
-            t = todo_by_id.get(mod.id)
-            if t is None:
-                log.warning("modified_todos: unknown todo id=%s, skipping", mod.id)
+            prompt = _build_project_prompt(project, proj_todos, proj_insights, proj_sess)
+            all_prompts.append(f"--- Project: {project.name} ({pid}) ---\n{prompt}")
+
+            # Track session files before/after to exclude self-sessions
+            before = _snapshot_self_sessions()
+            result, usage_info = _invoke_claude(prompt, model=model)
+            after = _snapshot_self_sessions()
+            _self_session_files.update(after - before)
+
+            total_cost += usage_info.get("cost_usd", 0.0)
+            total_input += usage_info.get("input_tokens", 0)
+            total_output += usage_info.get("output_tokens", 0)
+            total_cache_read += usage_info.get("cache_read_tokens", 0)
+
+            resp_text = usage_info.get("claude_response", "")
+            reasoning_text = usage_info.get("claude_reasoning", "")
+            all_responses.append(f"--- Project: {project.name} ({pid}) ---\n{resp_text}")
+            if reasoning_text:
+                all_reasoning.append(f"--- Project: {project.name} ({pid}) ---\n{reasoning_text}")
+
+            if result is None:
+                errors.append(f"{project.name}: {usage_info.get('error', 'unknown error')}")
+                log.error("Analysis failed for project %s: %s", project.name, usage_info.get("error"))
                 continue
-            changed = False
-            if mod.text is not None and mod.text != t.text:
-                t.text = mod.text
-                changed = True
-            if mod.project_id is not None and mod.project_id != t.project_id:
-                resolved = _resolve_project_id(mod.project_id, ctx.store.projects)
-                if resolved:
-                    t.project_id = resolved
-                    changed = True
-                else:
-                    log.warning("modified_todos: unresolvable project_id=%r for todo %s", mod.project_id, mod.id)
-            if changed:
-                todos_modified += 1
-                modified_todo_texts.append(t.text)
 
-        # Update summaries
-        for pid, summary in result.project_summaries.items():
-            ctx.metadata.project_summaries[pid] = summary
-
-        # Persist new insights (dedup by project_id + text)
-        existing_keys = {(i.project_id, i.text.lower()) for i in ctx.metadata.insights}
-        for ci in result.insights:
-            pid = ci.project_id
-            if pid and not pid.startswith("proj_"):
-                resolved = _resolve_project_id(pid, ctx.store.projects)
-                if resolved:
-                    pid = resolved
-                else:
-                    pid = ""
-            if (pid, ci.text.lower()) not in existing_keys:
-                ctx.metadata.insights.append(
-                    Insight(project_id=pid, text=ci.text, source_analysis_timestamp=_now())
-                )
-                existing_keys.add((pid, ci.text.lower()))
+            _apply_result(ctx, result, pid, counters)
+            projects_analyzed += 1
+            log.info(
+                "Project %s: +%d todos, %d completed",
+                project.name,
+                counters.todos_added,
+                counters.todos_completed,
+            )
 
     # Persist per-session mtimes for analyzed sessions
     with StorageContext() as ctx:
         for s in sessions:
             ctx.metadata.session_mtimes[_session_key(s)] = s["mtime"]
 
+    combined_prompt = "\n\n".join(all_prompts)
+    combined_response = "\n\n".join(all_responses)
+    combined_reasoning = "\n\n".join(all_reasoning)
+
+    summary_parts = [f"Analyzed {len(sessions)} sessions across {projects_analyzed} projects"]
+    summary_parts.append(f"+{counters.todos_added} todos, {counters.todos_completed} completed, {counters.todos_modified} modified")
+    if errors:
+        summary_parts.append(f"({len(errors)} project(s) failed)")
+    summary = ": ".join(summary_parts)
+
     entry = AnalysisEntry(
         duration_seconds=round(time.time() - start, 1),
         sessions_analyzed=len(sessions),
-        todos_added=todos_added,
-        todos_completed=todos_completed,
-        todos_modified=todos_modified,
-        summary=f"Analyzed {len(sessions)} sessions: +{todos_added} todos, {todos_completed} completed, {todos_modified} modified",
+        todos_added=counters.todos_added,
+        todos_completed=counters.todos_completed,
+        todos_modified=counters.todos_modified,
+        summary=summary,
         model=model,
-        cost_usd=usage_info.get("cost_usd", 0.0),
-        input_tokens=usage_info.get("input_tokens", 0),
-        output_tokens=usage_info.get("output_tokens", 0),
-        cache_read_tokens=usage_info.get("cache_read_tokens", 0),
-        completed_todo_ids=completed_todo_ids,
-        completed_todo_texts=completed_todo_texts,
-        added_todos_active=added_active_texts,
-        added_todos_completed=added_completed_texts,
-        modified_todos=modified_todo_texts,
-        new_project_names=new_project_names,
-        insights=[ci.text for ci in result.insights],
-        prompt_length=len(prompt),
+        error="; ".join(errors) if errors else None,
+        cost_usd=total_cost,
+        input_tokens=total_input,
+        output_tokens=total_output,
+        cache_read_tokens=total_cache_read,
+        completed_todo_ids=counters.completed_todo_ids,
+        completed_todo_texts=counters.completed_todo_texts,
+        added_todos_active=counters.added_active_texts,
+        added_todos_completed=counters.added_completed_texts,
+        modified_todos=counters.modified_todo_texts,
+        new_project_names=counters.new_project_names,
+        insights=counters.insight_texts,
+        prompt_length=len(combined_prompt),
+        prompt_text=combined_prompt,
+        claude_response=combined_response,
+        claude_reasoning=combined_reasoning,
     )
     _record_entry(entry)
     return entry

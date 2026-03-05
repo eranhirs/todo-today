@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _id(prefix: str) -> str:
@@ -13,6 +13,9 @@ def _id(prefix: str) -> str:
 
 def _now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+
+TodoStatus = Literal["next", "in_progress", "completed", "consider", "waiting", "stale"]
 
 
 # ── Stored models ──────────────────────────────────────────────
@@ -29,10 +32,20 @@ class Todo(BaseModel):
     id: str = Field(default_factory=lambda: _id("todo"))
     project_id: str
     text: str
-    completed: bool = False
+    status: TodoStatus = "next"
     source: Literal["claude", "user"] = "user"
     created_at: str = Field(default_factory=_now)
     completed_at: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_completed(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "status" not in data:
+            completed = data.pop("completed", False)
+            data["status"] = "completed" if completed else "next"
+        elif isinstance(data, dict) and "completed" in data:
+            data.pop("completed", None)
+        return data
 
 
 class TodoStore(BaseModel):
@@ -74,6 +87,9 @@ class AnalysisEntry(BaseModel):
     new_project_names: List[str] = []
     insights: List[str] = []
     prompt_length: int = 0
+    prompt_text: str = ""
+    claude_response: str = ""
+    claude_reasoning: str = ""
 
 
 class Metadata(BaseModel):
@@ -109,12 +125,14 @@ class ProjectUpdate(BaseModel):
 class TodoCreate(BaseModel):
     project_id: str
     text: str
+    status: TodoStatus = "next"
 
 
 class TodoUpdate(BaseModel):
     text: Optional[str] = None
-    completed: Optional[bool] = None
+    status: Optional[TodoStatus] = None
     project_id: Optional[str] = None
+    source: Optional[Literal["claude", "user"]] = None
 
 
 class FullState(BaseModel):
@@ -127,9 +145,20 @@ class FullState(BaseModel):
 
 
 class ClaudeNewTodo(BaseModel):
-    project_id: str
+    project_id: str = ""
     text: str
-    completed: bool = False
+    status: TodoStatus = "next"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_completed(cls, data: Any) -> Any:
+        """Accept old `completed: bool` from Claude responses for backward compat."""
+        if isinstance(data, dict) and "status" not in data:
+            completed = data.pop("completed", False)
+            data["status"] = "completed" if completed else "next"
+        elif isinstance(data, dict) and "completed" in data:
+            data.pop("completed", None)
+        return data
 
 
 class ClaudeNewProject(BaseModel):
@@ -142,14 +171,21 @@ class ClaudeInsight(BaseModel):
     text: str
 
 
+class ClaudeTodoStatusUpdate(BaseModel):
+    id: str
+    status: TodoStatus
+
+
 class ClaudeTodoUpdate(BaseModel):
     id: str
     text: Optional[str] = None
     project_id: Optional[str] = None
+    status: Optional[TodoStatus] = None
 
 
 class ClaudeAnalysisResult(BaseModel):
     completed_todo_ids: List[str] = []
+    status_updates: List[ClaudeTodoStatusUpdate] = []
     new_todos: List[ClaudeNewTodo] = []
     modified_todos: List[ClaudeTodoUpdate] = []
     project_summaries: Dict[str, str] = {}

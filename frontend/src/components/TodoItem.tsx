@@ -1,10 +1,20 @@
-import type { Todo } from "../types";
+import { useState, useRef, useEffect } from "react";
+import type { Todo, TodoStatus } from "../types";
 import { api } from "../api";
 
 interface Props {
   todo: Todo;
   onRefresh: () => void;
 }
+
+const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
+  { value: "next", label: "Up Next", icon: "→" },
+  { value: "in_progress", label: "In Progress", icon: "●" },
+  { value: "completed", label: "Completed", icon: "✓" },
+  { value: "consider", label: "Consider", icon: "?" },
+  { value: "waiting", label: "Waiting", icon: "⏸" },
+  { value: "stale", label: "Stale", icon: "✗" },
+];
 
 function formatTime(iso: string): string {
   const d = new Date(iso);
@@ -17,8 +27,19 @@ function formatDate(iso: string): string {
 }
 
 export function TodoItem({ todo, onRefresh }: Props) {
-  const toggle = async () => {
-    await api.updateTodo(todo.id, { completed: !todo.completed });
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState(todo.text);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) {
+      inputRef.current.focus();
+      inputRef.current.select();
+    }
+  }, [editing]);
+
+  const changeStatus = async (newStatus: TodoStatus) => {
+    await api.updateTodo(todo.id, { status: newStatus });
     onRefresh();
   };
 
@@ -27,17 +48,66 @@ export function TodoItem({ todo, onRefresh }: Props) {
     onRefresh();
   };
 
+  const startEdit = () => {
+    setEditText(todo.text);
+    setEditing(true);
+  };
+
+  const saveEdit = async () => {
+    const trimmed = editText.trim();
+    if (trimmed && trimmed !== todo.text) {
+      await api.updateTodo(todo.id, { text: trimmed, source: "user" });
+      onRefresh();
+    }
+    setEditing(false);
+  };
+
+  const cancelEdit = () => {
+    setEditText(todo.text);
+    setEditing(false);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveEdit();
+    } else if (e.key === "Escape") {
+      cancelEdit();
+    }
+  };
+
   return (
-    <div className={`todo-item ${todo.completed ? "completed" : ""} source-${todo.source}`}>
-      <label className="todo-check">
-        <input type="checkbox" checked={todo.completed} onChange={toggle} />
-        <span className="todo-text">{todo.text}</span>
-      </label>
+    <div className={`todo-item status-${todo.status} source-${todo.source}`}>
+      <div className="todo-content">
+        <select
+          className="status-select"
+          value={todo.status}
+          onChange={(e) => changeStatus(e.target.value as TodoStatus)}
+        >
+          {STATUS_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.icon} {opt.label}
+            </option>
+          ))}
+        </select>
+        {editing ? (
+          <input
+            ref={inputRef}
+            className="todo-text-input"
+            value={editText}
+            onChange={(e) => setEditText(e.target.value)}
+            onBlur={saveEdit}
+            onKeyDown={handleKeyDown}
+          />
+        ) : (
+          <span className="todo-text" onDoubleClick={startEdit}>{todo.text}</span>
+        )}
+      </div>
       <div className="todo-meta">
         <span className="todo-timestamp" title={todo.created_at}>
           {formatDate(todo.created_at)} {formatTime(todo.created_at)}
         </span>
-        {todo.completed && todo.completed_at && (
+        {todo.status === "completed" && todo.completed_at && (
           <span className="todo-timestamp todo-completed-at" title={`Completed: ${todo.completed_at}`}>
             ✓ {formatTime(todo.completed_at)}
           </span>

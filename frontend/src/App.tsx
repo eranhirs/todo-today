@@ -11,7 +11,21 @@ const POLL_INTERVAL = 10_000;
 
 function App() {
   const [state, setState] = useState<FullState | null>(null);
-  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [selectedProject, setSelectedProject] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("project");
+  });
+
+  const selectProject = useCallback((id: string | null) => {
+    setSelectedProject(id);
+    const url = new URL(window.location.href);
+    if (id) {
+      url.searchParams.set("project", id);
+    } else {
+      url.searchParams.delete("project");
+    }
+    window.history.replaceState({}, "", url.toString());
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -38,7 +52,7 @@ function App() {
         <ProjectList
           projects={state.projects}
           selectedId={selectedProject}
-          onSelect={setSelectedProject}
+          onSelect={selectProject}
           onRefresh={refresh}
         />
         <UpdateHistory history={state.metadata.history} />

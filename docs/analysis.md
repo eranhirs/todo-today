@@ -8,19 +8,48 @@
    - When `force=True`, both checks are bypassed.
 2. **Session Discovery** — scans `~/.claude/projects/` for JSONL session files modified in the last 24 hours (configurable via `max_age` param; `None` = no cutoff). Self-generated sessions (from `claude -p` subprocess calls) are excluded.
 3. **Message Extraction** — reads the last 20 user/assistant messages from each session (truncated to 2000 chars each)
-4. **Prompt Building** — builds a **single prompt** containing:
-   - Current todos and projects (JSON snapshot)
-   - Active insights (to avoid duplicates)
-   - All recent session transcripts (all sessions combined)
-5. **Claude Invocation** — makes **one** `claude -p --output-format json --model <model>` call with the combined prompt
-6. **Result Parsing** — extracts JSON response with: `completed_todo_ids`, `new_todos` (with `completed` flag), `modified_todos`, `project_summaries`, `new_projects`, `insights`
-7. **Apply Changes** — atomically updates the store:
-   - Mark existing todos complete (via `completed_todo_ids`)
-   - Add new active todos (`completed: false`) and completed-work records (`completed: true`)
-   - Create new projects, update summaries
-   - Persist new insights (deduped by project + text)
-   - Repair orphaned todos with invalid project IDs
-8. **Record Metadata** — saves analysis entry with duration, cost, token counts, and categorized change lists
+4. **Session → Project Matching** (`_match_sessions_to_projects`):
+   - Each session's `source_path` is matched against `Project.source_path` in the store
+   - Unmatched sessions trigger auto-creation of a new project (name derived from the directory basename)
+   - Returns `{project_id: [sessions...]}` grouping
+5. **Per-Project Prompt** (`_build_project_prompt`) — for each project with changed sessions, builds a scoped prompt containing:
+   - Only that project's existing todos
+   - Active insights (project-specific + general)
+   - Only that project's session transcripts
+   - Simplified instructions: `project_id` is fixed (no `new_projects` needed), todos are auto-assigned
+6. **Sequential Claude Calls** — one `claude -p --output-format json --model <model>` call per project. Each call is cheap because the prompt only contains one project's context.
+7. **Per-Project Apply** (`_apply_result`) — for each successful response, applies changes scoped to the target project:
+   - Mark existing todos complete (via `completed_todo_ids` backward compat)
+   - Apply status transitions (via `status_updates`) — scoped to project's todos only
+   - Add new todos with the project_id set automatically
+   - Update project summary, persist new insights
+   - Repair orphaned todos with invalid project IDs (done once before the loop)
+8. **Aggregate Entry** — a single `AnalysisEntry` is recorded per `run_analysis` call, summing metrics from all per-project calls. Prompts/responses are concatenated (delimited by project headers) for debugging via "Copy Prompt"/"Copy Response".
+
+## Todo Statuses
+
+Each todo has a `status` field (replaces the old `completed` boolean):
+
+| Status | Meaning | UI Section | Icon |
+|---|---|---|---|
+| `next` | Actionable upcoming task | Up Next | → |
+| `in_progress` | Actively being worked on | Up Next (sorted first) | ● |
+| `completed` | Done | Completed | ✓ |
+| `consider` | Idea worth evaluating | Backlog | ? |
+| `waiting` | Blocked / needs user input | Backlog (sorted first) | ⏸ |
+| `stale` | Possibly no longer relevant | Backlog | ✗ |
+
+### Migration
+
+Old data with `completed: bool` is auto-migrated via Pydantic `model_validator(mode="before")`:
+- If `status` absent: `completed=true` → `"completed"`, else → `"next"`
+- The `completed` field is dropped from data on load
+
+### Claude Prompt (Per-Project)
+
+Each project gets its own Claude call. The prompt tells Claude the fixed `project_id`, so `new_todos` don't need a `project_id` field — it's set automatically by `_apply_result`. Claude can still return `status_updates` and `completed_todo_ids` (backward compat), but these are scoped: IDs not belonging to the target project are rejected as a safety guard.
+
+Leftover "Next:"/"Consider:" prefixes in todo text are stripped defensively.
 
 ## Analysis Entry Fields
 
@@ -40,7 +69,7 @@ Each analysis records:
 - `completed_todo_texts` — readable text of those same todos (so history is human-readable)
 - `added_todos_active` — text of new next-step todos (not yet done)
 - `added_todos_completed` — text of new completed-work records (things already accomplished)
-- `modified_todos` — text of existing todos whose text or project was updated
+- `modified_todos` — text of existing todos whose text, project, or status was updated
 - `new_project_names` — names of newly discovered projects
 - `insights` — meta-level observations about workflow or patterns
 
@@ -71,12 +100,44 @@ If none match, the todo is skipped and a warning is logged.
 
 On each analysis run, existing todos with invalid `project_id` values are also repaired using the same resolution logic.
 
+## Session End-State Detection
+
+`_detect_session_state(path)` reads the last few entries of a session JSONL file and classifies how the session ended:
+
+| State | Meaning | Trigger |
+|---|---|---|
+| `ended` | Normal completion | Assistant `end_turn` with text (not a question) |
+| `waiting_for_user` | Needs user reply | Assistant `end_turn` with text ending in `?` |
+| `waiting_for_tool` | Awaiting tool approval | Last entry is assistant with `stop_reason=tool_use` |
+| `waiting_for_response` | Tool ran, awaiting Claude | Last entry is user `tool_result` |
+| `unknown` | Other | File-history-snapshot, progress entries, etc. |
+
+The state (plus a `last_assistant_text` snippet) is:
+- Included in `discover_sessions()` results as `state` and `state_info` fields
+- Included in `list_all_sessions()` results as a `state` field
+- Appended after each session's messages in the analysis prompt, e.g.:
+  `[Session state: waiting_for_user — last assistant message: "Do you want me to proceed?"]`
+
+This gives Claude the context needed to create "waiting" todos for sessions that need user input, without passing full tool_use/tool_result content blocks.
+
 ## Session Picker & Targeted Analysis
 
 - `GET /api/claude/sessions` returns lightweight metadata for **all** sessions (no age cutoff): `{key, project_dir, source_path, project_name, session_id, mtime, message_count}`
 - The frontend ClaudeStatus component has a "Sessions" button that opens an inline picker showing all sessions grouped by project
 - Users can multi-select sessions and click "Analyze Selected" to analyze only those sessions
 - When `session_keys` is passed to `POST /api/claude/wake`, only those sessions are discovered (no age cutoff) and analyzed, bypassing staleness checks
+
+## User Todo Protection
+
+Todos with `source="user"` are protected from Claude agent modifications. This is enforced at two levels:
+
+1. **Prompt**: Claude is instructed that user-created todos are protected and the only allowed action is setting status to `"stale"` via `status_updates`.
+2. **Code guards** in `apply_changes` (3 locations):
+   - `completed_todo_ids`: skips user todos
+   - `status_updates`: only allows `status="stale"` for user todos, all other status changes are rejected
+   - `modified_todos`: skips user todos entirely (no text/project/status changes)
+
+When a user edits a Claude-created todo in the frontend (double-click to edit), the todo's `source` is changed from `"claude"` to `"user"`, activating this protection.
 
 ## Triggers
 

@@ -11,6 +11,8 @@
   --red: #e17055;
   --claude: #d4a574;
   --claude-bg: #2a2218;
+  --blue: #74b9ff;
+  --amber: #fdcb6e;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -241,29 +243,52 @@ body {
   transition: background 0.15s;
 }
 .todo-item:hover { background: var(--card-bg); }
-.todo-item.completed { opacity: 0.85; }
+.todo-item.status-completed { opacity: 0.85; }
 
-.todo-item.source-claude {
-  border-left: 3px solid var(--claude);
-  background: var(--claude-bg);
-}
+/* Status border-left colors */
+.todo-item.status-next { border-left: 3px solid var(--text-dim); }
+.todo-item.status-in_progress { border-left: 3px solid var(--blue); }
+.todo-item.status-completed { border-left: 3px solid var(--green); }
+.todo-item.status-consider { border-left: 3px solid var(--text-dim); opacity: 0.8; }
+.todo-item.status-waiting { border-left: 3px solid var(--amber); }
+.todo-item.status-stale { border-left: 3px solid var(--red); opacity: 0.7; }
 
-.todo-check {
+
+.todo-content {
   display: flex;
   align-items: center;
   gap: 10px;
-  cursor: pointer;
   flex: 1;
 }
 
-.todo-check input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
+.status-select {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.7rem;
   cursor: pointer;
+  outline: none;
+  flex-shrink: 0;
 }
+.status-select:hover { border-color: var(--accent); color: var(--text); }
+.status-select:focus { border-color: var(--accent); }
 
-.todo-text { font-size: 0.95rem; }
+.todo-text { font-size: 0.95rem; cursor: text; }
+
+.todo-text-input {
+  font-size: 0.95rem;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 2px 6px;
+  outline: none;
+  flex: 1;
+  min-width: 0;
+}
 
 .todo-meta {
   display: flex;

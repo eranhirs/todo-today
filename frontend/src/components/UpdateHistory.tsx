@@ -10,9 +10,25 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function EntryDetail({ entry }: { entry: AnalysisEntry }) {
-  const [showRaw, setShowRaw] = useState(false);
+function CopyButton({ label, text }: { label: string; text: string }) {
+  const [copied, setCopied] = useState(false);
 
+  const copy = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <button className="btn-link" style={{ fontSize: "0.65rem" }} onClick={copy}>
+      {copied ? "Copied!" : label}
+    </button>
+  );
+}
+
+function EntryDetail({ entry }: { entry: AnalysisEntry }) {
   return (
     <div className="history-detail">
       <div className="history-detail-row">
@@ -59,16 +75,21 @@ function EntryDetail({ entry }: { entry: AnalysisEntry }) {
           <ul>{entry.insights.map((s, i) => <li key={i}>{s}</li>)}</ul>
         </div>
       )}
-      <button
-        className="btn-link"
-        style={{ marginTop: 6, fontSize: "0.65rem" }}
-        onClick={(e) => { e.stopPropagation(); setShowRaw(!showRaw); }}
-      >
-        {showRaw ? "Hide" : "Show"} Raw JSON
-      </button>
-      {showRaw && (
-        <pre className="history-raw-json">{JSON.stringify(entry, null, 2)}</pre>
-      )}
+      <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
+        {entry.prompt_text && (
+          <CopyButton label="Copy Prompt" text={entry.prompt_text} />
+        )}
+        {entry.claude_reasoning && (
+          <CopyButton label="Copy Reasoning" text={entry.claude_reasoning} />
+        )}
+        {entry.claude_response && (
+          <CopyButton label="Copy Response" text={entry.claude_response} />
+        )}
+        <CopyButton
+          label="Copy Raw JSON"
+          text={JSON.stringify({ ...entry, prompt_text: `(${entry.prompt_text?.length ?? 0} chars)`, claude_response: `(${entry.claude_response?.length ?? 0} chars)`, claude_reasoning: `(${entry.claude_reasoning?.length ?? 0} chars)` }, null, 2)}
+        />
+      </div>
     </div>
   );
 }
