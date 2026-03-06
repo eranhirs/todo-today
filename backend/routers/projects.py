@@ -8,7 +8,7 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 @router.get("")
 def list_projects() -> list[Project]:
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         return ctx.store.projects
 
 
@@ -22,7 +22,7 @@ def create_project(body: ProjectCreate) -> Project:
 
 @router.get("/{project_id}")
 def get_project(project_id: str) -> Project:
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         for p in ctx.store.projects:
             if p.id == project_id:
                 return p

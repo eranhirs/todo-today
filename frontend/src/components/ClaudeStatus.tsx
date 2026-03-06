@@ -49,8 +49,8 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
         force || undefined,
         sessionKeys,
       );
-      if (res.status === "skipped") {
-        setWakeMessage(res.message ?? "No changes since last analysis");
+      if (res.status === "skipped" || res.status === "busy") {
+        setWakeMessage(res.message ?? (res.status === "busy" ? "Analysis already in progress" : "No changes since last analysis"));
       } else {
         setWakeMessage(null);
       }

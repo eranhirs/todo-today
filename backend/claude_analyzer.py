@@ -36,7 +36,7 @@ MAX_MESSAGES_PER_SESSION = 20
 
 def _load_analysis_session_ids() -> set[str]:
     """Load persisted analysis session IDs from metadata."""
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         return set(ctx.metadata.analysis_session_ids)
 
 
@@ -49,8 +49,41 @@ def _is_analysis_session(session_id: str, analysis_ids: set[str]) -> bool:
 
 
 def _decode_project_dir(dirname: str) -> str:
-    """Convert e.g. '-Users-jane-git-myproject' back to '/Users/jane/git/myproject'."""
-    # The encoding replaces '/' with '-', so the leading '-' is the root '/'
+    """Convert e.g. '-home-user-git-my-project' back to '/home/user/git/my-project'.
+
+    The encoding replaces '/' with '-', making it ambiguous with literal dashes
+    in directory names.  We resolve this by trying all possible splits and
+    picking the path that actually exists on disk.  Falls back to naive
+    replacement if no path exists (e.g. deleted project).
+    """
+    # Strip leading '-' which represents root '/'
+    parts = dirname[1:].split("-")
+    if not parts:
+        return "/" + dirname[1:]
+
+    # DFS: greedily join segments with '-' when the resulting path exists
+    def _resolve(idx: int, prefix: str) -> str | None:
+        if idx == len(parts):
+            return prefix
+        # Try joining progressively more segments with '-' (longer names first)
+        for end in range(len(parts), idx, -1):
+            segment = "-".join(parts[idx:end])
+            candidate = prefix + "/" + segment
+            # If this is a full path (end == len(parts)), accept it
+            if end == len(parts):
+                if Path(candidate).exists():
+                    return candidate
+            # If this is an intermediate directory, it must exist to continue
+            elif Path(candidate).is_dir():
+                result = _resolve(end, candidate)
+                if result is not None:
+                    return result
+        return None
+
+    resolved = _resolve(0, "")
+    if resolved:
+        return resolved
+    # Fallback: naive replacement (may be wrong for paths with dashes)
     return "/" + dirname[1:].replace("-", "/")
 
 
@@ -464,9 +497,18 @@ def _build_project_prompt(
     parts.append(f"Name: {project.name}")
     parts.append(f"Source: {project.source_path}\n")
 
-    if todos:
+    # Only show todos relevant to the sessions being analyzed (or unlinked todos).
+    # This prevents Claude from seeing todos for *other* sessions and creating
+    # duplicates with slightly different wording.
+    active_session_ids = {s["session_id"] for s in sessions}
+    relevant_todos = [
+        t for t in todos
+        if not t.get("session_id") or t["session_id"] in active_session_ids
+    ]
+
+    if relevant_todos:
         parts.append("## Current Todos for This Project\n")
-        parts.append(json.dumps(todos, indent=2))
+        parts.append(json.dumps(relevant_todos, indent=2))
         parts.append("")
 
     if insights:
@@ -498,7 +540,8 @@ Based on the session activity above, return a JSON object with:
    - Do NOT prefix todo text with "Next:", "Consider:", etc. — the `status` field handles this
 4. `project_summaries`: a dict with a single entry: `{{"{project.id}": "1-2 sentence summary of current work"}}`
 5. `insights`: critical observations that could change how the user works — NOT praise, NOT descriptions of what was done, NOT "nice pattern" commentary. Only flag problems, risks, or missed opportunities. Each has `text` only. Return an empty list unless you spot something genuinely wrong or risky. Max 1 item.
-6. `modified_todos`: existing todos whose text or status should change. Each has `id` and optionally `text` and/or `status`. Use sparingly — only when a todo is clearly outdated.
+6. `modified_todos`: existing todos whose text or status should change. Each has `id` and optionally `text` and/or `status`. **Use this actively** — when a session progresses past what an existing todo describes, update or mark it stale rather than creating a new todo with slightly different wording.
+7. `dismiss_insight_ids`: IDs of existing insights (from the Active Insights section above) that are no longer relevant — e.g. the issue was resolved, the risk no longer applies, or the insight is outdated given recent session activity. Only dismiss insights you're confident are stale.
 
 Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
@@ -506,6 +549,8 @@ Important:
 - Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
 - Only create a `"waiting"` todo when a session needs user action: `waiting_for_user` (Claude asked a question) or `waiting_for_tool_approval` (Claude wants to run a tool and needs approval). Use the format "Respond to Claude: <brief description of what it's asking or wants to do>". Do NOT create waiting todos for `active` sessions (a tool ran and Claude is continuing) — those don't need user action.
 - Don't duplicate existing todos or existing insights
+- **Supersession rule**: Before creating a `new_todo`, scan the existing todos list for any todo covering the same work (same session, same topic). If one exists: use `modified_todos` to update its text/status instead of creating a new one. If the old todo is now irrelevant (work completed or moved past it), use `status_updates` to mark it "stale" or "completed". Never leave multiple active todos for the same piece of work.
+- **"Waiting" cleanup**: If a session's state has moved past `waiting_for_tool_approval` or `waiting_for_user`, mark any existing "waiting" todo for that session as "stale" via `status_updates`.
 - `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
 - **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
 
@@ -525,7 +570,7 @@ def _invoke_claude(prompt: str, model: str = "haiku") -> tuple["ClaudeAnalysisRe
     The session ID is included in usage_info["session_id"] for exclusion tracking.
     """
     usage_info: dict = {}
-    session_id = _uuid.uuid4().hex
+    session_id = str(_uuid.uuid4())
     usage_info["session_id"] = session_id
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -662,6 +707,7 @@ def _apply_result(
                 _actionable_sessions.add(s["session_id"])
 
     project_todo_ids = {t.id for t in ctx.store.todos if t.project_id == project_id}
+    stale_remove_ids: set[str] = set()  # non-user todos to auto-delete when marked stale
 
     # Mark completed (backward compat: completed_todo_ids → status="completed")
     for tid in result.completed_todo_ids:
@@ -705,6 +751,9 @@ def _apply_result(
             t.completed_at = None
         counters.todos_modified += 1
         counters.modified_todo_texts.append(t.text)
+        # Auto-remove non-user todos marked stale
+        if su.status == "stale" and t.source != "user":
+            stale_remove_ids.add(su.id)
 
     # Add new todos — project_id is set automatically
     existing_texts = {(t.project_id, t.text.lower()) for t in ctx.store.todos}
@@ -765,12 +814,31 @@ def _apply_result(
         if changed:
             counters.todos_modified += 1
             counters.modified_todo_texts.append(t.text)
+        # Auto-remove non-user todos marked stale
+        if mod.status == "stale" and t.source != "user":
+            stale_remove_ids.add(mod.id)
 
     # Update summaries
     for pid, summary in result.project_summaries.items():
         # Resolve in case Claude used project name instead of ID
         resolved = _resolve_project_id(pid, ctx.store.projects)
         ctx.metadata.project_summaries[resolved or pid] = summary
+
+    # Auto-remove non-user todos that were marked stale
+    if stale_remove_ids:
+        before = len(ctx.store.todos)
+        ctx.store.todos = [t for t in ctx.store.todos if t.id not in stale_remove_ids]
+        removed = before - len(ctx.store.todos)
+        if removed:
+            log.info("Auto-removed %d stale non-user todo(s)", removed)
+
+    # Dismiss stale insights
+    if result.dismiss_insight_ids:
+        dismiss_set = set(result.dismiss_insight_ids)
+        for i in ctx.metadata.insights:
+            if i.id in dismiss_set and not i.dismissed:
+                i.dismissed = True
+                log.info("Auto-dismissed insight %s: %s", i.id, i.text[:80])
 
     # Persist new insights (dedup by project_id + text)
     existing_keys = {(i.project_id, i.text.lower()) for i in ctx.metadata.insights}
@@ -804,7 +872,7 @@ def run_analysis(
 
     # Resolve model
     if model is None:
-        with StorageContext() as ctx:
+        with StorageContext(read_only=True) as ctx:
             model = ctx.metadata.analysis_model
 
     # When specific sessions are requested, discover all and filter to those keys
@@ -816,7 +884,7 @@ def run_analysis(
         # Check if anything changed since last analysis (coarse check)
         if not force:
             latest_mtime = _latest_session_mtime()
-            with StorageContext() as ctx:
+            with StorageContext(read_only=True) as ctx:
                 if latest_mtime > 0 and latest_mtime <= ctx.metadata.last_session_mtime:
                     log.info("No session changes since last analysis, skipping")
                     return None
@@ -825,7 +893,7 @@ def run_analysis(
 
         # Per-session mtime filter: skip unchanged sessions (unless force)
         if not force and sessions:
-            with StorageContext() as ctx:
+            with StorageContext(read_only=True) as ctx:
                 sessions = filter_changed_sessions(sessions, ctx.metadata.session_mtimes)
             if not sessions:
                 log.info("All sessions unchanged since last analysis, skipping")
@@ -880,7 +948,7 @@ def run_analysis(
                 t.model_dump() for t in ctx.store.todos if t.project_id == pid
             ]
             proj_insights = [
-                {"text": i.text}
+                {"id": i.id, "text": i.text, "created_at": i.created_at}
                 for i in ctx.metadata.insights
                 if not i.dismissed and (i.project_id == pid or i.project_id == "")
             ]

@@ -30,7 +30,22 @@ export function TodoItem({ todo, onRefresh }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
+  const outputRef = useRef<HTMLPreElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-show output while running
+  useEffect(() => {
+    if (todo.run_status === "running" && todo.run_output) {
+      setShowOutput(true);
+    }
+  }, [todo.run_status, todo.run_output]);
+
+  // Auto-scroll output to bottom as it streams
+  useEffect(() => {
+    if (showOutput && outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [showOutput, todo.run_output]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -154,7 +169,7 @@ export function TodoItem({ todo, onRefresh }: Props) {
       </div>
       {showOutput && todo.run_output && (
         <div className="run-output">
-          <pre>{todo.run_output}</pre>
+          <pre ref={outputRef}>{todo.run_output}</pre>
         </div>
       )}
     </div>

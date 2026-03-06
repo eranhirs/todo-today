@@ -7,7 +7,7 @@ import { ClaudeStatus } from "./components/ClaudeStatus";
 import { UpdateHistory } from "./components/UpdateHistory";
 import "./App.css";
 
-const POLL_INTERVAL = 10_000;
+const POLL_INTERVAL = 3_000;
 const TOAST_DURATION = 6_000;
 
 interface Toast {
@@ -35,6 +35,7 @@ function App() {
   }, []);
 
   const knownWaitingIds = useRef<Set<string> | null>(null);
+  const knownRunningIds = useRef<Set<string>>(new Set());
 
   const addToast = useCallback((text: string) => {
     const id = Math.random().toString(36).slice(2);
@@ -85,17 +86,38 @@ function App() {
     }
   }, [addToast]);
 
+  const notifyRunCompletions = useCallback((todos: Todo[]) => {
+    const prev = knownRunningIds.current;
+    const nowRunning = new Set(
+      todos.filter((t) => t.run_status === "running").map((t) => t.id)
+    );
+
+    // Check todos that were running before but aren't anymore
+    for (const id of prev) {
+      if (!nowRunning.has(id)) {
+        const todo = todos.find((t) => t.id === id);
+        if (todo) {
+          const prefix = todo.run_status === "error" ? "Run failed" : "Run completed";
+          addToast(`${prefix}: ${todo.text}`);
+        }
+      }
+    }
+
+    knownRunningIds.current = nowRunning;
+  }, [addToast]);
+
   const refresh = useCallback(async () => {
     try {
       const data = await api.getState();
       setState(data);
       notifyNewWaitingTodos(data.todos);
+      notifyRunCompletions(data.todos);
       const waitingCount = data.todos.filter((t) => t.status === "waiting").length;
       document.title = waitingCount > 0 ? `(${waitingCount}) Todo Today` : "Todo Today";
     } catch (err) {
       console.error("Failed to fetch state:", err);
     }
-  }, [notifyNewWaitingTodos]);
+  }, [notifyNewWaitingTodos, notifyRunCompletions]);
 
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {

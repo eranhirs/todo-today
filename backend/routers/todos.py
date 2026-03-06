@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 import threading
 import subprocess
+import time
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -19,7 +22,7 @@ _running_tasks: dict[str, threading.Thread] = {}
 
 @router.get("")
 def list_todos(project_id: Optional[str] = None) -> list[Todo]:
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         todos = ctx.store.todos
         if project_id:
             todos = [t for t in todos if t.project_id == project_id]
@@ -40,7 +43,7 @@ def create_todo(body: TodoCreate) -> Todo:
 
 @router.get("/{todo_id}")
 def get_todo(todo_id: str) -> Todo:
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
                 return t
@@ -78,57 +81,132 @@ def delete_todo(todo_id: str) -> None:
             raise HTTPException(404, "Todo not found")
 
 
+_FLUSH_INTERVAL = 3  # seconds between progress flushes
+
+
+def _flush_progress(todo_id: str, output: str) -> None:
+    """Write current accumulated output to the store."""
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            if t.id == todo_id:
+                t.run_output = output[:50000]
+                break
+
+
+def _extract_assistant_text(line_json: dict) -> Optional[str]:
+    """Extract text content from a stream-json assistant message."""
+    if line_json.get("type") != "assistant":
+        return None
+    msg = line_json.get("message", {})
+    content = msg.get("content", [])
+    parts = []
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") == "text":
+                parts.append(block["text"])
+            elif block.get("type") == "tool_use":
+                name = block.get("name", "tool")
+                inp = block.get("input", {})
+                # Show tool calls concisely
+                if name == "Bash":
+                    parts.append(f"$ {inp.get('command', '')}")
+                elif name in ("Edit", "Write"):
+                    parts.append(f"[{name}: {inp.get('file_path', '')}]")
+                elif name == "Read":
+                    parts.append(f"[Read: {inp.get('file_path', '')}]")
+                else:
+                    parts.append(f"[{name}]")
+    return "\n".join(parts) if parts else None
+
+
 def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None:
-    """Background thread: run claude -p for a todo and update the store on completion."""
+    """Background thread: stream claude -p output and flush progress to the store."""
+    proc = None
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         prompt = f"Complete this task: {todo_text}"
-        result = subprocess.run(
-            ["claude", "-p", "--output-format", "json"],
-            input=prompt,
-            capture_output=True,
+        proc = subprocess.Popen(
+            ["claude", "-p", "--output-format", "stream-json", "--verbose",
+             "--dangerously-skip-permissions"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=600,
             cwd=source_path,
             env=env,
         )
+        proc.stdin.write(prompt)
+        proc.stdin.close()
 
-        if result.returncode != 0:
-            error_msg = result.stderr[:2000] if result.stderr else f"Exit code {result.returncode}"
+        accumulated: list[str] = []
+        last_flush = time.monotonic()
+        final_result = None
+
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            if obj.get("type") == "result":
+                final_result = obj
+                continue
+
+            text = _extract_assistant_text(obj)
+            if text:
+                accumulated.append(text)
+
+            # Flush to store periodically
+            now = time.monotonic()
+            if now - last_flush >= _FLUSH_INTERVAL and accumulated:
+                _flush_progress(todo_id, "\n".join(accumulated))
+                last_flush = now
+
+        proc.wait(timeout=30)
+
+        if proc.returncode != 0:
+            stderr = proc.stderr.read()[:2000] if proc.stderr else ""
+            error_msg = stderr or f"Exit code {proc.returncode}"
             log.error("Claude run failed for todo %s: %s", todo_id, error_msg)
+            output_so_far = "\n".join(accumulated)
+            if output_so_far:
+                error_msg = output_so_far + "\n\n--- ERROR ---\n" + error_msg
             with StorageContext() as ctx:
                 for t in ctx.store.todos:
                     if t.id == todo_id:
                         t.run_status = "error"
-                        t.run_output = error_msg
+                        t.run_output = error_msg[:50000]
                         break
             return
 
-        # Parse output
-        output_text = result.stdout
-        try:
-            wrapper = json.loads(output_text)
-            output_text = wrapper.get("result", output_text)
-        except json.JSONDecodeError:
-            pass
+        # Use final result text if available, else accumulated stream
+        output_text = "\n".join(accumulated)
+        had_errors = False
+        if final_result:
+            result_text = final_result.get("result")
+            if result_text:
+                output_text = result_text
+            # Check if there were permission denials or errors
+            if final_result.get("is_error"):
+                had_errors = True
+            if final_result.get("permission_denials"):
+                had_errors = True
 
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
-                    t.run_status = "done"
-                    t.run_output = output_text[:50000]  # cap stored output
-                    t.status = "completed"
-                    t.completed_at = _now()
+                    t.run_output = output_text[:50000]
+                    if had_errors:
+                        t.run_status = "error"
+                    else:
+                        t.run_status = "done"
+                        t.status = "completed"
+                        t.completed_at = _now()
                     break
 
-    except subprocess.TimeoutExpired:
-        log.error("Claude run timed out for todo %s", todo_id)
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_status = "error"
-                    t.run_output = "Claude timed out after 10 minutes"
-                    break
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
         with StorageContext() as ctx:
@@ -138,6 +216,8 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None
                     t.run_output = str(e)
                     break
     finally:
+        if proc and proc.poll() is None:
+            proc.kill()
         _running_tasks.pop(todo_id, None)
 
 

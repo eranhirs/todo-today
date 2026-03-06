@@ -18,8 +18,21 @@ from .storage import StorageContext
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
+def _cleanup_stale_runs() -> None:
+    """Reset any todos stuck in run_status='running' from a previous server lifetime."""
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            if t.run_status == "running":
+                t.run_status = "error"
+                t.run_output = (t.run_output or "") + "\n[Server restarted — run was interrupted]"
+                if t.status == "in_progress":
+                    t.status = "next"
+                logging.getLogger(__name__).info("Reset stale running todo %s", t.id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _cleanup_stale_runs()
     start_scheduler()
     yield
     stop_scheduler()
@@ -41,7 +54,7 @@ app.include_router(claude.router)
 
 @app.get("/api/state")
 def full_state() -> FullState:
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         return FullState(
             projects=ctx.store.projects,
             todos=ctx.store.todos,

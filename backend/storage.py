@@ -69,19 +69,27 @@ def save_metadata(meta: Metadata) -> None:
 
 
 class StorageContext:
-    """Thread-safe context manager for reading and writing the store."""
+    """Thread-safe context manager for reading and writing the store.
 
-    def __init__(self) -> None:
+    read_only=True skips the write lock — safe because files are written
+    atomically (rename), so reads always see a consistent snapshot.
+    """
+
+    def __init__(self, read_only: bool = False) -> None:
         self.store: TodoStore = TodoStore()
         self.metadata: Metadata = Metadata()
+        self._read_only = read_only
 
     def __enter__(self) -> StorageContext:
-        _lock.acquire()
+        if not self._read_only:
+            _lock.acquire()
         self.store = load_store()
         self.metadata = load_metadata()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # type: ignore[no-untyped-def]
+        if self._read_only:
+            return
         if exc_type is None:
             save_store(self.store)
             save_metadata(self.metadata)

@@ -196,3 +196,4 @@ class ClaudeAnalysisResult(BaseModel):
     project_summaries: Dict[str, str] = {}
     new_projects: List[ClaudeNewProject] = []
     insights: List[ClaudeInsight] = []
+    dismiss_insight_ids: List[str] = []

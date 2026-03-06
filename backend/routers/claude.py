@@ -35,7 +35,7 @@ async def wake(body: WakeRequest = WakeRequest()) -> dict:
 @router.get("/sessions")
 def sessions() -> list[dict]:
     all_sessions = list_all_sessions()
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         mtimes = ctx.metadata.session_mtimes
     for s in all_sessions:
         s["last_analyzed_mtime"] = mtimes.get(s["key"])
@@ -51,7 +51,7 @@ def update_model(body: ModelUpdate) -> dict:
 
 @router.get("/status")
 def status() -> dict:
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         return {
             "scheduler_status": ctx.metadata.scheduler_status,
             "heartbeat": ctx.metadata.heartbeat,
@@ -67,7 +67,7 @@ def update_interval(body: IntervalUpdate) -> dict:
 
 @router.get("/history")
 def history() -> list[AnalysisEntry]:
-    with StorageContext() as ctx:
+    with StorageContext(read_only=True) as ctx:
         return ctx.metadata.history
 
 

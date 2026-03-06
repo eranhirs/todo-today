@@ -48,7 +48,7 @@ async def trigger_analysis(
 
     # Model override also implies force
     if not force and session_keys is None:
-        with StorageContext() as ctx:
+        with StorageContext(read_only=True) as ctx:
             persisted_model = ctx.metadata.analysis_model
         if model is not None and model != persisted_model:
             force = True
