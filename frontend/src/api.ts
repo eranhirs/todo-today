@@ -39,6 +39,9 @@ export const api = {
   deleteTodo: (id: string) =>
     request<void>(`/todos/${id}`, { method: "DELETE" }),
 
+  runTodo: (id: string) =>
+    request<{ status: string }>(`/todos/${id}/run`, { method: "POST" }),
+
   wakeUpClaude: (model?: string, force?: boolean, sessionKeys?: string[]) =>
     request<{ status: string; message?: string }>("/claude/wake", {
       method: "POST",

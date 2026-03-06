@@ -54,6 +54,15 @@ Update todo fields.
 ### `DELETE /api/todos/{todo_id}`
 Delete a todo.
 
+### `POST /api/todos/{todo_id}/run`
+Kick off a background Claude Code session to complete the todo. Claude runs in the project's `source_path` directory using `claude -p`. The todo is immediately set to `in_progress` with `run_status: "running"`.
+
+Returns `{ "status": "started" }`.
+
+When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. On failure, `run_status` is set to `"error"` and `run_output` contains the error message.
+
+Returns 409 if the todo is already running, 400 if the project has no `source_path`.
+
 ## Claude Analysis
 
 ### `POST /api/claude/wake`

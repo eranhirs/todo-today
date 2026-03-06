@@ -28,5 +28,8 @@ start-local.sh
 # Notes
 IDEAS.md
 
+# Logs
+uvicorn.log
+
 # Claude Code
 .claude/

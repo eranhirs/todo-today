@@ -601,3 +601,72 @@ body {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
 }
+
+/* Run with Claude */
+
+.todo-running {
+  border-left-color: var(--accent) !important;
+  animation: pulse-border 2s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: inset 0 0 8px rgba(108, 92, 231, 0.15); }
+}
+
+.run-spinner {
+  display: inline-block;
+  animation: spin 1s linear infinite;
+  color: var(--accent-light);
+  font-size: 0.9rem;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.btn-run {
+  font-size: 0.75rem !important;
+  color: var(--green) !important;
+}
+.btn-run:hover:not(:disabled) { color: #fff !important; background: var(--green) !important; }
+.btn-run:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.btn-output {
+  font-size: 0.8rem !important;
+  color: var(--accent-light) !important;
+}
+
+.badge-run-error {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--red);
+  letter-spacing: 0.02em;
+}
+
+.todo-run-error { border-left-color: var(--red) !important; }
+
+.run-output {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  background: #0a0c12;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.run-output pre {
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.todo-item { flex-wrap: wrap; }

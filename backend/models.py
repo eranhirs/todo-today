@@ -33,10 +33,12 @@ class Todo(BaseModel):
     project_id: str
     text: str
     status: TodoStatus = "next"
-    source: Literal["claude", "user"] = "user"
+    source: Literal["claude", "user", "claude_run"] = "user"
     session_id: Optional[str] = None
     created_at: str = Field(default_factory=_now)
     completed_at: Optional[str] = None
+    run_output: Optional[str] = None
+    run_status: Optional[Literal["running", "done", "error"]] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -108,6 +110,7 @@ class Metadata(BaseModel):
     analysis_interval_minutes: int = 5
     analysis_model: str = "haiku"
     insights: List[Insight] = []
+    analysis_session_ids: List[str] = []
 
 
 # ── API request/response helpers ───────────────────────────────
@@ -133,7 +136,7 @@ class TodoUpdate(BaseModel):
     text: Optional[str] = None
     status: Optional[TodoStatus] = None
     project_id: Optional[str] = None
-    source: Optional[Literal["claude", "user"]] = None
+    source: Optional[Literal["claude", "user", "claude_run"]] = None
 
 
 class FullState(BaseModel):

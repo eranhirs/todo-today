@@ -10,6 +10,7 @@ Todo Today is a Claude-integrated todo app that bridges your Claude Code session
 2. **Claude analyzer** extracts session transcripts and asks Claude (via CLI) to identify completed work and suggest new tasks
 3. Results are applied to the todo store — marking todos complete, adding new ones, discovering new projects
 4. **Frontend** polls every 10 seconds, reflecting changes in real time
+5. **Run with Claude**: Users can click a play button on any todo to spawn a `claude -p` session that works on the task in the project directory. The background process updates the todo with output on completion.
 
 ## Tech Stack
 

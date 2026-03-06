@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import time
+import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -31,23 +32,17 @@ CLAUDE_DIR = Path.home() / ".claude" / "projects"
 SESSION_MAX_AGE = timedelta(hours=24)
 # Max messages to extract per session for the prompt
 MAX_MESSAGES_PER_SESSION = 20
-# Track session files created by our own `claude -p` invocations so we can
-# exclude them (but not the user's interactive sessions in the same project).
-_SELF_PROJECT_DIRNAME = str(Path.cwd()).replace("/", "-")
-_self_session_files: set[str] = set()
 
 
-def _snapshot_self_sessions() -> set[str]:
-    """Return current set of session filenames in our own project dir."""
-    self_dir = CLAUDE_DIR / _SELF_PROJECT_DIRNAME
-    if not self_dir.is_dir():
-        return set()
-    return {f.name for f in self_dir.glob("*.jsonl")}
+def _load_analysis_session_ids() -> set[str]:
+    """Load persisted analysis session IDs from metadata."""
+    with StorageContext() as ctx:
+        return set(ctx.metadata.analysis_session_ids)
 
 
-def _is_self_session(proj_dirname: str, filename: str) -> bool:
-    """Check if a session file was created by our analysis subprocess."""
-    return proj_dirname == _SELF_PROJECT_DIRNAME and filename in _self_session_files
+def _is_analysis_session(session_id: str, analysis_ids: set[str]) -> bool:
+    """Check if a session was created by our analysis subprocess."""
+    return session_id in analysis_ids
 
 
 # ── Session discovery ──────────────────────────────────────────
@@ -67,13 +62,14 @@ def _latest_session_mtime() -> float:
     """Return the latest modification time (epoch) across all recent session files."""
     if not CLAUDE_DIR.is_dir():
         return 0.0
+    analysis_ids = _load_analysis_session_ids()
     cutoff = datetime.now(timezone.utc) - SESSION_MAX_AGE
     latest = 0.0
     for proj_dir in CLAUDE_DIR.iterdir():
         if not proj_dir.is_dir():
             continue
         for jsonl_file in proj_dir.glob("*.jsonl"):
-            if _is_self_session(proj_dir.name, jsonl_file.name):
+            if _is_analysis_session(jsonl_file.stem, analysis_ids):
                 continue
             mtime = jsonl_file.stat().st_mtime
             if datetime.fromtimestamp(mtime, tz=timezone.utc) >= cutoff:
@@ -93,6 +89,7 @@ def discover_sessions(max_age: timedelta | None = SESSION_MAX_AGE) -> list[dict]
         log.warning("Claude projects dir not found: %s", CLAUDE_DIR)
         return []
 
+    analysis_ids = _load_analysis_session_ids()
     cutoff = datetime.now(timezone.utc) - max_age if max_age is not None else None
     sessions = []
 
@@ -102,7 +99,7 @@ def discover_sessions(max_age: timedelta | None = SESSION_MAX_AGE) -> list[dict]
         source_path = _decode_project_dir(proj_dir.name)
 
         for jsonl_file in proj_dir.glob("*.jsonl"):
-            if _is_self_session(proj_dir.name, jsonl_file.name):
+            if _is_analysis_session(jsonl_file.stem, analysis_ids):
                 continue
             stat_mtime = jsonl_file.stat().st_mtime
             # Check modification time
@@ -373,6 +370,7 @@ def list_all_sessions() -> list[dict]:
     if not CLAUDE_DIR.is_dir():
         return []
 
+    analysis_ids = _load_analysis_session_ids()
     sessions = []
     for proj_dir in CLAUDE_DIR.iterdir():
         if not proj_dir.is_dir():
@@ -381,7 +379,7 @@ def list_all_sessions() -> list[dict]:
         project_name = _extract_project_name(source_path)
 
         for jsonl_file in proj_dir.glob("*.jsonl"):
-            if _is_self_session(proj_dir.name, jsonl_file.name):
+            if _is_analysis_session(jsonl_file.stem, analysis_ids):
                 continue
             stat_mtime = jsonl_file.stat().st_mtime
             # Count messages (lightweight — just count qualifying lines)
@@ -524,12 +522,16 @@ def _invoke_claude(prompt: str, model: str = "haiku") -> tuple["ClaudeAnalysisRe
     """Call Claude CLI in print mode and parse the JSON response.
 
     Returns (result, usage_info) where usage_info contains cost/token data.
+    The session ID is included in usage_info["session_id"] for exclusion tracking.
     """
     usage_info: dict = {}
+    session_id = _uuid.uuid4().hex
+    usage_info["session_id"] = session_id
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         result = subprocess.run(
-            ["claude", "-p", "--output-format", "json", "--model", model],
+            ["claude", "-p", "--output-format", "json", "--model", model,
+             "--session-id", session_id],
             input=prompt,
             capture_output=True,
             text=True,
@@ -885,15 +887,15 @@ def run_analysis(
             proj_snapshots[pid] = (project, proj_todos, proj_insights, proj_sess)
 
     # ── Phase 2: call Claude (no lock held) ──
+    new_analysis_session_ids: list[str] = []
     invoke_results: list[tuple[str, object, dict, str]] = []
     for pid, (project, proj_todos, proj_insights, proj_sess) in proj_snapshots.items():
         prompt = _build_project_prompt(project, proj_todos, proj_insights, proj_sess)
         all_prompts.append(f"--- Project: {project.name} ({pid}) ---\n{prompt}")
 
-        before = _snapshot_self_sessions()
         result, usage_info = _invoke_claude(prompt, model=model)
-        after = _snapshot_self_sessions()
-        _self_session_files.update(after - before)
+        if usage_info.get("session_id"):
+            new_analysis_session_ids.append(usage_info["session_id"])
 
         total_cost += usage_info.get("cost_usd", 0.0)
         total_input += usage_info.get("input_tokens", 0)
@@ -925,10 +927,12 @@ def run_analysis(
                 counters.todos_completed,
             )
 
-    # Persist per-session mtimes for analyzed sessions
+    # Persist per-session mtimes and analysis session IDs
     with StorageContext() as ctx:
         for s in sessions:
             ctx.metadata.session_mtimes[_session_key(s)] = s["mtime"]
+        if new_analysis_session_ids:
+            ctx.metadata.analysis_session_ids.extend(new_analysis_session_ids)
 
     combined_prompt = "\n\n".join(all_prompts)
     combined_response = "\n\n".join(all_responses)

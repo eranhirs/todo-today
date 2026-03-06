@@ -29,6 +29,7 @@ function formatDate(iso: string): string {
 export function TodoItem({ todo, onRefresh }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
+  const [showOutput, setShowOutput] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -46,6 +47,15 @@ export function TodoItem({ todo, onRefresh }: Props) {
   const remove = async () => {
     await api.deleteTodo(todo.id);
     onRefresh();
+  };
+
+  const runWithClaude = async () => {
+    try {
+      await api.runTodo(todo.id);
+      onRefresh();
+    } catch {
+      // already running or other error
+    }
   };
 
   const startEdit = () => {
@@ -76,8 +86,10 @@ export function TodoItem({ todo, onRefresh }: Props) {
     }
   };
 
+  const isRunning = todo.run_status === "running";
+
   return (
-    <div className={`todo-item status-${todo.status} source-${todo.source}`}>
+    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}`}>
       <div className="todo-content">
         <select
           className="status-select"
@@ -102,6 +114,7 @@ export function TodoItem({ todo, onRefresh }: Props) {
         ) : (
           <span className="todo-text" onDoubleClick={startEdit}>{todo.text}</span>
         )}
+        {isRunning && <span className="run-spinner" title="Claude is working on this...">⟳</span>}
       </div>
       <div className="todo-meta">
         <span className="todo-timestamp" title={todo.created_at}>
@@ -112,19 +125,38 @@ export function TodoItem({ todo, onRefresh }: Props) {
             ✓ {formatTime(todo.completed_at)}
           </span>
         )}
-        {todo.source === "claude" && (
+        {(todo.source === "claude" || todo.source === "claude_run") && (
           <span
             className={`badge badge-claude${todo.session_id ? " clickable" : ""}`}
-            title={todo.session_id ? `Click to copy session ID: ${todo.session_id}` : "Added by Claude"}
+            title={todo.session_id ? `Click to copy session ID: ${todo.session_id}` : todo.source === "claude_run" ? "Run by Claude" : "Added by Claude"}
             onClick={() => {
               if (todo.session_id) {
                 navigator.clipboard.writeText(todo.session_id);
               }
             }}
-          >🤖</span>
+          >{todo.source === "claude_run" ? "🚀" : "🤖"}</span>
         )}
+        {todo.run_output && (
+          <button
+            className="btn-icon btn-output"
+            onClick={() => setShowOutput(!showOutput)}
+            title="View Claude output"
+          >{showOutput ? "▾" : "▸"}</button>
+        )}
+        {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
+        <button
+          className="btn-icon btn-run"
+          onClick={runWithClaude}
+          disabled={isRunning}
+          title="Run with Claude"
+        >▶</button>
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>
+      {showOutput && todo.run_output && (
+        <div className="run-output">
+          <pre>{todo.run_output}</pre>
+        </div>
+      )}
     </div>
   );
 }

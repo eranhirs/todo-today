@@ -12,10 +12,12 @@ export interface Todo {
   project_id: string;
   text: string;
   status: TodoStatus;
-  source: "claude" | "user";
+  source: "claude" | "user" | "claude_run";
   session_id: string | null;
   created_at: string;
   completed_at: string | null;
+  run_output: string | null;
+  run_status: "running" | "done" | "error" | null;
 }
 
 export interface Insight {
