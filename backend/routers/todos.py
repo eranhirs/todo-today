@@ -6,6 +6,7 @@ import os
 import threading
 import subprocess
 import time
+import uuid
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -124,11 +125,13 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None
     proc = None
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        session_id = str(uuid.uuid4())
         prompt = f"Complete this task: {todo_text}"
         proc = subprocess.Popen(
             ["claude", "-p", "--output-format", "stream-json", "--verbose",
              "--dangerously-skip-permissions",
-             "--disallowedTools", "AskUserQuestion"],
+             "--disallowedTools", "AskUserQuestion",
+             "--session-id", session_id],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -139,6 +142,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None
         proc.stdin.write(prompt)
         proc.stdin.close()
 
+        session_header = f"Session: {session_id}\n\n"
         accumulated: list[str] = []
         last_flush = time.monotonic()
         final_result = None
@@ -163,7 +167,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None
             # Flush to store periodically
             now = time.monotonic()
             if now - last_flush >= _FLUSH_INTERVAL and accumulated:
-                _flush_progress(todo_id, "\n".join(accumulated))
+                _flush_progress(todo_id, session_header + "\n".join(accumulated))
                 last_flush = now
 
         proc.wait(timeout=30)
@@ -179,7 +183,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None
                 for t in ctx.store.todos:
                     if t.id == todo_id:
                         t.run_status = "error"
-                        t.run_output = error_msg[:50000]
+                        t.run_output = (session_header + error_msg)[:50000]
                         break
             return
 
@@ -199,7 +203,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
-                    t.run_output = output_text[:50000]
+                    t.run_output = (session_header + output_text)[:50000]
                     if had_errors:
                         t.run_status = "error"
                     else:
