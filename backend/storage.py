@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import tempfile
 import threading
 from pathlib import Path
 
 from .models import Metadata, TodoStore
+
+logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -15,32 +19,53 @@ def _ensure_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _atomic_write(p: Path, data: str) -> None:
+    """Write to a temp file then rename, so a crash can't leave a partial file."""
+    fd, tmp = tempfile.mkstemp(dir=p.parent, suffix=".tmp")
+    try:
+        with open(fd, "w") as f:
+            f.write(data)
+            f.flush()
+        Path(tmp).replace(p)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def load_store() -> TodoStore:
     _ensure_dir()
     p = DATA_DIR / "todos.json"
     if p.exists():
-        return TodoStore.model_validate_json(p.read_text())
+        text = p.read_text()
+        if text.strip():
+            try:
+                return TodoStore.model_validate_json(text)
+            except Exception:
+                logger.warning("Corrupt todos.json, falling back to defaults")
     return TodoStore()
 
 
 def save_store(store: TodoStore) -> None:
     _ensure_dir()
-    p = DATA_DIR / "todos.json"
-    p.write_text(store.model_dump_json(indent=2))
+    _atomic_write(DATA_DIR / "todos.json", store.model_dump_json(indent=2))
 
 
 def load_metadata() -> Metadata:
     _ensure_dir()
     p = DATA_DIR / "metadata.json"
     if p.exists():
-        return Metadata.model_validate_json(p.read_text())
+        text = p.read_text()
+        if text.strip():
+            try:
+                return Metadata.model_validate_json(text)
+            except Exception:
+                logger.warning("Corrupt metadata.json, falling back to defaults")
     return Metadata()
 
 
 def save_metadata(meta: Metadata) -> None:
     _ensure_dir()
-    p = DATA_DIR / "metadata.json"
-    p.write_text(meta.model_dump_json(indent=2))
+    _atomic_write(DATA_DIR / "metadata.json", meta.model_dump_json(indent=2))
 
 
 class StorageContext:

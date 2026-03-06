@@ -34,7 +34,12 @@ async def wake(body: WakeRequest = WakeRequest()) -> dict:
 
 @router.get("/sessions")
 def sessions() -> list[dict]:
-    return list_all_sessions()
+    all_sessions = list_all_sessions()
+    with StorageContext() as ctx:
+        mtimes = ctx.metadata.session_mtimes
+    for s in all_sessions:
+        s["last_analyzed_mtime"] = mtimes.get(s["key"])
+    return all_sessions
 
 
 @router.put("/model")

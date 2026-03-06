@@ -17,7 +17,7 @@ Todo Today is a Claude-integrated todo app that bridges your Claude Code session
 |----------|-----------------------------|
 | Backend  | FastAPI + APScheduler       |
 | Frontend | React 19 + TypeScript + Vite |
-| Storage  | JSON files (`data/`)        |
+| Storage  | JSON files (`data/`) with atomic writes |
 | AI       | Claude CLI (`claude -p`)    |
 
 ## Directory Structure

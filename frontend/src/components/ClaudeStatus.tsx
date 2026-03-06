@@ -244,8 +244,16 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
                       <span className="session-id" title={s.session_id}>
                         {s.session_id.slice(0, 8)}...
                       </span>
-                      <span className="session-meta">
+                      <span
+                        className="session-meta"
+                        title={s.last_analyzed_mtime
+                          ? `Last analyzed: ${formatTime(s.last_analyzed_mtime)}`
+                          : "Never analyzed"}
+                      >
                         {s.message_count} msgs · {formatTime(s.mtime)}
+                        {s.last_analyzed_mtime && s.mtime > s.last_analyzed_mtime && (
+                          <span className="session-changed-badge">changed</span>
+                        )}
                       </span>
                     </label>
                   ))}

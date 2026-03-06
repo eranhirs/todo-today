@@ -304,6 +304,8 @@ body {
 .todo-completed-at { color: var(--green); }
 
 .badge-claude { font-size: 0.8rem; }
+.badge-claude.clickable { cursor: pointer; }
+.badge-claude.clickable:hover { opacity: 0.7; }
 
 .todo-project-label {
   display: inline-block;

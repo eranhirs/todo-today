@@ -25,5 +25,8 @@ logs/
 # Local scripts
 start-local.sh
 
+# Notes
+IDEAS.md
+
 # Claude Code
 .claude/

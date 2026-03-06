@@ -113,7 +113,15 @@ export function TodoItem({ todo, onRefresh }: Props) {
           </span>
         )}
         {todo.source === "claude" && (
-          <span className="badge badge-claude" title={todo.session_id ? `Session: ${todo.session_id}` : "Added by Claude"}>🤖</span>
+          <span
+            className={`badge badge-claude${todo.session_id ? " clickable" : ""}`}
+            title={todo.session_id ? `Click to copy session ID: ${todo.session_id}` : "Added by Claude"}
+            onClick={() => {
+              if (todo.session_id) {
+                navigator.clipboard.writeText(todo.session_id);
+              }
+            }}
+          >🤖</span>
         )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>

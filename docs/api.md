@@ -1,6 +1,6 @@
 # Todo Today — API Reference
 
-Base URL: `http://localhost:5151`
+Base URL: `http://localhost:5152`
 
 ## State
 
@@ -64,6 +64,10 @@ Returns scheduler status, heartbeat, and last analysis entry.
 
 ### `GET /api/claude/history`
 Returns list of past analysis entries (up to 50).
+
+### `GET /api/claude/sessions`
+Returns lightweight metadata for all sessions: `{key, project_dir, source_path, project_name, session_id, mtime, message_count, last_analyzed_mtime}`.
+`last_analyzed_mtime` is the mtime at which the session was last analyzed (null if never).
 
 ### `PUT /api/claude/insights/{id}/dismiss`
 Dismiss an insight so it no longer appears in the UI.

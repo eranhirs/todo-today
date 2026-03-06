@@ -181,15 +181,55 @@ def _parse_session_messages(path: Path) -> list[dict]:
     return messages[-MAX_MESSAGES_PER_SESSION:]
 
 
+def _tool_needs_approval(tool_name: str | None, permission_mode: str) -> bool:
+    """Determine if a tool likely needs user approval given the permission mode.
+
+    Based on empirical analysis of session data:
+    - Read-only tools (Read, Glob, Grep) always auto-approve
+    - Edit/Write always auto-approve (even in 'acceptEdits' — that's what the mode means)
+    - Task tools always auto-approve
+    - Bash: auto-approves in bypassPermissions, needs approval in default/acceptEdits
+    - ExitPlanMode/AskUserQuestion: always need user action
+    """
+    if tool_name is None:
+        return True  # Unknown tool — assume it needs approval
+
+    if tool_name in _AUTO_APPROVE_TOOLS:
+        return False
+
+    if tool_name in _ALWAYS_APPROVAL_TOOLS:
+        return True
+
+    # Bash (and any other unrecognized tool): depends on permission mode
+    if permission_mode == "bypassPermissions":
+        return False
+
+    return True  # default/acceptEdits/plan — Bash and unknowns likely need approval
+
+
+# Tools that never require user approval regardless of permission mode.
+_AUTO_APPROVE_TOOLS = frozenset({
+    "Read", "Glob", "Grep", "Edit", "Write",
+    "TaskCreate", "TaskUpdate", "TaskList", "TaskGet", "TaskStop",
+    "EnterPlanMode", "NotebookEdit", "TodoRead", "TodoWrite",
+})
+
+# Tools that always require user action.
+_ALWAYS_APPROVAL_TOOLS = frozenset({
+    "ExitPlanMode", "AskUserQuestion",
+})
+
+
 def _detect_session_state(path: Path) -> dict:
     """Classify the current state of a session by inspecting the last few JSONL entries.
 
     Returns {"state": str, "last_assistant_text": str | None}.
-    States: "ended", "waiting_for_user", "waiting_for_tool",
-            "waiting_for_response", "unknown".
+    States: "ended", "waiting_for_user", "waiting_for_tool_approval",
+            "tool_running", "waiting_for_response", "unknown".
     """
-    # Read last ~5 user/assistant entries
+    # Read last ~10 entries (all types) to get permissionMode + user/assistant context
     tail_entries: list[dict] = []
+    last_permission_mode: str = "default"
     try:
         with open(path) as f:
             for line in f:
@@ -200,9 +240,13 @@ def _detect_session_state(path: Path) -> dict:
                     entry = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                # Track the most recent permissionMode from any user entry
+                pm = entry.get("permissionMode")
+                if pm:
+                    last_permission_mode = pm
                 if entry.get("type") in ("user", "assistant"):
                     tail_entries.append(entry)
-                    if len(tail_entries) > 5:
+                    if len(tail_entries) > 10:
                         tail_entries.pop(0)
     except Exception:
         log.exception("Error reading session file for state detection: %s", path)
@@ -234,14 +278,36 @@ def _detect_session_state(path: Path) -> dict:
 
     if last_type == "assistant":
         if stop_reason == "tool_use":
-            # Assistant requested a tool call, waiting for user to approve/execute
             tool_name = None
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         tool_name = block.get("name", "a tool")
-            detail = f"Claude wants to use {tool_name}" if tool_name else "Claude is waiting for tool approval"
-            return {"state": "waiting_for_tool", "last_assistant_text": last_assistant_text, "detail": detail}
+            detail = f"Claude wants to use {tool_name}" if tool_name else "Claude requested a tool"
+
+            # Determine if this tool needs approval based on tool name + permission mode
+            needs_approval = _tool_needs_approval(tool_name, last_permission_mode)
+
+            if not needs_approval:
+                # This tool auto-approves — it's running, not waiting for user
+                return {"state": "tool_running", "last_assistant_text": last_assistant_text, "detail": detail}
+
+            # For tools that *could* need approval, use timestamp as confirmation.
+            # If >60s old with no result, it's stuck waiting for the user.
+            entry_ts = last.get("timestamp", "")
+            age_seconds = None
+            if entry_ts:
+                try:
+                    from datetime import datetime, timezone
+                    ts = datetime.fromisoformat(entry_ts.replace("Z", "+00:00"))
+                    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+                except (ValueError, TypeError):
+                    pass
+
+            if age_seconds is not None and age_seconds > 60:
+                return {"state": "waiting_for_tool_approval", "last_assistant_text": last_assistant_text, "detail": detail}
+            else:
+                return {"state": "tool_running", "last_assistant_text": last_assistant_text, "detail": detail}
         if stop_reason == "end_turn":
             # Check if the last text ends with a question mark
             if last_assistant_text and last_assistant_text.rstrip().endswith("?"):
@@ -272,11 +338,14 @@ def _format_session_state_line(state_info: dict) -> str:
     elif state == "waiting_for_user":
         snippet = text[:100] if text else "?"
         return f'[Session state: waiting_for_user — last assistant message: "{snippet}"]'
-    elif state == "waiting_for_tool":
-        ctx = detail or "Claude is waiting for tool approval"
-        return f"[Session state: waiting_for_tool — {ctx}]"
+    elif state == "waiting_for_tool_approval":
+        ctx = detail or "Claude wants to use a tool"
+        return f"[Session state: waiting_for_tool_approval — {ctx}. User must approve/deny to continue]"
+    elif state == "tool_running":
+        ctx = detail or "Claude is running a tool"
+        return f"[Session state: active — {ctx}. Tool is currently executing, NO user action needed]"
     elif state == "waiting_for_response":
-        return "[Session state: waiting_for_response — a tool ran, waiting for Claude to continue]"
+        return "[Session state: active — a tool ran, Claude is continuing. NO user action needed]"
     else:
         return "[Session state: unknown]"
 
@@ -437,7 +506,7 @@ Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
 - Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
 - Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
-- Only create a `"waiting"` todo when a session's state is `waiting_for_user` — meaning Claude finished its turn (`end_turn`) and the last text asks the user a question or requests input. Use the format "Respond to Claude: <brief description of what it's asking>". Do NOT create waiting todos for `waiting_for_tool` (Claude requested a tool and is waiting for approval/execution) or `waiting_for_response` (a tool ran and Claude hasn't replied yet) — those are normal in-flight states, not places the user needs to act.
+- Only create a `"waiting"` todo when a session needs user action: `waiting_for_user` (Claude asked a question) or `waiting_for_tool_approval` (Claude wants to run a tool and needs approval). Use the format "Respond to Claude: <brief description of what it's asking or wants to do>". Do NOT create waiting todos for `active` sessions (a tool ran and Claude is continuing) — those don't need user action.
 - Don't duplicate existing todos or existing insights
 - `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
 - **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
@@ -579,8 +648,16 @@ def _apply_result(
     result: "ClaudeAnalysisResult",
     project_id: str,
     counters: _Counters,
+    sessions: list[dict] | None = None,
 ) -> None:
     """Apply a per-project Claude result to the store, scoped to *project_id*."""
+
+    # Build set of session IDs that need user action
+    _actionable_sessions: set[str] = set()
+    if sessions:
+        for s in sessions:
+            if s.get("state") in ("waiting_for_user", "waiting_for_tool_approval"):
+                _actionable_sessions.add(s["session_id"])
 
     project_todo_ids = {t.id for t in ctx.store.todos if t.project_id == project_id}
 
@@ -632,6 +709,11 @@ def _apply_result(
     for nt in result.new_todos:
         # Strip leftover "Next:"/"Consider:" prefixes defensively
         text = re.sub(r"^(Next|Consider|Waiting|Stale):\s*", "", nt.text, flags=re.IGNORECASE)
+
+        # Drop waiting todos for sessions that don't need user action
+        if nt.status == "waiting" and nt.session_id and nt.session_id not in _actionable_sessions:
+            log.info("Dropping waiting todo for non-actionable session %s: %s", nt.session_id, text)
+            continue
 
         if (project_id, text.lower()) in existing_texts:
             continue
@@ -768,6 +850,7 @@ def run_analysis(
     errors: list[str] = []
     projects_analyzed = 0
 
+    # ── Phase 1: read state (short lock) ──
     with StorageContext() as ctx:
         # Match sessions to projects (auto-creates missing projects)
         proj_sessions = _match_sessions_to_projects(sessions, ctx)
@@ -783,16 +866,14 @@ def run_analysis(
                 else:
                     log.warning("Cannot resolve orphaned todo %s project_id=%r", t.id, t.project_id)
 
-        # Build project lookup
+        # Build project lookup and per-project snapshots
         proj_by_id = {p.id: p for p in ctx.store.projects}
-
+        proj_snapshots: dict[str, tuple] = {}
         for pid, proj_sess in proj_sessions.items():
             project = proj_by_id.get(pid)
             if project is None:
                 log.warning("Project %s disappeared, skipping", pid)
                 continue
-
-            # Build per-project snapshot
             proj_todos = [
                 t.model_dump() for t in ctx.store.todos if t.project_id == pid
             ]
@@ -801,37 +882,45 @@ def run_analysis(
                 for i in ctx.metadata.insights
                 if not i.dismissed and (i.project_id == pid or i.project_id == "")
             ]
+            proj_snapshots[pid] = (project, proj_todos, proj_insights, proj_sess)
 
-            prompt = _build_project_prompt(project, proj_todos, proj_insights, proj_sess)
-            all_prompts.append(f"--- Project: {project.name} ({pid}) ---\n{prompt}")
+    # ── Phase 2: call Claude (no lock held) ──
+    invoke_results: list[tuple[str, object, dict, str]] = []
+    for pid, (project, proj_todos, proj_insights, proj_sess) in proj_snapshots.items():
+        prompt = _build_project_prompt(project, proj_todos, proj_insights, proj_sess)
+        all_prompts.append(f"--- Project: {project.name} ({pid}) ---\n{prompt}")
 
-            # Track session files before/after to exclude self-sessions
-            before = _snapshot_self_sessions()
-            result, usage_info = _invoke_claude(prompt, model=model)
-            after = _snapshot_self_sessions()
-            _self_session_files.update(after - before)
+        before = _snapshot_self_sessions()
+        result, usage_info = _invoke_claude(prompt, model=model)
+        after = _snapshot_self_sessions()
+        _self_session_files.update(after - before)
 
-            total_cost += usage_info.get("cost_usd", 0.0)
-            total_input += usage_info.get("input_tokens", 0)
-            total_output += usage_info.get("output_tokens", 0)
-            total_cache_read += usage_info.get("cache_read_tokens", 0)
+        total_cost += usage_info.get("cost_usd", 0.0)
+        total_input += usage_info.get("input_tokens", 0)
+        total_output += usage_info.get("output_tokens", 0)
+        total_cache_read += usage_info.get("cache_read_tokens", 0)
 
-            resp_text = usage_info.get("claude_response", "")
-            reasoning_text = usage_info.get("claude_reasoning", "")
-            all_responses.append(f"--- Project: {project.name} ({pid}) ---\n{resp_text}")
-            if reasoning_text:
-                all_reasoning.append(f"--- Project: {project.name} ({pid}) ---\n{reasoning_text}")
+        resp_text = usage_info.get("claude_response", "")
+        reasoning_text = usage_info.get("claude_reasoning", "")
+        all_responses.append(f"--- Project: {project.name} ({pid}) ---\n{resp_text}")
+        if reasoning_text:
+            all_reasoning.append(f"--- Project: {project.name} ({pid}) ---\n{reasoning_text}")
 
-            if result is None:
-                errors.append(f"{project.name}: {usage_info.get('error', 'unknown error')}")
-                log.error("Analysis failed for project %s: %s", project.name, usage_info.get("error"))
-                continue
+        if result is None:
+            errors.append(f"{project.name}: {usage_info.get('error', 'unknown error')}")
+            log.error("Analysis failed for project %s: %s", project.name, usage_info.get("error"))
+            continue
 
-            _apply_result(ctx, result, pid, counters)
+        invoke_results.append((pid, result, proj_sess, project.name))
+
+    # ── Phase 3: apply results (short lock) ──
+    with StorageContext() as ctx:
+        for pid, result, proj_sess, proj_name in invoke_results:
+            _apply_result(ctx, result, pid, counters, sessions=proj_sess)
             projects_analyzed += 1
             log.info(
                 "Project %s: +%d todos, %d completed",
-                project.name,
+                proj_name,
                 counters.todos_added,
                 counters.todos_completed,
             )

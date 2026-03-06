@@ -34,7 +34,7 @@ function App() {
     window.history.replaceState({}, "", url.toString());
   }, []);
 
-  const knownTodoIds = useRef<Set<string> | null>(null);
+  const knownWaitingIds = useRef<Set<string> | null>(null);
 
   const addToast = useCallback((text: string) => {
     const id = Math.random().toString(36).slice(2);
@@ -45,12 +45,18 @@ function App() {
   }, []);
 
   const notifyNewWaitingTodos = useCallback((todos: Todo[]) => {
-    const currentIds = new Set(todos.map((t) => t.id));
-    const prev = knownTodoIds.current;
+    const currentWaitingIds = new Set(
+      todos.filter((t) => t.status === "waiting").map((t) => t.id)
+    );
+    const prev = knownWaitingIds.current;
 
     if (prev === null) {
-      // First load — populate without notifying
-      knownTodoIds.current = currentIds;
+      // First load — notify for any existing waiting items
+      knownWaitingIds.current = currentWaitingIds;
+      const existing = todos.filter((t) => t.status === "waiting");
+      for (const todo of existing) {
+        addToast(todo.text);
+      }
       return;
     }
 
@@ -58,7 +64,7 @@ function App() {
       (t) => t.status === "waiting" && !prev.has(t.id)
     );
 
-    knownTodoIds.current = currentIds;
+    knownWaitingIds.current = currentWaitingIds;
 
     if (newWaiting.length === 0) return;
 
@@ -90,6 +96,12 @@ function App() {
       console.error("Failed to fetch state:", err);
     }
   }, [notifyNewWaitingTodos]);
+
+  useEffect(() => {
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+  }, []);
 
   useEffect(() => {
     refresh();

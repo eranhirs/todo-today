@@ -17,11 +17,11 @@
    - Active insights (project-specific + general)
    - Only that project's session transcripts
    - Simplified instructions: `project_id` is fixed (no `new_projects` needed), todos are auto-assigned
-6. **Sequential Claude Calls** — one `claude -p --output-format json --model <model>` call per project. Each call is cheap because the prompt only contains one project's context.
-7. **Per-Project Apply** (`_apply_result`) — for each successful response, applies changes scoped to the target project:
+6. **Sequential Claude Calls** (no storage lock held) — one `claude -p --output-format json --model <model>` call per project. Each call is cheap because the prompt only contains one project's context.
+7. **Per-Project Apply** (`_apply_result`, short storage lock) — for each successful response, applies changes scoped to the target project:
    - Mark existing todos complete (via `completed_todo_ids` backward compat)
    - Apply status transitions (via `status_updates`) — scoped to project's todos only
-   - Add new todos with the project_id set automatically
+   - Add new todos with the project_id set automatically (waiting todos for non-actionable sessions are filtered out)
    - Update project summary, persist new insights
    - Repair orphaned todos with invalid project IDs (done once before the loop)
 8. **Aggregate Entry** — a single `AnalysisEntry` is recorded per `run_analysis` call, summing metrics from all per-project calls. Prompts/responses are concatenated (delimited by project headers) for debugging via "Copy Prompt"/"Copy Response".
@@ -102,28 +102,45 @@ On each analysis run, existing todos with invalid `project_id` values are also r
 
 ## Session End-State Detection
 
-`_detect_session_state(path)` reads the last few entries of a session JSONL file and classifies how the session ended:
+`_detect_session_state(path)` reads the last ~10 entries of a session JSONL file (to capture `permissionMode` and recent user/assistant context) and classifies the session's current state:
 
 | State | Meaning | Trigger |
 |---|---|---|
 | `ended` | Normal completion | Assistant `end_turn` with text (not a question) |
 | `waiting_for_user` | Needs user reply | Assistant `end_turn` with text ending in `?` |
-| `waiting_for_tool` | Awaiting tool approval | Last entry is assistant with `stop_reason=tool_use` |
-| `waiting_for_response` | Tool ran, awaiting Claude | Last entry is user `tool_result` |
+| `waiting_for_tool_approval` | Needs user to approve a tool | Assistant `stop_reason=tool_use` + tool needs approval + entry age >60s |
+| `tool_running` | Tool is executing | Assistant `stop_reason=tool_use` + tool auto-approves or entry is recent |
+| `waiting_for_response` | Tool ran, Claude continuing | Last entry is user `tool_result` |
 | `unknown` | Other | File-history-snapshot, progress entries, etc. |
+
+### Tool Approval Classification
+
+`_tool_needs_approval(tool_name, permission_mode)` determines whether a tool call is likely waiting for user approval:
+
+- **Auto-approve tools** (never need approval): Read, Glob, Grep, Edit, Write, Task*, EnterPlanMode, NotebookEdit, TodoRead, TodoWrite
+- **Always-approval tools** (always need user action): ExitPlanMode, AskUserQuestion
+- **Permission-mode-dependent** (e.g. Bash): auto-approves in `bypassPermissions`, needs approval in `default`/`acceptEdits`
+
+For tools that *could* need approval, a timestamp-based heuristic confirms: if the entry is >60 seconds old with no follow-up, it's classified as `waiting_for_tool_approval`; otherwise `tool_running`.
+
+### Actionable vs Active States
+
+States are grouped for the analysis prompt and waiting-todo logic:
+- **Actionable** (`waiting_for_user`, `waiting_for_tool_approval`): user must act to continue. Claude may create "waiting" todos for these.
+- **Active** (`tool_running`, `waiting_for_response`): session is progressing on its own. Claude must NOT create "waiting" todos for these — they are filtered out in `_apply_result`.
 
 The state (plus a `last_assistant_text` snippet) is:
 - Included in `discover_sessions()` results as `state` and `state_info` fields
 - Included in `list_all_sessions()` results as a `state` field
 - Appended after each session's messages in the analysis prompt, e.g.:
   `[Session state: waiting_for_user — last assistant message: "Do you want me to proceed?"]`
-
-This gives Claude the context needed to create "waiting" todos for sessions that need user input, without passing full tool_use/tool_result content blocks.
+  `[Session state: active — Claude wants to use Bash. Tool is currently executing, NO user action needed]`
 
 ## Session Picker & Targeted Analysis
 
-- `GET /api/claude/sessions` returns lightweight metadata for **all** sessions (no age cutoff): `{key, project_dir, source_path, project_name, session_id, mtime, message_count}`
+- `GET /api/claude/sessions` returns lightweight metadata for **all** sessions (no age cutoff): `{key, project_dir, source_path, project_name, session_id, mtime, message_count, last_analyzed_mtime}`
 - The frontend ClaudeStatus component has a "Sessions" button that opens an inline picker showing all sessions grouped by project
+- Sessions show a "changed" badge when their `mtime` exceeds `last_analyzed_mtime`, indicating new activity since last analysis
 - Users can multi-select sessions and click "Analyze Selected" to analyze only those sessions
 - When `session_keys` is passed to `POST /api/claude/wake`, only those sessions are discovered (no age cutoff) and analyzed, bypassing staleness checks
 
@@ -148,3 +165,8 @@ When a user edits a Claude-created todo in the frontend (double-click to edit), 
 ## Concurrency
 
 An `asyncio.Lock` prevents concurrent analyses. If a manual wake is triggered while a scheduled analysis is running, it returns `{ "status": "busy" }`.
+
+`run_analysis` uses a 3-phase approach to minimize lock contention:
+1. **Phase 1** (short lock): read current state, build per-project snapshots
+2. **Phase 2** (no lock): invoke Claude for each project sequentially
+3. **Phase 3** (short lock): apply all results back to the store
