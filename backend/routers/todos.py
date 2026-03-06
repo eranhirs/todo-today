@@ -127,7 +127,8 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None
         prompt = f"Complete this task: {todo_text}"
         proc = subprocess.Popen(
             ["claude", "-p", "--output-format", "stream-json", "--verbose",
-             "--dangerously-skip-permissions"],
+             "--dangerously-skip-permissions",
+             "--disallowedTools", "AskUserQuestion"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
