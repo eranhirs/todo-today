@@ -80,6 +80,8 @@ export interface SessionInfo {
   mtime: number;
   message_count: number;
   last_analyzed_mtime: number | null;
+  state?: string;
+  state_source?: string;
 }
 
 export interface FullState {

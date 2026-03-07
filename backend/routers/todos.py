@@ -120,17 +120,21 @@ def _extract_assistant_text(line_json: dict) -> Optional[str]:
     return "\n".join(parts) if parts else None
 
 
-def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str) -> None:
+def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus") -> None:
     """Background thread: stream claude -p output and flush progress to the store."""
     proc = None
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         session_id = str(uuid.uuid4())
-        prompt = f"Complete this task: {todo_text}"
+        prompt = (
+            f"Implement this task fully — write all the code, make all the changes, "
+            f"do not stop to ask for feedback or approval: {todo_text}"
+        )
         proc = subprocess.Popen(
             ["claude", "-p", "--output-format", "stream-json", "--verbose",
              "--dangerously-skip-permissions",
              "--disallowedTools", "AskUserQuestion",
+             "--model", model,
              "--session-id", session_id],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -254,10 +258,11 @@ def run_todo(todo_id: str) -> dict:
         todo.run_status = "running"
         todo.run_output = None
         todo_text = todo.text
+        run_model = ctx.metadata.run_model
 
     thread = threading.Thread(
         target=_run_claude_for_todo,
-        args=(todo_id, todo_text, source_path),
+        args=(todo_id, todo_text, source_path, run_model),
         daemon=True,
     )
     thread.start()

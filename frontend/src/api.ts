@@ -70,4 +70,20 @@ export const api = {
     request<{ status: string }>(`/claude/insights/${id}/dismiss`, {
       method: "PUT",
     }),
+
+  getHookEvents: () =>
+    request<Record<string, { state: string; tool_name?: string; detail?: string; project_name?: string; timestamp: string; hook_event: string }>>("/claude/hooks/events"),
+
+  getHooksStatus: () =>
+    request<{ installed: boolean; installed_events: string[]; hook_script: string }>("/claude/hooks/status"),
+
+  installHooks: () =>
+    request<{ status: string; installed_events: string[] }>("/claude/hooks/install", {
+      method: "POST",
+    }),
+
+  uninstallHooks: () =>
+    request<{ status: string; removed_events: string[] }>("/claude/hooks/uninstall", {
+      method: "POST",
+    }),
 };

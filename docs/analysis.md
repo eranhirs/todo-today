@@ -102,7 +102,12 @@ On each analysis run, existing todos with invalid `project_id` values are also r
 
 ## Session End-State Detection
 
-`_detect_session_state(path)` reads the last ~10 entries of a session JSONL file (to capture `permissionMode` and recent user/assistant context) and classifies the session's current state:
+`_detect_session_state(path, session_key)` classifies a session's current state using two sources:
+
+1. **Hook state** (preferred): If [hooks](hooks.md) are installed, `data/hook_states.json` contains real-time state from Claude Code lifecycle events. This is checked first and used when available (`state_source: "hook"`).
+2. **JSONL heuristic** (fallback): Reads the last ~10 entries of the session JSONL file to infer state from `permissionMode`, stop reasons, and timestamps (`state_source: "jsonl"`).
+
+States detected:
 
 | State | Meaning | Trigger |
 |---|---|---|
@@ -123,6 +128,8 @@ On each analysis run, existing todos with invalid `project_id` values are also r
 
 For tools that *could* need approval, a timestamp-based heuristic confirms: if the entry is >60 seconds old with no follow-up, it's classified as `waiting_for_tool_approval`; otherwise `tool_running`.
 
+When [hooks](hooks.md) are installed, these heuristics are bypassed entirely — the hook fires at the exact moment of each event, so state is always accurate.
+
 ### Actionable vs Active States
 
 States are grouped for the analysis prompt and waiting-todo logic:
@@ -138,7 +145,7 @@ The state (plus a `last_assistant_text` snippet) is:
 
 ## Session Picker & Targeted Analysis
 
-- `GET /api/claude/sessions` returns lightweight metadata for **all** sessions (no age cutoff): `{key, project_dir, source_path, project_name, session_id, mtime, message_count, last_analyzed_mtime}`
+- `GET /api/claude/sessions` returns lightweight metadata for **all** sessions (no age cutoff): `{key, project_dir, source_path, project_name, session_id, mtime, message_count, last_analyzed_mtime, state, state_source}`
 - The frontend ClaudeStatus component has a "Sessions" button that opens an inline picker showing all sessions grouped by project
 - Sessions show a "changed" badge when their `mtime` exceeds `last_analyzed_mtime`, indicating new activity since last analysis
 - Users can multi-select sessions and click "Analyze Selected" to analyze only those sessions

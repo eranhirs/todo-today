@@ -12,6 +12,7 @@ import uuid as _uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .hook_state import get_hook_state
 from .models import (
     AnalysisEntry,
     ClaudeAnalysisResult,
@@ -250,13 +251,29 @@ _ALWAYS_APPROVAL_TOOLS = frozenset({
 })
 
 
-def _detect_session_state(path: Path) -> dict:
+def _detect_session_state(path: Path, session_key: str = None) -> dict:
     """Classify the current state of a session by inspecting the last few JSONL entries.
 
-    Returns {"state": str, "last_assistant_text": str | None}.
+    If hook state exists for this session, it takes priority over JSONL heuristics.
+
+    Returns {"state": str, "last_assistant_text": str | None, "state_source": str}.
     States: "ended", "waiting_for_user", "waiting_for_tool_approval",
             "tool_running", "waiting_for_response", "unknown".
     """
+    # Check hook state first (strictly more accurate than JSONL heuristics)
+    if session_key:
+        hook = get_hook_state(session_key)
+        if hook and "state" in hook:
+            result = {
+                "state": hook["state"],
+                "last_assistant_text": None,
+                "state_source": "hook",
+            }
+            if hook.get("tool_name"):
+                result["detail"] = f"Claude wants to use {hook['tool_name']}"
+            return result
+
+    # Fall through to JSONL heuristic
     # Read last ~10 entries (all types) to get permissionMode + user/assistant context
     tail_entries: list[dict] = []
     last_permission_mode: str = "default"
@@ -280,10 +297,10 @@ def _detect_session_state(path: Path) -> dict:
                         tail_entries.pop(0)
     except Exception:
         log.exception("Error reading session file for state detection: %s", path)
-        return {"state": "unknown", "last_assistant_text": None}
+        return {"state": "unknown", "last_assistant_text": None, "state_source": "jsonl"}
 
     if not tail_entries:
-        return {"state": "unknown", "last_assistant_text": None}
+        return {"state": "unknown", "last_assistant_text": None, "state_source": "jsonl"}
 
     last = tail_entries[-1]
     last_type = last.get("type")
@@ -320,7 +337,7 @@ def _detect_session_state(path: Path) -> dict:
 
             if not needs_approval:
                 # This tool auto-approves — it's running, not waiting for user
-                return {"state": "tool_running", "last_assistant_text": last_assistant_text, "detail": detail}
+                return {"state": "tool_running", "last_assistant_text": last_assistant_text, "detail": detail, "state_source": "jsonl"}
 
             # For tools that *could* need approval, use timestamp as confirmation.
             # If >60s old with no result, it's stuck waiting for the user.
@@ -335,14 +352,14 @@ def _detect_session_state(path: Path) -> dict:
                     pass
 
             if age_seconds is not None and age_seconds > 60:
-                return {"state": "waiting_for_tool_approval", "last_assistant_text": last_assistant_text, "detail": detail}
+                return {"state": "waiting_for_tool_approval", "last_assistant_text": last_assistant_text, "detail": detail, "state_source": "jsonl"}
             else:
-                return {"state": "tool_running", "last_assistant_text": last_assistant_text, "detail": detail}
+                return {"state": "tool_running", "last_assistant_text": last_assistant_text, "detail": detail, "state_source": "jsonl"}
         if stop_reason == "end_turn":
             # Check if the last text ends with a question mark
             if last_assistant_text and last_assistant_text.rstrip().endswith("?"):
-                return {"state": "waiting_for_user", "last_assistant_text": last_assistant_text}
-            return {"state": "ended", "last_assistant_text": last_assistant_text}
+                return {"state": "waiting_for_user", "last_assistant_text": last_assistant_text, "state_source": "jsonl"}
+            return {"state": "ended", "last_assistant_text": last_assistant_text, "state_source": "jsonl"}
 
     if last_type == "user":
         # Check if this is a tool_result (tool ran, Claude hasn't responded yet)
@@ -352,9 +369,9 @@ def _detect_session_state(path: Path) -> dict:
                 for block in content
             )
             if has_tool_result:
-                return {"state": "waiting_for_response", "last_assistant_text": last_assistant_text}
+                return {"state": "waiting_for_response", "last_assistant_text": last_assistant_text, "state_source": "jsonl"}
 
-    return {"state": "unknown", "last_assistant_text": last_assistant_text}
+    return {"state": "unknown", "last_assistant_text": last_assistant_text, "state_source": "jsonl"}
 
 
 def _format_session_state_line(state_info: dict) -> str:
@@ -432,9 +449,10 @@ def list_all_sessions() -> list[dict]:
             except Exception:
                 pass
 
-            state_info = _detect_session_state(jsonl_file)
+            session_key = f"{proj_dir.name}/{jsonl_file.stem}"
+            state_info = _detect_session_state(jsonl_file, session_key=session_key)
             sessions.append({
-                "key": f"{proj_dir.name}/{jsonl_file.stem}",
+                "key": session_key,
                 "project_dir": proj_dir.name,
                 "source_path": source_path,
                 "project_name": project_name,
@@ -442,6 +460,7 @@ def list_all_sessions() -> list[dict]:
                 "mtime": stat_mtime,
                 "message_count": msg_count,
                 "state": state_info["state"],
+                "state_source": state_info.get("state_source", "jsonl"),
             })
 
     sessions.sort(key=lambda s: s["mtime"], reverse=True)
@@ -552,6 +571,7 @@ Important:
 - **Supersession rule**: Before creating a `new_todo`, scan the existing todos list for any todo covering the same work (same session, same topic). If one exists: use `modified_todos` to update its text/status instead of creating a new one. If the old todo is now irrelevant (work completed or moved past it), use `status_updates` to mark it "stale" or "completed". Never leave multiple active todos for the same piece of work.
 - **"Waiting" cleanup**: If a session's state has moved past `waiting_for_tool_approval` or `waiting_for_user`, mark any existing "waiting" todo for that session as "stale" via `status_updates`.
 - `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
+- **Extract suggestions as todos**: When a session produces a list of concrete suggestions, ideas, or improvement proposals, extract each one as an individual `consider` todo. Don't summarize them as a single "review suggestions" item — the user wants each idea tracked separately so they can act on them independently.
 - **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
 
 First, write a brief analysis of what you observe in the sessions (2-4 sentences). Then output the JSON inside a ```json fenced code block.""")

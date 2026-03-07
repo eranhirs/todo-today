@@ -71,8 +71,15 @@ Key things to configure in the plists:
 All runtime data is stored in `data/` (gitignored):
 - `todos.json` — projects and todos
 - `metadata.json` — analysis history, scheduler state, cumulative usage
+- `hook_states.json` — real-time session states from Claude Code hooks (auto-generated when hooks are installed)
 
 The `data/` directory is created automatically on first run.
+
+## Hooks (Optional)
+
+Todo Today can install Claude Code hooks for real-time session state detection and instant notifications. See [hooks.md](hooks.md) for full details, example payloads, and testing instructions.
+
+To install, click **Install** in the Hooks section of the Claude Status panel, or call `POST /api/claude/hooks/install`.
 
 ## Ports
 

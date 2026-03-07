@@ -37,6 +37,8 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
   const [loadingSessions, setLoadingSessions] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [hooksInstalled, setHooksInstalled] = useState<boolean | null>(null);
+  const [hooksLoading, setHooksLoading] = useState(false);
 
   const isOverride = selectedModel !== metadata.analysis_model;
 
@@ -128,6 +130,34 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
     await api.setAnalysisModel(selectedModel);
     onRefresh();
   };
+
+  const checkHooksStatus = async () => {
+    try {
+      const res = await api.getHooksStatus();
+      setHooksInstalled(res.installed);
+    } catch {
+      setHooksInstalled(null);
+    }
+  };
+
+  const handleToggleHooks = async () => {
+    setHooksLoading(true);
+    try {
+      if (hooksInstalled) {
+        await api.uninstallHooks();
+      } else {
+        await api.installHooks();
+      }
+      await checkHooksStatus();
+    } finally {
+      setHooksLoading(false);
+    }
+  };
+
+  // Check hooks status on mount
+  if (hooksInstalled === null && !hooksLoading) {
+    checkHooksStatus();
+  }
 
   const isRecent = metadata.heartbeat &&
     (Date.now() - new Date(metadata.heartbeat).getTime()) < 10 * 60 * 1000;
@@ -251,6 +281,12 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
                           : "Never analyzed"}
                       >
                         {s.message_count} msgs · {formatTime(s.mtime)}
+                        {s.state && s.state !== "unknown" && (
+                          <span className={`session-state-badge state-${s.state}`} title={`Source: ${s.state_source || "jsonl"}`}>
+                            {s.state.replace(/_/g, " ")}
+                            {s.state_source === "hook" && <span className="live-dot" />}
+                          </span>
+                        )}
                         {s.last_analyzed_mtime && s.mtime > s.last_analyzed_mtime && (
                           <span className="session-changed-badge">changed</span>
                         )}
@@ -268,6 +304,21 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
           Total: {metadata.total_analyses} analyses | ${metadata.total_cost_usd.toFixed(2)} | {((metadata.total_input_tokens + metadata.total_output_tokens) / 1000).toFixed(1)}k tokens
         </div>
       )}
+      <div className="hooks-section">
+        <span className="hooks-label">
+          Hooks: {hooksInstalled === null ? "..." : hooksInstalled ? "installed" : "not installed"}
+        </span>
+        <button
+          className="btn-link"
+          onClick={handleToggleHooks}
+          disabled={hooksLoading || hooksInstalled === null}
+        >
+          {hooksLoading ? "..." : hooksInstalled ? "Uninstall" : "Install"}
+        </button>
+        {!hooksInstalled && hooksInstalled !== null && (
+          <span className="hooks-hint">Enables real-time session state detection</span>
+        )}
+      </div>
     </div>
   );
 }

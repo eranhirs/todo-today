@@ -15,6 +15,8 @@ log = logging.getLogger(__name__)
 
 scheduler = AsyncIOScheduler()
 _analysis_lock = asyncio.Lock()
+# Per-project timeout is 120s in _invoke_claude; allow headroom for multi-project runs
+_ANALYSIS_TIMEOUT = 300  # seconds
 
 
 async def _analysis_job() -> None:
@@ -25,7 +27,13 @@ async def _analysis_job() -> None:
         with StorageContext() as ctx:
             ctx.metadata.heartbeat = _now()
         log.info("Starting scheduled analysis")
-        entry = await asyncio.to_thread(run_analysis)
+        try:
+            entry = await asyncio.wait_for(
+                asyncio.to_thread(run_analysis), timeout=_ANALYSIS_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            log.error("Analysis timed out after %ds", _ANALYSIS_TIMEOUT)
+            return
         if entry is None:
             log.info("Analysis skipped — no session changes")
         else:
@@ -54,9 +62,15 @@ async def trigger_analysis(
             force = True
 
     async with _analysis_lock:
-        entry = await asyncio.to_thread(
-            run_analysis, force=force, model=model, session_keys=session_keys,
-        )
+        try:
+            entry = await asyncio.wait_for(
+                asyncio.to_thread(
+                    run_analysis, force=force, model=model, session_keys=session_keys,
+                ),
+                timeout=_ANALYSIS_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            return {"status": "error", "message": f"Analysis timed out after {_ANALYSIS_TIMEOUT}s"}
         if entry is None:
             return {"status": "skipped", "message": "No session changes since last analysis"}
         return {"status": "ok", "entry": entry.model_dump()}
