@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -12,6 +13,8 @@ from .models import _now
 from .storage import StorageContext
 
 log = logging.getLogger(__name__)
+
+DEMO_MODE = os.environ.get("TODO_DEMO", "").lower() in ("1", "true", "yes")
 
 scheduler = AsyncIOScheduler()
 _analysis_lock = asyncio.Lock()
@@ -22,6 +25,8 @@ _pending_hook_sessions: set[str] = set()
 
 
 async def _analysis_job() -> None:
+    if DEMO_MODE:
+        return
     if _analysis_lock.locked():
         log.info("Analysis already running, skipping scheduled tick")
         return
@@ -59,6 +64,8 @@ async def trigger_analysis(
     Force skips the staleness check (model override also implies force).
     If session_keys is provided, only those sessions are analyzed.
     """
+    if DEMO_MODE:
+        return {"status": "demo", "message": "Analysis disabled in demo mode"}
     if _analysis_lock.locked():
         return {"status": "busy", "message": "Analysis already in progress"}
 
@@ -90,6 +97,8 @@ async def queue_hook_analysis(session_key: str) -> dict:
     If analysis is idle, runs immediately. If busy, the session is queued
     and will be picked up when the current analysis finishes.
     """
+    if DEMO_MODE:
+        return {"status": "demo", "message": "Analysis disabled in demo mode"}
     with StorageContext(read_only=True) as ctx:
         if not ctx.metadata.hook_analysis_enabled:
             return {"status": "disabled", "message": "Hook-triggered analysis is paused"}

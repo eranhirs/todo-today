@@ -14,6 +14,8 @@ from fastapi import APIRouter, HTTPException
 from ..models import Todo, TodoCreate, TodoUpdate, _now
 from ..storage import StorageContext
 
+_DEMO_MODE = os.environ.get("TODO_DEMO", "").lower() in ("1", "true", "yes")
+
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/todos", tags=["todos"])
 
@@ -233,6 +235,8 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
 @router.post("/{todo_id}/run")
 def run_todo(todo_id: str) -> dict:
     """Kick off a Claude Code session to complete a todo."""
+    if _DEMO_MODE:
+        raise HTTPException(403, "Disabled in demo mode")
     if todo_id in _running_tasks and _running_tasks[todo_id].is_alive():
         raise HTTPException(409, "This todo is already running")
 

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
 log = logging.getLogger(__name__)
 
-_STATE_FILE = Path(__file__).resolve().parent.parent / "data" / "hook_states.json"
+_DATA_DIR = Path(os.environ.get("TODO_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+_STATE_FILE = _DATA_DIR / "hook_states.json"
 
 
 def load_hook_states() -> dict:

@@ -29,6 +29,10 @@ start-local.sh
 IDEAS.md
 plans/
 
+# Demo
+demo/data/
+demo/uvicorn.log
+
 # Logs
 uvicorn.log
 .uvicorn.pid
