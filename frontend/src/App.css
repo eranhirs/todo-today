@@ -614,10 +614,39 @@ body {
 .hooks-label {
   color: var(--text-dim);
 }
-.hooks-hint {
+.hooks-tooltip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--text-dim);
   color: var(--text-dim);
-  font-size: 0.65rem;
-  font-style: italic;
+  font-size: 0.6rem;
+  cursor: help;
+  flex-shrink: 0;
+}
+
+.analysis-toggles {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.75rem;
+}
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.toggle-row input[type="checkbox"] {
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 /* Toast notifications */
@@ -642,7 +671,22 @@ body {
   animation: toast-in 0.3s ease-out;
   border-left: 3px solid var(--text-dim);
   background: var(--card-bg);
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
+.toast-text { flex: 1; }
+.toast-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+}
+.toast-dismiss:hover { color: var(--text); }
 .toast-info {
   border-left-color: var(--blue);
   background: var(--card-bg);
@@ -663,6 +707,53 @@ body {
 @keyframes toast-in {
   from { opacity: 0; transform: translateX(20px); }
   to { opacity: 1; transform: translateX(0); }
+}
+
+/* Notification log */
+.notif-log-section {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.notif-log-toggle {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.notif-log {
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notif-log-empty {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 4px 0;
+}
+.notif-log-entry {
+  font-size: 0.7rem;
+  padding: 4px 6px;
+  border-radius: 3px;
+  border-left: 2px solid var(--text-dim);
+  background: var(--sidebar-bg);
+  display: flex;
+  gap: 6px;
+}
+.notif-log-entry.notif-warning { border-left-color: var(--amber); }
+.notif-log-entry.notif-success { border-left-color: var(--green); }
+.notif-log-entry.notif-error { border-left-color: var(--red); }
+.notif-log-entry.notif-info { border-left-color: var(--blue); }
+.notif-log-time {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  font-size: 0.65rem;
+}
+.notif-log-text {
+  color: var(--text);
+  word-break: break-word;
 }
 
 /* Run with Claude */

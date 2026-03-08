@@ -315,9 +315,34 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
         >
           {hooksLoading ? "..." : hooksInstalled ? "Uninstall" : "Install"}
         </button>
-        {!hooksInstalled && hooksInstalled !== null && (
-          <span className="hooks-hint">Enables real-time session state detection</span>
-        )}
+        <span
+          className="hooks-tooltip-icon"
+          title="Adds lifecycle hooks to ~/.claude/settings.json that fire on session start/end and permission requests. This lets Todo Today detect session state in real time instead of polling JSONL files."
+        >?</span>
+      </div>
+      <div className="analysis-toggles">
+        <label className="toggle-row" title="Periodic heartbeat analysis on a timer">
+          <input
+            type="checkbox"
+            checked={metadata.heartbeat_enabled}
+            onChange={async (e) => {
+              await api.setHeartbeatEnabled(e.target.checked);
+              onRefresh();
+            }}
+          />
+          <span>Scheduled analysis</span>
+        </label>
+        <label className="toggle-row" title="Auto-analyze when a hook event fires (session end, etc.)">
+          <input
+            type="checkbox"
+            checked={metadata.hook_analysis_enabled}
+            onChange={async (e) => {
+              await api.setHookAnalysisEnabled(e.target.checked);
+              onRefresh();
+            }}
+          />
+          <span>Hook-triggered analysis</span>
+        </label>
       </div>
     </div>
   );

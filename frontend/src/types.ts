@@ -69,6 +69,8 @@ export interface Metadata {
   analysis_interval_minutes: number;
   analysis_model: string;
   insights: Insight[];
+  heartbeat_enabled: boolean;
+  hook_analysis_enabled: boolean;
 }
 
 export interface SessionInfo {

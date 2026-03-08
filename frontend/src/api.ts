@@ -86,4 +86,16 @@ export const api = {
     request<{ status: string; removed_events: string[] }>("/claude/hooks/uninstall", {
       method: "POST",
     }),
+
+  setHeartbeatEnabled: (enabled: boolean) =>
+    request<{ heartbeat_enabled: boolean }>("/claude/heartbeat/enabled", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  setHookAnalysisEnabled: (enabled: boolean) =>
+    request<{ hook_analysis_enabled: boolean }>("/claude/hook-analysis/enabled", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
 };

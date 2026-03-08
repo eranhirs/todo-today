@@ -32,11 +32,21 @@ def get_hook_state(session_key: str) -> Optional[dict]:
     return states.get(session_key)
 
 
-def get_actionable_sessions() -> dict:
-    """Return all sessions in a notifiable state (waiting or recently ended)."""
+def get_actionable_sessions(exclude_session_ids: set = None) -> dict:
+    """Return all sessions in a notifiable state (waiting or recently ended).
+
+    Sessions whose session_id is in exclude_session_ids are filtered out
+    (used to skip analysis/run subprocess sessions).
+    """
     states = load_hook_states()
-    return {
-        key: entry
-        for key, entry in states.items()
-        if entry.get("state") in ("waiting_for_user", "waiting_for_tool_approval", "ended")
-    }
+    result = {}
+    for key, entry in states.items():
+        if entry.get("state") not in ("waiting_for_user", "waiting_for_tool_approval", "ended"):
+            continue
+        # key is "project_dir/session_id" — extract the session_id part
+        if exclude_session_ids:
+            session_id = key.split("/", 1)[-1] if "/" in key else key
+            if session_id in exclude_session_ids:
+                continue
+        result[key] = entry
+    return result

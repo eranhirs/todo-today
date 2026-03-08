@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from ..claude_analyzer import list_all_sessions
 from ..hook_state import get_actionable_sessions
 from ..models import AnalysisEntry, Metadata
-from ..scheduler import set_interval, trigger_analysis
+from ..scheduler import queue_hook_analysis, set_interval, trigger_analysis
 from ..storage import StorageContext
 
 log = logging.getLogger(__name__)
@@ -77,6 +77,22 @@ def history() -> list[AnalysisEntry]:
         return ctx.metadata.history
 
 
+@router.put("/heartbeat/enabled")
+def set_heartbeat_enabled(body: dict) -> dict:
+    enabled = body.get("enabled", True)
+    with StorageContext() as ctx:
+        ctx.metadata.heartbeat_enabled = enabled
+    return {"heartbeat_enabled": enabled}
+
+
+@router.put("/hook-analysis/enabled")
+def set_hook_analysis_enabled(body: dict) -> dict:
+    enabled = body.get("enabled", True)
+    with StorageContext() as ctx:
+        ctx.metadata.hook_analysis_enabled = enabled
+    return {"hook_analysis_enabled": enabled}
+
+
 @router.put("/insights/{insight_id}/dismiss")
 def dismiss_insight(insight_id: str) -> dict:
     with StorageContext() as ctx:
@@ -127,10 +143,22 @@ def _save_settings(settings: dict) -> None:
         json.dump(settings, f, indent=2)
 
 
+class HookAnalyzeRequest(BaseModel):
+    session_key: str
+
+
+@router.post("/hooks/analyze")
+async def hooks_analyze(body: HookAnalyzeRequest) -> dict:
+    """Queue a session for analysis, triggered by a hook event."""
+    return await queue_hook_analysis(body.session_key)
+
+
 @router.get("/hooks/events")
 def hooks_events() -> dict:
-    """Return sessions in notifiable states (waiting or recently ended)."""
-    return get_actionable_sessions()
+    """Return sessions in notifiable states, excluding analysis/run subprocesses."""
+    with StorageContext(read_only=True) as ctx:
+        exclude = set(ctx.metadata.analysis_session_ids)
+    return get_actionable_sessions(exclude_session_ids=exclude)
 
 
 @router.get("/hooks/status")

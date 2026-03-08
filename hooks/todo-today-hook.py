@@ -10,6 +10,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -21,6 +22,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "data")
 STATE_FILE = os.path.join(DATA_DIR, "hook_states.json")
 EXPIRY_SECONDS = 86400  # 24 hours
+API_BASE = "http://localhost:5152"
 
 
 def _session_key_from_transcript(transcript_path: str) -> Optional[str]:
@@ -96,6 +98,8 @@ def _map_event_to_state(event: dict) -> Optional[dict]:
     elif hook_event == "SessionEnd":
         return {
             "state": "ended",
+            "project_name": project_name,
+            "cwd": cwd,
             "timestamp": now,
             "hook_event": hook_event,
         }
@@ -118,6 +122,21 @@ def _expire_old_entries(states: dict) -> dict:
     for key in to_remove:
         del states[key]
     return states
+
+
+def _trigger_analysis(session_key: str) -> None:
+    """Fire-and-forget: ask the backend to analyze this session."""
+    try:
+        subprocess.Popen(
+            ["curl", "-s", "-X", "POST",
+             "-H", "Content-Type: application/json",
+             "-d", json.dumps({"session_key": session_key}),
+             f"{API_BASE}/api/claude/hooks/analyze"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass  # best-effort — don't block the hook
 
 
 def main() -> None:
@@ -177,6 +196,10 @@ def main() -> None:
                 raise
         finally:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
+
+    # Trigger analysis for sessions that just ended
+    if hook_event in ("Stop", "SessionEnd"):
+        _trigger_analysis(session_key)
 
 
 if __name__ == "__main__":

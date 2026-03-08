@@ -112,6 +112,8 @@ class Metadata(BaseModel):
     run_model: str = "opus"
     insights: List[Insight] = []
     analysis_session_ids: List[str] = []
+    heartbeat_enabled: bool = True
+    hook_analysis_enabled: bool = True
 
 
 # ── API request/response helpers ───────────────────────────────

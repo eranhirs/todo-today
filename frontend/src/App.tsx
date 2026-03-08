@@ -8,7 +8,7 @@ import { UpdateHistory } from "./components/UpdateHistory";
 import "./App.css";
 
 const POLL_INTERVAL = 3_000;
-const TOAST_DURATION = 6_000;
+const TOAST_DURATION = 12_000;
 
 type ToastType = "info" | "warning" | "success" | "error";
 
@@ -18,9 +18,18 @@ interface Toast {
   type: ToastType;
 }
 
+interface NotificationLogEntry {
+  id: string;
+  text: string;
+  type: ToastType;
+  timestamp: string;
+}
+
 function App() {
   const [state, setState] = useState<FullState | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [notificationLog, setNotificationLog] = useState<NotificationLogEntry[]>([]);
+  const [showNotifLog, setShowNotifLog] = useState(false);
   const [selectedProject, setSelectedProject] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get("project");
@@ -44,9 +53,17 @@ function App() {
   const addToast = useCallback((text: string, type: ToastType = "info") => {
     const id = Math.random().toString(36).slice(2);
     setToasts((prev) => [...prev, { id, text, type }]);
+    setNotificationLog((prev) => [
+      { id, text, type, timestamp: new Date().toLocaleTimeString() },
+      ...prev,
+    ].slice(0, 50));
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, TOAST_DURATION);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
   const notifyNewWaitingTodos = useCallback((todos: Todo[]) => {
@@ -56,12 +73,8 @@ function App() {
     const prev = knownWaitingIds.current;
 
     if (prev === null) {
-      // First load — notify for any existing waiting items
+      // First load — seed known set without toasting
       knownWaitingIds.current = currentWaitingIds;
-      const existing = todos.filter((t) => t.status === "waiting");
-      for (const todo of existing) {
-        addToast(todo.text, "warning");
-      }
       return;
     }
 
@@ -90,16 +103,26 @@ function App() {
     }
   }, [addToast]);
 
+  const hookSeeded = useRef(false);
+
   const notifyHookEvents = useCallback(async () => {
     try {
       const events = await api.getHookEvents();
       const prev = knownHookStates.current;
       const next = new Map<string, string>();
 
+      const isFirstPoll = !hookSeeded.current;
+      if (isFirstPoll) hookSeeded.current = true;
+
       for (const [key, entry] of Object.entries(events)) {
         next.set(key, entry.state);
         const prevState = prev.get(key);
-        if (prevState === entry.state) continue; // no change
+
+        // Skip if state unchanged
+        if (prevState === entry.state) continue;
+
+        // On first poll, only notify for active waiting states (not ended)
+        if (isFirstPoll && entry.state === "ended") continue;
 
         const project = entry.project_name || "unknown project";
         let msg: string;
@@ -159,7 +182,9 @@ function App() {
     knownRunningIds.current = nowRunning;
   }, [addToast]);
 
-  const refresh = useCallback(async () => {
+  // Use a ref to always call the latest callbacks without re-creating the interval
+  const refreshRef = useRef<(() => Promise<void>) | null>(null);
+  refreshRef.current = async () => {
     try {
       const data = await api.getState();
       setState(data);
@@ -171,7 +196,11 @@ function App() {
     } catch (err) {
       console.error("Failed to fetch state:", err);
     }
-  }, [notifyNewWaitingTodos, notifyRunCompletions, notifyHookEvents]);
+  };
+
+  const refresh = useCallback(async () => {
+    await refreshRef.current?.();
+  }, []);
 
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
@@ -192,7 +221,10 @@ function App() {
       {toasts.length > 0 && (
         <div className="toast-container">
           {toasts.map((t) => (
-            <div key={t.id} className={`toast toast-${t.type}`}>{t.text}</div>
+            <div key={t.id} className={`toast toast-${t.type}`}>
+              <span className="toast-text">{t.text}</span>
+              <button className="toast-dismiss" onClick={() => dismissToast(t.id)}>&times;</button>
+            </div>
           ))}
         </div>
       )}
@@ -206,6 +238,25 @@ function App() {
           onRefresh={refresh}
         />
         <UpdateHistory history={state.metadata.history} />
+        <div className="notif-log-section">
+          <button className="btn-link notif-log-toggle" onClick={() => setShowNotifLog((v) => !v)}>
+            {showNotifLog ? "▾" : "▸"} Notifications ({notificationLog.length})
+          </button>
+          {showNotifLog && (
+            <div className="notif-log">
+              {notificationLog.length === 0 ? (
+                <div className="notif-log-empty">No notifications yet</div>
+              ) : (
+                notificationLog.map((n) => (
+                  <div key={n.id} className={`notif-log-entry notif-${n.type}`}>
+                    <span className="notif-log-time">{n.timestamp}</span>
+                    <span className="notif-log-text">{n.text}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </aside>
       <main className="main">
         <TodoList
