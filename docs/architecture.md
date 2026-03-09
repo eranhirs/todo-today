@@ -6,11 +6,12 @@ Claude Todos is a Claude-integrated todo app that bridges your Claude Code sessi
 
 ## How It Works
 
-1. **Scheduler** runs every 5 minutes, scanning recent Claude Code sessions from `~/.claude/projects/`
-2. **Claude analyzer** extracts session transcripts and asks Claude (via CLI) to identify completed work and suggest new tasks
-3. Results are applied to the todo store — marking todos complete, adding new ones, discovering new projects
-4. **Frontend** polls every 3 seconds, reflecting changes in real time
-5. **Run with Claude**: Users can click a play button on any todo to spawn a `claude -p` session that works on the task in the project directory. The background process updates the todo with output on completion.
+1. **Hooks** (recommended) — Claude Code lifecycle hooks trigger analysis instantly when sessions end or need attention
+2. **Scheduler** — periodic fallback (default 30m) scans recent Claude Code sessions from `~/.claude/projects/`
+3. **Claude analyzer** extracts session transcripts and asks Claude (via CLI) to identify completed work and suggest new tasks
+4. Results are applied to the todo store — marking todos complete, adding new ones, discovering new projects
+5. **Frontend** polls every 3 seconds, reflecting changes in real time
+6. **Run with Claude** — users can click a play button on any todo to spawn a `claude -p` session that works on the task in the project directory. The background process updates the todo with output on completion.
 
 ## Tech Stack
 
@@ -29,7 +30,7 @@ claude_todos/
 │   ├── main.py              # FastAPI app, lifespan, /api/state endpoint
 │   ├── models.py            # Pydantic models (Project, Todo, AnalysisEntry, Metadata)
 │   ├── storage.py           # Thread-safe JSON file persistence
-│   ├── scheduler.py         # APScheduler (5-min interval analysis)
+│   ├── scheduler.py         # APScheduler (periodic + hook-triggered analysis)
 │   ├── claude_analyzer.py   # Session discovery, prompt building, Claude CLI invocation
 │   ├── hook_state.py        # Reader for hook-based session state
 │   └── routers/

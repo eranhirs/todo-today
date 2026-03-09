@@ -107,7 +107,7 @@ class Metadata(BaseModel):
     total_analyses: int = 0
     last_session_mtime: float = 0.0
     session_mtimes: Dict[str, float] = {}
-    analysis_interval_minutes: int = 5
+    analysis_interval_minutes: int = 30
     analysis_model: str = "haiku"
     run_model: str = "opus"
     insights: List[Insight] = []
