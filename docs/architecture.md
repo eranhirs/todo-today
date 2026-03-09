@@ -10,8 +10,9 @@ Claude Todos is a Claude-integrated todo app that bridges your Claude Code sessi
 2. **Scheduler** — periodic fallback (default 30m) scans recent Claude Code sessions from `~/.claude/projects/`
 3. **Claude analyzer** extracts session transcripts and asks Claude (via CLI) to identify completed work and suggest new tasks
 4. Results are applied to the todo store — marking todos complete, adding new ones, discovering new projects
-5. **Frontend** polls every 3 seconds, reflecting changes in real time
-6. **Run with Claude** — users can click a play button on any todo to spawn a `claude -p` session that works on the task in the project directory. The background process updates the todo with output on completion.
+5. **Autopilot** — after each analysis, projects with `auto_run_quota > 0` automatically pick up "next" todos and run them with Claude. Sequential within each project, oldest first. The cycle repeats: analysis discovers todos → Autopilot runs them → next analysis picks up the results.
+6. **Frontend** polls every 3 seconds, reflecting changes in real time
+7. **Run with Claude** — users can click a play button on any todo to spawn a `claude -p` session that works on the task in the project directory. The background process updates the todo with output on completion.
 
 ## Tech Stack
 

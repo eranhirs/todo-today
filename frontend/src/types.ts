@@ -4,6 +4,7 @@ export interface Project {
   id: string;
   name: string;
   source_path: string;
+  auto_run_quota: number;
   created_at: string;
 }
 

@@ -101,4 +101,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ enabled }),
     }),
+
+  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number }) =>
+    request<Project>(`/projects/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    }),
 };

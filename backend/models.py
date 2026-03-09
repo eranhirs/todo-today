@@ -25,6 +25,7 @@ class Project(BaseModel):
     id: str = Field(default_factory=lambda: _id("proj"))
     name: str
     source_path: str = ""
+    auto_run_quota: int = 0  # 0 = autopilot disabled, 1+ = max todos to auto-run per cycle
     created_at: str = Field(default_factory=_now)
 
 
@@ -127,6 +128,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     source_path: Optional[str] = None
+    auto_run_quota: Optional[int] = None
 
 
 class TodoCreate(BaseModel):

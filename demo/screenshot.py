@@ -67,6 +67,14 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
         paths.append(jpeg_path)
         print(f"  Saved {jpeg_path}")
 
+        # Autopilot detail — crop to the project list area
+        project_list = page.locator(".project-list").first
+        if project_list.count() > 0:
+            autopilot_path = output_dir / "autopilot.png"
+            project_list.screenshot(path=str(autopilot_path))
+            paths.append(autopilot_path)
+            print(f"  Saved {autopilot_path}")
+
         browser.close()
 
     return paths

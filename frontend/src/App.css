@@ -146,7 +146,22 @@ body {
 .project-item.active { background: var(--accent); color: #fff; }
 .project-item.active .btn-delete { color: rgba(255,255,255,0.7); }
 
-.project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+.autopilot-select {
+  padding: 1px 2px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  cursor: pointer;
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+.autopilot-select:hover { border-color: var(--border); color: var(--text); }
+.project-item.active .autopilot-select { color: rgba(255,255,255,0.8); }
+.project-item.active .autopilot-select:hover { border-color: rgba(255,255,255,0.4); color: #fff; }
 
 /* Buttons */
 

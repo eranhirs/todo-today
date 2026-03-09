@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .claude_analyzer import run_analysis
 from .models import _now
+from .routers.todos import is_todo_running, start_todo_run
 from .storage import StorageContext
 
 log = logging.getLogger(__name__)
@@ -48,6 +49,57 @@ async def _run_with_lock(coro, timeout: float = _ANALYSIS_TIMEOUT):
         _analysis_lock.release()
 
 
+async def _auto_run_todos() -> None:
+    """Pick eligible 'next' todos and run them with Claude, respecting per-project autopilot quota."""
+    with StorageContext(read_only=True) as ctx:
+        todos = list(ctx.store.todos)
+        projects = {p.id: p for p in ctx.store.projects}
+
+    # Group eligible todos by project
+    by_project: dict[str, list] = {}
+    has_running: set[str] = set()
+    for t in todos:
+        if t.run_status == "running" or is_todo_running(t.id):
+            has_running.add(t.project_id)
+        if t.status == "next":
+            by_project.setdefault(t.project_id, []).append(t)
+
+    for project_id, candidates in by_project.items():
+        proj = projects.get(project_id)
+        if not proj or not proj.source_path:
+            continue
+        # Per-project autopilot: 0 = disabled
+        if proj.auto_run_quota <= 0:
+            continue
+        if project_id in has_running:
+            log.info("Autopilot: skipping project %s — already has a running todo", project_id)
+            continue
+
+        # Sort by created_at (oldest first) and pick up to project's quota
+        candidates.sort(key=lambda t: t.created_at)
+        to_run = candidates[:proj.auto_run_quota]
+
+        for todo in to_run:
+            log.info("Autopilot: starting todo %s (%s)", todo.id, todo.text[:60])
+            err = start_todo_run(todo.id)
+            if err:
+                log.warning("Autopilot: failed to start todo %s: %s", todo.id, err)
+                continue
+            # Wait for completion before starting next in same project
+            await _wait_for_todo(todo.id)
+
+
+async def _wait_for_todo(todo_id: str, poll_interval: float = 5.0, timeout: float = 600.0) -> None:
+    """Poll until a todo's background thread finishes."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not is_todo_running(todo_id):
+            return
+        await asyncio.sleep(poll_interval)
+    log.warning("Autopilot: timed out waiting for todo %s after %ds", todo_id, timeout)
+
+
 async def _analysis_job() -> None:
     if DEMO_MODE:
         return
@@ -71,6 +123,12 @@ async def _analysis_job() -> None:
         log.info("Analysis skipped — no session changes")
     else:
         log.info("Analysis complete: %s", entry.summary)
+
+    # Auto-run eligible todos after analysis (outside the lock)
+    try:
+        await _auto_run_todos()
+    except Exception:
+        log.exception("Autopilot failed after scheduled analysis")
 
 
 async def trigger_analysis(
@@ -150,6 +208,12 @@ async def _drain_hook_queue() -> None:
                 log.info("Hook analysis: no changes for queued sessions")
         except asyncio.TimeoutError:
             return
+
+    # Auto-run eligible todos after hook analysis (outside the lock)
+    try:
+        await _auto_run_todos()
+    except Exception:
+        log.exception("Autopilot failed after hook analysis")
 
 
 def start_scheduler() -> None:

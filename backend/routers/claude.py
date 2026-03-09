@@ -93,6 +93,7 @@ def set_hook_analysis_enabled(body: dict) -> dict:
     return {"hook_analysis_enabled": enabled}
 
 
+
 @router.put("/insights/{insight_id}/dismiss")
 def dismiss_insight(insight_id: str) -> dict:
     with StorageContext() as ctx:

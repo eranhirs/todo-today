@@ -163,6 +163,30 @@ Todos with `source="user"` are protected from Claude agent modifications. This i
 
 When a user edits a Claude-created todo in the frontend (double-click to edit), the todo's `source` is changed from `"claude"` to `"user"`, activating this protection.
 
+## Autopilot
+
+After each analysis cycle (scheduled, hook-triggered, or manual), the scheduler runs **Autopilot** — automatically picking up eligible "next" todos and running them with Claude.
+
+### How it works
+
+1. For each project, check `project.auto_run_quota` — if 0, skip (disabled)
+2. Skip projects that already have a running todo
+3. Sort eligible "next" todos by `created_at` (oldest first)
+4. Pick up to `auto_run_quota` todos and run them sequentially (wait for each to finish before starting the next)
+5. Each run spawns a `claude -p` session in the project's `source_path` directory
+
+### Configuration
+
+Autopilot is configured per-project via the `auto_run_quota` field on the Project model:
+- **0** (default) — Autopilot disabled for this project
+- **1+** — max todos to auto-run per cycle
+
+Set it from the project list sidebar in the UI (rocket icon dropdown) or via `PUT /api/projects/{id}` with `{ "auto_run_quota": N }`.
+
+### The loop
+
+Analysis discovers todos → Autopilot runs "next" todos → Claude works on them → next analysis discovers the results → new todos appear → Autopilot runs those → repeat. This creates a closed-loop system where Claude continuously works through a project's task backlog.
+
 ## Triggers
 
 - **Automatic**: APScheduler runs analysis every N minutes (configurable, default 5)

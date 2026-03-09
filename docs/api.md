@@ -23,10 +23,11 @@ Create a project.
 Get a single project.
 
 ### `PUT /api/projects/{project_id}`
-Update project name or source_path.
+Update project name, source_path, or autopilot quota.
 ```json
-{ "name": "new-name" }
+{ "name": "new-name", "auto_run_quota": 2 }
 ```
+`auto_run_quota`: 0 = Autopilot disabled, 1+ = max todos to auto-run per cycle for this project.
 
 ### `DELETE /api/projects/{project_id}`
 Delete a project and all its todos.

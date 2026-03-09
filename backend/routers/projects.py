@@ -38,6 +38,8 @@ def update_project(project_id: str, body: ProjectUpdate) -> Project:
                     p.name = body.name
                 if body.source_path is not None:
                     p.source_path = body.source_path
+                if body.auto_run_quota is not None:
+                    p.auto_run_quota = max(0, min(10, body.auto_run_quota))
                 return p
     raise HTTPException(404, "Project not found")
 

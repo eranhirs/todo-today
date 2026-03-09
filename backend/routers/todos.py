@@ -232,13 +232,13 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         _running_tasks.pop(todo_id, None)
 
 
-@router.post("/{todo_id}/run")
-def run_todo(todo_id: str) -> dict:
-    """Kick off a Claude Code session to complete a todo."""
-    if _DEMO_MODE:
-        raise HTTPException(403, "Disabled in demo mode")
+def start_todo_run(todo_id: str) -> str | None:
+    """Start a Claude run for a todo. Returns None on success, or an error string.
+
+    Used by the /run endpoint and by the scheduler for auto-run.
+    """
     if todo_id in _running_tasks and _running_tasks[todo_id].is_alive():
-        raise HTTPException(409, "This todo is already running")
+        return "already running"
 
     with StorageContext() as ctx:
         todo = None
@@ -248,15 +248,14 @@ def run_todo(todo_id: str) -> dict:
                 todo = t
                 break
         if todo is None:
-            raise HTTPException(404, "Todo not found")
+            return "todo not found"
 
-        # Find the project's source_path
         for p in ctx.store.projects:
             if p.id == todo.project_id:
                 source_path = p.source_path
                 break
         if not source_path:
-            raise HTTPException(400, "Project has no source_path configured")
+            return "no source_path"
 
         todo.status = "in_progress"
         todo.run_status = "running"
@@ -271,5 +270,28 @@ def run_todo(todo_id: str) -> dict:
     )
     thread.start()
     _running_tasks[todo_id] = thread
+    return None
+
+
+def is_todo_running(todo_id: str) -> bool:
+    """Check if a todo has an active background thread."""
+    return todo_id in _running_tasks and _running_tasks[todo_id].is_alive()
+
+
+@router.post("/{todo_id}/run")
+def run_todo(todo_id: str) -> dict:
+    """Kick off a Claude Code session to complete a todo."""
+    if _DEMO_MODE:
+        raise HTTPException(403, "Disabled in demo mode")
+
+    err = start_todo_run(todo_id)
+    if err == "already running":
+        raise HTTPException(409, "This todo is already running")
+    if err == "todo not found":
+        raise HTTPException(404, "Todo not found")
+    if err == "no source_path":
+        raise HTTPException(400, "Project has no source_path configured")
+    if err:
+        raise HTTPException(500, err)
 
     return {"status": "started"}

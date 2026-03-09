@@ -1,6 +1,6 @@
 # Claude Todos
 
-A self-managing todo app powered by Claude. It watches your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions and automatically discovers what you're working on — marking tasks complete, suggesting next steps, tracking new projects, and sending you notifications when Claude needs your attention.
+A self-managing todo app powered by Claude. It watches your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions and automatically discovers what you're working on — marking tasks complete, suggesting next steps, and tracking new projects. With **Autopilot**, it goes further: Claude automatically picks up todos and works on them, creating a closed loop where analysis discovers work → Autopilot executes it → the cycle repeats.
 
 ![Claude Todos screenshot](docs/images/screenshot.jpeg)
 
@@ -9,8 +9,9 @@ A self-managing todo app powered by Claude. It watches your [Claude Code](https:
 1. [Claude Code hooks](docs/hooks.md) detect session lifecycle events (start, end, permission requests) in real time
 2. When a session ends or needs attention, analysis is triggered immediately — Claude reads the session transcript to identify completed work and suggest new tasks
 3. Results are applied to your todo list — completing tasks, adding new ones, discovering new projects
-4. A periodic scheduler (default 30m) acts as a fallback, catching sessions that occurred while the app was offline
-5. A web UI shows everything in real time, with full analysis history and usage tracking
+4. **Autopilot** picks up "next" todos and runs them automatically — Claude works on each task in the project directory, then the cycle repeats
+5. A periodic scheduler (default 30m) acts as a fallback, catching sessions that occurred while the app was offline
+6. A web UI shows everything in real time, with full analysis history and usage tracking
 
 ## Quick Start
 
@@ -64,6 +65,14 @@ Open http://localhost:5173.
 - **Manual trigger** — "Wake Up Claude" button for on-demand analysis
 - **Session picker** — select specific sessions to analyze, or let the scheduler pick recent ones
 - **Debug panel** — view hook event log and current session states for troubleshooting
+
+### Autopilot
+- **Per-project quota** — set how many todos to auto-run per project per cycle (0 = off, 1+ = on)
+- **Closed loop** — analysis discovers todos → Autopilot picks up "next" todos → Claude works on them → next analysis discovers more → repeat
+- **Sequential execution** — within a project, todos run one at a time (oldest first) to avoid conflicts
+- **No global toggle** — each project controls its own Autopilot independently from the project list sidebar
+
+![Autopilot per-project controls](docs/images/autopilot.png)
 
 ### Todo Management
 - **Six statuses** — next, in progress, waiting, completed, consider (backlog), stale
