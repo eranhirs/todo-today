@@ -28,5 +28,5 @@ pip install -q -r requirements.txt
 lsof -ti:5151 2>/dev/null | xargs kill 2>/dev/null || true
 
 # Start server
-echo "Starting Todo Today on http://localhost:5151"
+echo "Starting Claude Todos on http://localhost:5151"
 exec uvicorn backend.main:app --host 0.0.0.0 --port 5151

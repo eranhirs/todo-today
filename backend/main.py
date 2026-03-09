@@ -1,4 +1,4 @@
-"""FastAPI application for Todo Today."""
+"""FastAPI application for Claude Todos."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title="Todo Today", lifespan=lifespan)
+app = FastAPI(title="Claude Todos", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

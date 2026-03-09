@@ -98,7 +98,7 @@ function App() {
         const body = todo.session_id
           ? `${todo.text}\n(session: ${todo.session_id.slice(0, 8)}…)`
           : todo.text;
-        const n = new Notification("Todo Today", { body });
+        const n = new Notification("Claude Todos", { body });
         n.onclick = () => { window.focus(); n.close(); };
       }
     }
@@ -149,7 +149,7 @@ function App() {
         addToast(msg, type);
 
         if ("Notification" in window && Notification.permission === "granted") {
-          const n = new Notification(`Todo Today — ${project}`, { body: msg });
+          const n = new Notification(`Claude Todos — ${project}`, { body: msg });
           n.onclick = () => { window.focus(); n.close(); };
         }
       }
@@ -193,7 +193,7 @@ function App() {
       notifyRunCompletions(data.todos);
       notifyHookEvents();
       const waitingCount = data.todos.filter((t) => t.status === "waiting").length;
-      document.title = waitingCount > 0 ? `(${waitingCount}) Todo Today` : "Todo Today";
+      document.title = waitingCount > 0 ? `(${waitingCount}) Claude Todos` : "Claude Todos";
     } catch (err) {
       console.error("Failed to fetch state:", err);
     }
@@ -230,7 +230,7 @@ function App() {
         </div>
       )}
       <aside className="sidebar">
-        <h1 className="app-title">Todo Today</h1>
+        <h1 className="app-title">Claude Todos</h1>
         <ClaudeStatus metadata={state.metadata} onRefresh={refresh} />
         <ProjectList
           projects={state.projects}

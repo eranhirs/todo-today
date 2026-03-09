@@ -1,8 +1,8 @@
-# Todo Today — Architecture
+# Claude Todos — Architecture
 
 ## Overview
 
-Todo Today is a Claude-integrated todo app that bridges your Claude Code sessions to a persistent task list. It automatically discovers what you're working on and suggests/completes tasks.
+Claude Todos is a Claude-integrated todo app that bridges your Claude Code sessions to a persistent task list. It automatically discovers what you're working on and suggests/completes tasks.
 
 ## How It Works
 
@@ -24,7 +24,7 @@ Todo Today is a Claude-integrated todo app that bridges your Claude Code session
 ## Directory Structure
 
 ```
-todo_today/
+claude_todos/
 ├── backend/
 │   ├── main.py              # FastAPI app, lifespan, /api/state endpoint
 │   ├── models.py            # Pydantic models (Project, Todo, AnalysisEntry, Metadata)
@@ -50,7 +50,7 @@ todo_today/
 │           ├── Insights.tsx        # Dismissible insights banner above todos
 │           └── UpdateHistory.tsx   # Expandable analysis history with detail view
 ├── hooks/
-│   └── todo-today-hook.py    # Claude Code hook script for real-time session state
+│   └── claude-todos-hook.py    # Claude Code hook script for real-time session state
 ├── data/
 │   ├── todos.json            # Projects + todos
 │   ├── metadata.json         # Analysis history, scheduler state, usage totals

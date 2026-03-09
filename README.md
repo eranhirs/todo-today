@@ -1,8 +1,8 @@
-# Todo Today
+# Claude Todos
 
 A self-managing todo app powered by Claude. It watches your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions and automatically discovers what you're working on — marking tasks complete, suggesting next steps, and tracking new projects.
 
-![Todo Today screenshot](docs/images/screenshot.jpeg)
+![Claude Todos screenshot](docs/images/screenshot.jpeg)
 
 ## How It Works
 
@@ -20,8 +20,8 @@ A self-managing todo app powered by Claude. It watches your [Claude Code](https:
 Clone the repo and open Claude Code inside it:
 
 ```bash
-git clone https://github.com/eranhirs/todo-today.git
-cd todo-today
+git clone https://github.com/eranhirs/claude-todos.git
+cd claude-todos
 claude
 ```
 
@@ -30,8 +30,8 @@ Then just ask Claude to install and run the project. It has all the context it n
 ### Option 2: Run it yourself
 
 ```bash
-git clone https://github.com/eranhirs/todo-today.git
-cd todo-today
+git clone https://github.com/eranhirs/claude-todos.git
+cd claude-todos
 ./start.sh
 ```
 

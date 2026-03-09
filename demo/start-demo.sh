@@ -13,7 +13,7 @@ done
 PYTHON=python3.9
 DEMO_PORT=5153
 DEMO_DATA="$(pwd)/demo/data"
-TMUX_SESSION="todo-today-demo"
+TMUX_SESSION="claude-todos-demo"
 
 # Seed demo data (regenerates fresh each time)
 echo "Seeding demo data..."

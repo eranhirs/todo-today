@@ -1,4 +1,4 @@
-# Todo Today — Setup & Operations
+# Claude Todos — Setup & Operations
 
 ## Prerequisites
 
@@ -49,16 +49,16 @@ cp -r frontend/dist backend/static
 
 ## Auto-Start on Login (macOS)
 
-To run Todo Today automatically on login, create two launchd plists in `~/Library/LaunchAgents/`. Example templates are in [`docs/launchd/`](launchd/).
+To run Claude Todos automatically on login, create two launchd plists in `~/Library/LaunchAgents/`. Example templates are in [`docs/launchd/`](launchd/).
 
 ```bash
 # Load them
-launchctl load ~/Library/LaunchAgents/com.todotoday.backend.plist
-launchctl load ~/Library/LaunchAgents/com.todotoday.frontend.plist
+launchctl load ~/Library/LaunchAgents/com.claudetodos.backend.plist
+launchctl load ~/Library/LaunchAgents/com.claudetodos.frontend.plist
 
 # Unload to stop
-launchctl unload ~/Library/LaunchAgents/com.todotoday.backend.plist
-launchctl unload ~/Library/LaunchAgents/com.todotoday.frontend.plist
+launchctl unload ~/Library/LaunchAgents/com.claudetodos.backend.plist
+launchctl unload ~/Library/LaunchAgents/com.claudetodos.frontend.plist
 ```
 
 Key things to configure in the plists:
@@ -77,7 +77,7 @@ The `data/` directory is created automatically on first run.
 
 ## Hooks (Optional)
 
-Todo Today can install Claude Code hooks for real-time session state detection and instant notifications. See [hooks.md](hooks.md) for full details, example payloads, and testing instructions.
+Claude Todos can install Claude Code hooks for real-time session state detection and instant notifications. See [hooks.md](hooks.md) for full details, example payloads, and testing instructions.
 
 To install, click **Install** in the Hooks section of the Claude Status panel, or call `POST /api/claude/hooks/install`.
 

@@ -73,7 +73,7 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Screenshot Todo Today for docs")
+    parser = argparse.ArgumentParser(description="Screenshot Claude Todos for docs")
     parser.add_argument("--port", type=int, default=5153, help="Port to screenshot (default: 5153 demo)")
     parser.add_argument("--output", type=str, default=str(IMAGES_DIR), help="Output directory")
     args = parser.parse_args()

@@ -1,8 +1,8 @@
-# Todo Today — Hooks Integration
+# Claude Todos — Hooks Integration
 
 ## Overview
 
-Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) — lifecycle event callbacks that fire in real-time at key moments (permission prompts, session start/end, response completion). Todo Today can install hooks to get **accurate, real-time session state detection**, replacing the JSONL-based heuristic that estimates state from file timestamps and stop reasons.
+Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hooks) — lifecycle event callbacks that fire in real-time at key moments (permission prompts, session start/end, response completion). Claude Todos can install hooks to get **accurate, real-time session state detection**, replacing the JSONL-based heuristic that estimates state from file timestamps and stop reasons.
 
 ## Design Principles
 
@@ -16,7 +16,7 @@ Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hook
 
 1. User clicks **Install** in the Hooks section of the Claude Status panel (or calls `POST /api/claude/hooks/install`)
 2. The app adds entries to `~/.claude/settings.json` for four events: `PermissionRequest`, `Stop`, `SessionStart`, `SessionEnd`
-3. Each event pipes JSON to `hooks/todo-today-hook.py`, which writes state to `data/hook_states.json` atomically (flock + temp file + rename)
+3. Each event pipes JSON to `hooks/claude-todos-hook.py`, which writes state to `data/hook_states.json` atomically (flock + temp file + rename)
 4. The analyzer's `_detect_session_state()` checks hook state first, falling back to JSONL parsing only when no hook data exists
 5. The frontend polls `GET /api/claude/hooks/events` every 3 seconds and shows notifications for newly waiting sessions
 
@@ -24,7 +24,7 @@ Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hook
 
 | File | Purpose |
 |------|---------|
-| `hooks/todo-today-hook.py` | Hook script — reads event JSON from stdin, writes state + appends to event log |
+| `hooks/claude-todos-hook.py` | Hook script — reads event JSON from stdin, writes state + appends to event log |
 | `backend/hook_state.py` | Backend reader — states, event log, staleness detection |
 | `backend/routers/claude.py` | API endpoints — install, uninstall, status, events, log |
 | `backend/claude_analyzer.py` | `_detect_session_state()` — checks hook state (with staleness) before JSONL fallback |
@@ -161,7 +161,7 @@ These are the JSON objects Claude Code sends to hooks on stdin (from the [offici
 ### `GET /api/claude/hooks/status`
 Returns whether hooks are installed.
 ```json
-{ "installed": true, "installed_events": ["PermissionRequest", "Stop", "SessionStart", "SessionEnd"], "hook_script": "/path/to/hooks/todo-today-hook.py" }
+{ "installed": true, "installed_events": ["PermissionRequest", "Stop", "SessionStart", "SessionEnd"], "hook_script": "/path/to/hooks/claude-todos-hook.py" }
 ```
 
 ### `POST /api/claude/hooks/install`
@@ -171,7 +171,7 @@ Installs hook entries into `~/.claude/settings.json`. Merges with existing hooks
 ```
 
 ### `POST /api/claude/hooks/uninstall`
-Removes Todo Today hook entries from settings.
+Removes Claude Todos hook entries from settings.
 ```json
 { "status": "ok", "removed_events": ["PermissionRequest", "Stop", "SessionStart", "SessionEnd"] }
 ```
@@ -255,7 +255,7 @@ All notifications appear as both in-app toasts and browser notifications (if per
 
 ```bash
 # Simulate a PermissionRequest
-echo '{"hook_event_name":"PermissionRequest","session_id":"test","transcript_path":"/home/user/.claude/projects/-home-user-myproject/test.jsonl","tool_name":"Bash","tool_input":{"command":"npm run build"},"cwd":"/home/user/myproject"}' | python3 hooks/todo-today-hook.py
+echo '{"hook_event_name":"PermissionRequest","session_id":"test","transcript_path":"/home/user/.claude/projects/-home-user-myproject/test.jsonl","tool_name":"Bash","tool_input":{"command":"npm run build"},"cwd":"/home/user/myproject"}' | python3 hooks/claude-todos-hook.py
 
 # Check the state file
 cat data/hook_states.json
@@ -269,7 +269,7 @@ curl -s http://localhost:5152/api/claude/hooks/events | python3 -m json.tool
 1. Install hooks via UI or `curl -s -X POST http://localhost:5152/api/claude/hooks/install`
 2. Open a Claude Code session in any project (default permission mode)
 3. Trigger a permission prompt (e.g. ask Claude to run a shell command)
-4. Within 3 seconds, a toast notification should appear in the Todo Today UI
+4. Within 3 seconds, a toast notification should appear in the Claude Todos UI
 5. In the session picker, the session should show a state badge with a green dot
 
 ### Verify JSONL fallback
@@ -297,4 +297,4 @@ curl -s http://localhost:5152/api/claude/hooks/log?limit=10 | python3 -m json.to
 
 ## Uninstalling
 
-Click **Uninstall** in the Hooks section, or call `POST /api/claude/hooks/uninstall`. This removes only Todo Today's hook entries from `~/.claude/settings.json` — other hooks are left intact. The app falls back to JSONL-based state detection immediately.
+Click **Uninstall** in the Hooks section, or call `POST /api/claude/hooks/uninstall`. This removes only Claude Todos's hook entries from `~/.claude/settings.json` — other hooks are left intact. The app falls back to JSONL-based state detection immediately.

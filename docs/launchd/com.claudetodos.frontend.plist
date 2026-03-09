@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.todotoday.frontend</string>
+    <string>com.claudetodos.frontend</string>
     <key>ProgramArguments</key>
     <array>
         <!-- UPDATE: absolute path to npx -->
@@ -14,7 +14,7 @@
     </array>
     <!-- UPDATE: absolute path to the frontend directory -->
     <key>WorkingDirectory</key>
-    <string>/path/to/todo-today/frontend</string>
+    <string>/path/to/claude-todos/frontend</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -26,8 +26,8 @@
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/path/to/todo-today/logs/frontend.log</string>
+    <string>/path/to/claude-todos/logs/frontend.log</string>
     <key>StandardErrorPath</key>
-    <string>/path/to/todo-today/logs/frontend.log</string>
+    <string>/path/to/claude-todos/logs/frontend.log</string>
 </dict>
 </plist>

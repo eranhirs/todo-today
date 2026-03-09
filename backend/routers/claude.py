@@ -106,7 +106,7 @@ def dismiss_insight(insight_id: str) -> dict:
 # ── Hooks management ──────────────────────────────────────────
 
 _SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
-_HOOK_SCRIPT = str((Path(__file__).resolve().parent.parent.parent / "hooks" / "todo-today-hook.py"))
+_HOOK_SCRIPT = str((Path(__file__).resolve().parent.parent.parent / "hooks" / "claude-todos-hook.py"))
 _HOOK_EVENTS = ["PermissionRequest", "Stop", "SessionStart", "SessionEnd"]
 
 

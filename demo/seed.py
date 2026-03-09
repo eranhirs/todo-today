@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate realistic demo data for Todo Today screenshots.
+"""Generate realistic demo data for Claude Todos screenshots.
 
 Usage: python3 demo/seed.py [output_dir]
 Default output_dir: demo/data/
@@ -22,9 +22,9 @@ NOW = datetime.utcnow()
 
 PROJECTS = [
     {
-        "id": "proj_todo_today",
-        "name": "todo-today",
-        "source_path": "/home/user/projects/todo-today",
+        "id": "proj_claude_todos",
+        "name": "claude-todos",
+        "source_path": "/home/user/projects/claude-todos",
         "created_at": _ts(NOW - timedelta(days=5)),
     },
     {
@@ -44,10 +44,10 @@ PROJECTS = [
 # ── Todos ───────────────────────────────────────────────────────
 
 TODOS = [
-    # ── todo-today: active work ──
+    # ── claude-todos: active work ──
     {
         "id": "todo_demo_01",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Add lifecycle hooks for real-time session state detection via Claude Code events",
         "status": "completed",
         "source": "claude",
@@ -56,7 +56,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_02",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Implement toast notifications with type-based styling (warning/success/error/info)",
         "status": "completed",
         "source": "claude",
@@ -65,7 +65,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_03",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Add \"Run with Claude\" button to execute todos as autonomous Claude Code tasks",
         "status": "completed",
         "source": "user",
@@ -76,7 +76,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_04",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Hook-triggered analysis: auto-analyze sessions when Claude Code events fire",
         "status": "completed",
         "source": "claude",
@@ -85,7 +85,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_05",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Add toggles to temporarily pause scheduled heartbeat and hook-triggered analysis",
         "status": "completed",
         "source": "user",
@@ -94,7 +94,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_06",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Create demo environment for screenshots without interfering with real data",
         "status": "in_progress",
         "source": "user",
@@ -102,7 +102,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_07",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Add dark/light theme toggle",
         "status": "next",
         "source": "user",
@@ -110,7 +110,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_08",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Consider: Add per-project analysis cost breakdown chart to the sidebar",
         "status": "consider",
         "source": "claude",
@@ -118,7 +118,7 @@ TODOS = [
     },
     {
         "id": "todo_demo_09",
-        "project_id": "proj_todo_today",
+        "project_id": "proj_claude_todos",
         "text": "Waiting on user to test hook notifications with multiple concurrent Claude sessions",
         "status": "waiting",
         "source": "claude",
@@ -310,8 +310,8 @@ HISTORY = [
 INSIGHTS = [
     {
         "id": "ins_demo_01",
-        "project_id": "proj_todo_today",
-        "text": "The todo-today project has had 12 commits in the last 3 days, mostly around hooks and notifications. Consider writing tests before the next feature push.",
+        "project_id": "proj_claude_todos",
+        "text": "The claude-todos project has had 12 commits in the last 3 days, mostly around hooks and notifications. Consider writing tests before the next feature push.",
         "source_analysis_timestamp": HISTORY[1]["timestamp"],
         "dismissed": False,
         "created_at": HISTORY[1]["timestamp"],
@@ -336,7 +336,7 @@ METADATA = {
     "scheduler_status": "running",
     "heartbeat": _ts(NOW - timedelta(minutes=2)),
     "project_summaries": {
-        "proj_todo_today": "Building a dashboard that tracks Claude Code sessions and auto-generates todo lists via periodic analysis.",
+        "proj_claude_todos": "Building a dashboard that tracks Claude Code sessions and auto-generates todo lists via periodic analysis.",
         "proj_webthinker": "Research tool for autonomous web research with agent orchestration and document synthesis.",
         "proj_bench": "Evaluation framework with leaderboard, scoring, and quality metrics.",
     },

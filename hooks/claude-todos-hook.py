@@ -2,7 +2,7 @@
 """Claude Code hook script for real-time session state detection.
 
 Reads hook event JSON from stdin, writes state to data/hook_states.json.
-Install via the Todo Today UI or manually in ~/.claude/settings.json.
+Install via the Claude Todos UI or manually in ~/.claude/settings.json.
 """
 
 from __future__ import annotations

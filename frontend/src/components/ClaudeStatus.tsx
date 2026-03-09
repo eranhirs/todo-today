@@ -328,7 +328,7 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
         </button>
         <span
           className="hooks-tooltip-icon"
-          title="Adds lifecycle hooks to ~/.claude/settings.json that fire on session start/end and permission requests. This lets Todo Today detect session state in real time instead of polling JSONL files."
+          title="Adds lifecycle hooks to ~/.claude/settings.json that fire on session start/end and permission requests. This lets Claude Todos detect session state in real time instead of polling JSONL files."
         >?</span>
       </div>
       <div className="analysis-toggles">

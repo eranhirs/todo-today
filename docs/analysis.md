@@ -1,4 +1,4 @@
-# Todo Today — Claude Analysis Pipeline
+# Claude Todos — Claude Analysis Pipeline
 
 ## How Analysis Works
 
