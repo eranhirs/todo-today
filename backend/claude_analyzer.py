@@ -264,14 +264,27 @@ def _detect_session_state(path: Path, session_key: str = None) -> dict:
     if session_key:
         hook = get_hook_state(session_key)
         if hook and "state" in hook:
-            result = {
-                "state": hook["state"],
-                "last_assistant_text": None,
-                "state_source": "hook",
-            }
-            if hook.get("tool_name"):
-                result["detail"] = f"Claude wants to use {hook['tool_name']}"
-            return result
+            hook_state = hook["state"]
+            # For waiting states, verify the session hasn't progressed past the hook
+            if hook_state in ("waiting_for_user", "waiting_for_tool_approval"):
+                from .hook_state import _is_waiting_state_stale
+                if _is_waiting_state_stale(session_key, hook):
+                    pass  # stale — fall through to JSONL heuristic
+                else:
+                    result = {
+                        "state": hook_state,
+                        "last_assistant_text": None,
+                        "state_source": "hook",
+                    }
+                    if hook.get("tool_name"):
+                        result["detail"] = f"Claude wants to use {hook['tool_name']}"
+                    return result
+            else:
+                return {
+                    "state": hook_state,
+                    "last_assistant_text": None,
+                    "state_source": "hook",
+                }
 
     # Fall through to JSONL heuristic
     # Read last ~10 entries (all types) to get permissionMode + user/assistant context
@@ -592,6 +605,10 @@ def _invoke_claude(prompt: str, model: str = "haiku") -> tuple["ClaudeAnalysisRe
     usage_info: dict = {}
     session_id = str(_uuid.uuid4())
     usage_info["session_id"] = session_id
+    # Persist the session ID BEFORE spawning claude, so hook events from this
+    # subprocess are filtered immediately (avoids race with SessionEnd hook).
+    with StorageContext() as ctx:
+        ctx.metadata.analysis_session_ids.append(session_id)
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         result = subprocess.run(
@@ -897,9 +914,17 @@ def run_analysis(
 
     # When specific sessions are requested, discover all and filter to those keys
     if session_keys is not None:
-        sessions = discover_sessions(max_age=None)
+        all_sessions = discover_sessions(max_age=None)
         key_set = set(session_keys)
-        sessions = [s for s in sessions if _session_key(s) in key_set]
+        sessions = [s for s in all_sessions if _session_key(s) in key_set]
+        if not sessions:
+            # Likely our own analysis/run subprocess — silently skip
+            log.debug(
+                "Hook session keys not found after filtering: requested=%s, "
+                "discovered=%d sessions total",
+                key_set, len(all_sessions),
+            )
+            return None
     else:
         # Check if anything changed since last analysis (coarse check)
         if not force:
@@ -975,15 +1000,12 @@ def run_analysis(
             proj_snapshots[pid] = (project, proj_todos, proj_insights, proj_sess)
 
     # ── Phase 2: call Claude (no lock held) ──
-    new_analysis_session_ids: list[str] = []
     invoke_results: list[tuple[str, object, dict, str]] = []
     for pid, (project, proj_todos, proj_insights, proj_sess) in proj_snapshots.items():
         prompt = _build_project_prompt(project, proj_todos, proj_insights, proj_sess)
         all_prompts.append(f"--- Project: {project.name} ({pid}) ---\n{prompt}")
 
         result, usage_info = _invoke_claude(prompt, model=model)
-        if usage_info.get("session_id"):
-            new_analysis_session_ids.append(usage_info["session_id"])
 
         total_cost += usage_info.get("cost_usd", 0.0)
         total_input += usage_info.get("input_tokens", 0)
@@ -1015,12 +1037,10 @@ def run_analysis(
                 counters.todos_completed,
             )
 
-    # Persist per-session mtimes and analysis session IDs
+    # Persist per-session mtimes (session IDs already persisted before each invoke)
     with StorageContext() as ctx:
         for s in sessions:
             ctx.metadata.session_mtimes[_session_key(s)] = s["mtime"]
-        if new_analysis_session_ids:
-            ctx.metadata.analysis_session_ids.extend(new_analysis_session_ids)
 
     combined_prompt = "\n\n".join(all_prompts)
     combined_response = "\n\n".join(all_responses)

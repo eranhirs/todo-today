@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ..claude_analyzer import list_all_sessions
-from ..hook_state import get_actionable_sessions
+from ..hook_state import get_actionable_sessions, load_event_log
 from ..models import AnalysisEntry, Metadata
 from ..scheduler import queue_hook_analysis, set_interval, trigger_analysis
 from ..storage import StorageContext
@@ -150,6 +150,12 @@ class HookAnalyzeRequest(BaseModel):
 @router.post("/hooks/analyze")
 async def hooks_analyze(body: HookAnalyzeRequest) -> dict:
     """Queue a session for analysis, triggered by a hook event."""
+    # Skip analysis subprocess sessions — they contain our own prompts, not user work
+    session_id = body.session_key.split("/")[-1] if "/" in body.session_key else ""
+    if session_id:
+        with StorageContext(read_only=True) as ctx:
+            if session_id in set(ctx.metadata.analysis_session_ids):
+                return {"status": "skipped", "message": "Analysis subprocess session"}
     return await queue_hook_analysis(body.session_key)
 
 
@@ -159,6 +165,12 @@ def hooks_events() -> dict:
     with StorageContext(read_only=True) as ctx:
         exclude = set(ctx.metadata.analysis_session_ids)
     return get_actionable_sessions(exclude_session_ids=exclude)
+
+
+@router.get("/hooks/log")
+def hooks_log(limit: int = 100) -> list:
+    """Return recent hook events for debugging."""
+    return load_event_log(limit=min(limit, 500))
 
 
 @router.get("/hooks/status")

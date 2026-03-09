@@ -756,6 +756,89 @@ body {
   word-break: break-word;
 }
 
+/* Hook debug panel */
+.hook-debug-section {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.hook-debug {
+  margin-top: 6px;
+}
+.hook-debug-tabs {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.hook-debug-tab {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  cursor: pointer;
+}
+.hook-debug-tab.active {
+  background: var(--border);
+  color: var(--text);
+}
+.hook-debug-refresh {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.8rem;
+  margin-left: auto;
+  padding: 2px 6px;
+}
+.hook-debug-refresh:hover { color: var(--text); }
+.hook-debug-log {
+  max-height: 250px;
+  overflow-y: auto;
+  overflow-x: auto;
+}
+.hook-debug-empty {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 4px 0;
+}
+.hook-debug-table {
+  width: 100%;
+  font-size: 0.65rem;
+  border-collapse: collapse;
+}
+.hook-debug-table th {
+  text-align: left;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border);
+  font-weight: normal;
+  white-space: nowrap;
+}
+.hook-debug-table td {
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.hook-debug-time {
+  color: var(--text-dim);
+  font-size: 0.6rem;
+}
+.hook-debug-session {
+  color: var(--text-dim);
+  font-family: monospace;
+  font-size: 0.6rem;
+}
+.hook-debug-detail {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
 /* Run with Claude */
 
 .todo-running {

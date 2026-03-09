@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,7 @@ log = logging.getLogger(__name__)
 
 _DATA_DIR = Path(os.environ.get("TODO_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 _STATE_FILE = _DATA_DIR / "hook_states.json"
+_CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 
 
 def load_hook_states() -> dict:
@@ -34,21 +36,73 @@ def get_hook_state(session_key: str) -> Optional[dict]:
     return states.get(session_key)
 
 
+def load_event_log(limit: int = 100) -> list:
+    """Read the last N entries from the hook event log."""
+    log_file = _DATA_DIR / "hook_events.log"
+    if not log_file.exists():
+        return []
+    try:
+        lines = log_file.read_text().strip().splitlines()
+        # Return most recent first
+        entries = []
+        for line in reversed(lines[-limit:]):
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return entries
+    except OSError:
+        return []
+
+
+def _is_waiting_state_stale(key: str, entry: dict) -> bool:
+    """Check if a waiting state is stale by comparing JSONL mtime to hook timestamp.
+
+    Claude Code has no 'PermissionGranted' hook event, so waiting states linger
+    after the user approves. If the session's JSONL file has been modified after
+    the hook timestamp, the session has moved on and the state is stale.
+    """
+    ts_str = entry.get("timestamp", "")
+    if not ts_str:
+        return False
+    try:
+        hook_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return False
+    # key is "project_dir/session_id" — resolve to JSONL path
+    parts = key.split("/", 1)
+    if len(parts) != 2:
+        return False
+    jsonl_path = _CLAUDE_PROJECTS / parts[0] / f"{parts[1]}.jsonl"
+    try:
+        mtime = jsonl_path.stat().st_mtime
+        return mtime > hook_ts + 2  # 2s grace for filesystem timestamp granularity
+    except OSError:
+        return False
+
+
 def get_actionable_sessions(exclude_session_ids: set = None) -> dict:
     """Return all sessions in a notifiable state (waiting or recently ended).
 
     Sessions whose session_id is in exclude_session_ids are filtered out
     (used to skip analysis/run subprocess sessions).
+    Waiting states are dropped if the session's JSONL has been modified since
+    the hook fired (meaning the user already responded).
     """
     states = load_hook_states()
     result = {}
     for key, entry in states.items():
-        if entry.get("state") not in ("waiting_for_user", "waiting_for_tool_approval", "ended"):
+        state = entry.get("state")
+        if state not in ("waiting_for_user", "waiting_for_tool_approval", "ended"):
             continue
         # key is "project_dir/session_id" — extract the session_id part
         if exclude_session_ids:
             session_id = key.split("/", 1)[-1] if "/" in key else key
             if session_id in exclude_session_ids:
+                continue
+        # Drop stale waiting states where the session has already progressed
+        if state in ("waiting_for_user", "waiting_for_tool_approval"):
+            if _is_waiting_state_stale(key, entry):
                 continue
         result[key] = entry
     return result

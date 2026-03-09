@@ -21,6 +21,8 @@ from typing import Optional
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "data")
 STATE_FILE = os.path.join(DATA_DIR, "hook_states.json")
+EVENT_LOG = os.path.join(DATA_DIR, "hook_events.log")
+EVENT_LOG_MAX_SIZE = 512 * 1024  # rotate at 512KB
 EXPIRY_SECONDS = 86400  # 24 hours
 API_BASE = "http://localhost:5152"
 
@@ -124,6 +126,33 @@ def _expire_old_entries(states: dict) -> dict:
     return states
 
 
+def _append_event_log(session_key: str, hook_event: str, state_entry: Optional[dict]) -> None:
+    """Append a line to the event log for debugging."""
+    try:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        entry = {
+            "ts": now,
+            "session_key": session_key,
+            "hook_event": hook_event,
+            "state": state_entry.get("state") if state_entry else None,
+            "project_name": state_entry.get("project_name") if state_entry else None,
+            "detail": (state_entry.get("detail") or "")[:80] if state_entry else None,
+        }
+        # Rotate if too large
+        try:
+            if os.path.exists(EVENT_LOG) and os.path.getsize(EVENT_LOG) > EVENT_LOG_MAX_SIZE:
+                rotated = EVENT_LOG + ".1"
+                if os.path.exists(rotated):
+                    os.unlink(rotated)
+                os.rename(EVENT_LOG, rotated)
+        except OSError:
+            pass
+        with open(EVENT_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass  # best-effort — never block the hook
+
+
 def _trigger_analysis(session_key: str) -> None:
     """Fire-and-forget: ask the backend to analyze this session."""
     try:
@@ -158,6 +187,9 @@ def main() -> None:
     new_state = _map_event_to_state(event)
 
     os.makedirs(DATA_DIR, exist_ok=True)
+
+    # Always log the event for debugging
+    _append_event_log(session_key, hook_event, new_state)
 
     # Atomic read-modify-write with flock
     lock_path = STATE_FILE + ".lock"

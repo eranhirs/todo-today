@@ -24,11 +24,13 @@ Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hook
 
 | File | Purpose |
 |------|---------|
-| `hooks/todo-today-hook.py` | Hook script — reads event JSON from stdin, writes to `data/hook_states.json` |
-| `backend/hook_state.py` | Backend reader — `load_hook_states()`, `get_hook_state()`, `get_waiting_sessions()` |
-| `backend/routers/claude.py` | API endpoints — install, uninstall, status, waiting |
-| `backend/claude_analyzer.py` | `_detect_session_state()` — checks hook state before JSONL fallback |
-| `data/hook_states.json` | State file (auto-generated, gitignored) |
+| `hooks/todo-today-hook.py` | Hook script — reads event JSON from stdin, writes state + appends to event log |
+| `backend/hook_state.py` | Backend reader — states, event log, staleness detection |
+| `backend/routers/claude.py` | API endpoints — install, uninstall, status, events, log |
+| `backend/claude_analyzer.py` | `_detect_session_state()` — checks hook state (with staleness) before JSONL fallback |
+| `frontend/src/components/HookDebug.tsx` | Debug panel — event log viewer and current states |
+| `data/hook_states.json` | Current state per session (auto-generated, gitignored) |
+| `data/hook_events.log` | Append-only event log for debugging (auto-generated, gitignored) |
 
 ## Hook Events
 
@@ -42,6 +44,38 @@ The hook script handles four Claude Code lifecycle events:
 | `SessionEnd` | `ended` | project name, cwd |
 
 Entries older than 24 hours are expired on each write.
+
+### State Resolution: Hooks vs JSONL
+
+Session state is determined by `_detect_session_state()` in `claude_analyzer.py`, which uses a two-tier approach:
+
+```
+For a given session:
+1. Look up hook state in data/hook_states.json
+2. If hook state exists:
+   a. If state is "ended" → return it (source: "hook")
+   b. If state is "waiting_*":
+      - Compare hook timestamp to session JSONL file mtime
+      - If JSONL mtime > hook timestamp + 2s → stale, go to step 3
+      - Otherwise → return it (source: "hook")
+3. No valid hook state → parse last ~10 JSONL entries to infer state (source: "jsonl")
+```
+
+The same staleness check is applied in two places:
+- **`_detect_session_state()`** — determines the state badge shown in the session picker
+- **`get_actionable_sessions()`** — determines which states are returned by `GET /api/claude/hooks/events` for notifications
+
+The `state_source` field (`"hook"` or `"jsonl"`) is included in session metadata and shown as a green "live" dot in the UI when sourced from hooks.
+
+### Staleness Detection
+
+Claude Code has no "PermissionGranted" event, so `waiting_for_tool_approval` and `waiting_for_user` states can linger after the user responds. The staleness check compares the hook's timestamp against the session's JSONL file mtime (with a 2-second grace for filesystem granularity). If the JSONL has been modified after the hook fired, the session has progressed and the waiting state is dropped — the system falls back to JSONL heuristics which will show the actual current state (e.g. `tool_running` or `waiting_for_response`).
+
+## Event Log
+
+Every hook event is appended to `data/hook_events.log` (JSON lines, rotated at 512KB). This log is useful for debugging notification issues — you can see whether a hook fired even if the state was later overwritten.
+
+The log is accessible via `GET /api/claude/hooks/log?limit=N` and in the **Hook Debug** panel in the sidebar UI.
 
 ## Example Hook Event Payloads
 
@@ -143,7 +177,7 @@ Removes Todo Today hook entries from settings.
 ```
 
 ### `GET /api/claude/hooks/events`
-Returns sessions in notifiable states (waiting or recently ended). The frontend polls this every 3 seconds, detects state transitions, and shows typed notifications.
+Returns sessions in notifiable states (waiting or recently ended). The frontend polls this every 3 seconds, detects state transitions, and shows typed notifications. Stale waiting states (where the JSONL has been modified since the hook fired) are automatically excluded. Analysis subprocess sessions are also filtered out.
 ```json
 {
   "-home-user-myproject/session-id": {
@@ -158,9 +192,40 @@ Returns sessions in notifiable states (waiting or recently ended). The frontend 
 }
 ```
 
+### `GET /api/claude/hooks/log?limit=N`
+Returns the last N hook events (default 100, max 500) from the event log, most recent first. Useful for debugging whether a hook fired.
+```json
+[
+  {
+    "ts": "2026-03-09T12:16:26Z",
+    "session_key": "-home-user-myproject/abc123",
+    "hook_event": "PermissionRequest",
+    "state": "waiting_for_tool_approval",
+    "project_name": "myproject",
+    "detail": "npm run build"
+  }
+]
+```
+
+## Event → Action Summary
+
+Each hook event can trigger two independent actions: a **notification** (toast + browser alert) and a **Claude analysis** (auto-analyze the session). This table shows what each event does:
+
+| Hook Event | Condition | Notification | Analysis |
+|---|---|---|---|
+| `PermissionRequest` | Always | Yes (amber warning) | No |
+| `Stop` | `last_assistant_message` ends with `?` | Yes (amber warning) | Yes |
+| `Stop` | Does not end with `?` | Yes (green success) | Yes |
+| `SessionStart` | Always | No (clears stale state) | No |
+| `SessionEnd` | Always | Yes (green success) | Yes |
+
+- **Notifications** are driven by the frontend polling `GET /api/claude/hooks/events` every 3 seconds and detecting state transitions.
+- **Analysis** is triggered by the hook script itself, which fires a background `POST /api/claude/hooks/analyze` request on `Stop` and `SessionEnd` events.
+- Both can be independently paused via the sidebar toggles (hook-triggered analysis toggle does not affect notifications, and vice versa).
+
 ## Notifications
 
-Notifications fire within 3 seconds when a hook catches an event. Each event type has a distinct visual style:
+Notification toast styles by event:
 
 | Hook Event | Condition | Toast Style | Example |
 |---|---|---|---|
@@ -211,6 +276,24 @@ curl -s http://localhost:5152/api/claude/hooks/events | python3 -m json.tool
 
 1. Uninstall hooks via UI or `curl -s -X POST http://localhost:5152/api/claude/hooks/uninstall`
 2. Browse sessions — state badges should still appear but without the green dot (sourced from JSONL heuristics)
+
+## Debugging Notifications
+
+If a notification doesn't appear, use the **Hook Debug** panel in the sidebar to trace the issue:
+
+| Layer | What to check | Tool |
+|---|---|---|
+| Hook fired? | Open **Hook Debug → Event Log** — the event should appear with its timestamp | Event Log tab |
+| State visible? | Open **Hook Debug → Current States** — the session should be listed | Current States tab |
+| State filtered as stale? | If the event log shows it but current states doesn't, the JSONL was modified after the hook (user already responded) | Compare timestamps |
+| State filtered as subprocess? | Analysis subprocess sessions are excluded from events — check `analysis_session_ids` in metadata | `GET /api/claude/hooks/events` |
+| Notification raised? | Open **Notifications** log in the sidebar — the toast should appear | Notification log |
+| Notification suppressed? | First poll seeds known states silently (no toast). Same-state transitions are deduplicated. | Reload page and check |
+
+You can also check the raw event log via CLI:
+```bash
+curl -s http://localhost:5152/api/claude/hooks/log?limit=10 | python3 -m json.tool
+```
 
 ## Uninstalling
 

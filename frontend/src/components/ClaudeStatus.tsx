@@ -122,7 +122,18 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
   const projectCount = Object.keys(sessionsByProject).length;
 
   const handleIntervalChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
-    await api.setAnalysisInterval(Number(e.target.value));
+    const mins = Number(e.target.value);
+    if (mins <= 10) {
+      const ok = window.confirm(
+        `An interval of ${mins}m can use a significant chunk of your API quota.\n\n` +
+        `For real-time updates, hooks are a better approach — they only trigger ` +
+        `analysis when sessions actually change, so you pay per-event instead of polling.\n\n` +
+        `The heartbeat is mainly useful for catching updates while you're away.\n\n` +
+        `Set interval to ${mins}m anyway?`
+      );
+      if (!ok) return;
+    }
+    await api.setAnalysisInterval(mins);
     onRefresh();
   };
 

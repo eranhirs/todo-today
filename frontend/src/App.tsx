@@ -5,6 +5,7 @@ import { ProjectList } from "./components/ProjectList";
 import { TodoList } from "./components/TodoList";
 import { ClaudeStatus } from "./components/ClaudeStatus";
 import { UpdateHistory } from "./components/UpdateHistory";
+import { HookDebug } from "./components/HookDebug";
 import "./App.css";
 
 const POLL_INTERVAL = 3_000;
@@ -257,6 +258,7 @@ function App() {
             </div>
           )}
         </div>
+        <HookDebug />
       </aside>
       <main className="main">
         <TodoList

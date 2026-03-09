@@ -74,6 +74,9 @@ export const api = {
   getHookEvents: () =>
     request<Record<string, { state: string; tool_name?: string; detail?: string; project_name?: string; timestamp: string; hook_event: string }>>("/claude/hooks/events"),
 
+  getHookLog: (limit = 100) =>
+    request<{ ts: string; session_key: string; hook_event: string; state: string | null; project_name: string | null; detail: string | null }[]>(`/claude/hooks/log?limit=${limit}`),
+
   getHooksStatus: () =>
     request<{ installed: boolean; installed_events: string[]; hook_script: string }>("/claude/hooks/status"),
 
