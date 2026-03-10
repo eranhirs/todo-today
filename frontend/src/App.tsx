@@ -3,6 +3,7 @@ import type { FullState, Todo } from "./types";
 import { api } from "./api";
 import { ProjectList } from "./components/ProjectList";
 import { TodoList } from "./components/TodoList";
+import { Dashboard } from "./components/Dashboard";
 import { ClaudeStatus } from "./components/ClaudeStatus";
 import { UpdateHistory } from "./components/UpdateHistory";
 import { HookDebug } from "./components/HookDebug";
@@ -10,6 +11,24 @@ import "./App.css";
 
 const POLL_INTERVAL = 3_000;
 const TOAST_DURATION = 12_000;
+
+/* SVG data-URI icons for browser notifications, one per event type */
+const svgIcon = (emoji: string, bg: string) =>
+  `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">` +
+    `<rect width="64" height="64" rx="12" fill="${bg}"/>` +
+    `<text x="32" y="46" font-size="36" text-anchor="middle">${emoji}</text>` +
+    `</svg>`
+  )}`;
+
+const NOTIF_ICONS = {
+  todo:           svgIcon("📋", "#3b82f6"),  // blue  — new waiting todo
+  approval:       svgIcon("🔑", "#f59e0b"),  // amber — waiting for tool approval
+  user_input:     svgIcon("💬", "#f59e0b"),  // amber — waiting for user input
+  ended:          svgIcon("✅", "#22c55e"),  // green — session finished
+  run_success:    svgIcon("✅", "#22c55e"),  // green — run succeeded
+  run_error:      svgIcon("❌", "#ef4444"),  // red   — run failed
+} as const;
 
 type ToastType = "info" | "warning" | "success" | "error";
 
@@ -35,6 +54,10 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     return params.get("project");
   });
+  const [view, setView] = useState<"list" | "dashboard">(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("view") === "dashboard" ? "dashboard" : "list";
+  });
 
   const selectProject = useCallback((id: string | null) => {
     setSelectedProject(id);
@@ -43,6 +66,17 @@ function App() {
       url.searchParams.set("project", id);
     } else {
       url.searchParams.delete("project");
+    }
+    window.history.replaceState({}, "", url.toString());
+  }, []);
+
+  const switchView = useCallback((v: "list" | "dashboard") => {
+    setView(v);
+    const url = new URL(window.location.href);
+    if (v === "dashboard") {
+      url.searchParams.set("view", "dashboard");
+    } else {
+      url.searchParams.delete("view");
     }
     window.history.replaceState({}, "", url.toString());
   }, []);
@@ -98,7 +132,7 @@ function App() {
         const body = todo.session_id
           ? `${todo.text}\n(session: ${todo.session_id.slice(0, 8)}…)`
           : todo.text;
-        const n = new Notification("Claude Todos", { body });
+        const n = new Notification("Claude Todos", { body, icon: NOTIF_ICONS.todo });
         n.onclick = () => { window.focus(); n.close(); };
       }
     }
@@ -149,7 +183,10 @@ function App() {
         addToast(msg, type);
 
         if ("Notification" in window && Notification.permission === "granted") {
-          const n = new Notification(`Claude Todos — ${project}`, { body: msg });
+          const icon = entry.state === "waiting_for_tool_approval" ? NOTIF_ICONS.approval
+            : entry.state === "waiting_for_user" ? NOTIF_ICONS.user_input
+            : NOTIF_ICONS.ended;
+          const n = new Notification(`Claude Todos — ${project}`, { body: msg, icon });
           n.onclick = () => { window.focus(); n.close(); };
         }
       }
@@ -171,10 +208,14 @@ function App() {
       if (!nowRunning.has(id)) {
         const todo = todos.find((t) => t.id === id);
         if (todo) {
-          if (todo.run_status === "error") {
-            addToast(`Run failed: ${todo.text}`, "error");
-          } else {
-            addToast(`Run completed: ${todo.text}`, "success");
+          const isError = todo.run_status === "error";
+          addToast(isError ? `Run failed: ${todo.text}` : `Run completed: ${todo.text}`, isError ? "error" : "success");
+          if ("Notification" in window && Notification.permission === "granted") {
+            const n = new Notification("Claude Todos", {
+              body: isError ? `Run failed: ${todo.text}` : `Run completed: ${todo.text}`,
+              icon: isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success,
+            });
+            n.onclick = () => { window.focus(); n.close(); };
           }
         }
       }
@@ -243,6 +284,33 @@ function App() {
           <button className="btn-link notif-log-toggle" onClick={() => setShowNotifLog((v) => !v)}>
             {showNotifLog ? "▾" : "▸"} Notifications ({notificationLog.length})
           </button>
+          <button
+            className="btn-link"
+            style={{ marginLeft: 8, fontSize: "0.75rem", opacity: 0.7 }}
+            onClick={() => {
+              if (!("Notification" in window) || Notification.permission !== "granted") {
+                addToast("Browser notifications not permitted", "error");
+                return;
+              }
+              const samples: [string, string, keyof typeof NOTIF_ICONS][] = [
+                ["New waiting todo", "Refactor auth module", "todo"],
+                ["Waiting for approval", "Bash: rm -rf node_modules", "approval"],
+                ["Waiting for user input", "Which database should I use?", "user_input"],
+                ["Session finished", "Completed 3 tasks", "ended"],
+                ["Run completed", "Deploy script succeeded", "run_success"],
+                ["Run failed", "Tests failed with 2 errors", "run_error"],
+              ];
+              // Cycle through one at a time to avoid browser rate-limiting
+              const idx = (window as any).__notifTestIdx ?? 0;
+              const [title, body, key] = samples[idx % samples.length];
+              (window as any).__notifTestIdx = idx + 1;
+              const n = new Notification(`Claude Todos — ${title}`, { body, icon: NOTIF_ICONS[key] });
+              n.onclick = () => { window.focus(); n.close(); };
+              addToast(`Test: ${title}`, "info");
+            }}
+          >
+            Test
+          </button>
           {showNotifLog && (
             <div className="notif-log">
               {notificationLog.length === 0 ? (
@@ -261,14 +329,38 @@ function App() {
         <HookDebug />
       </aside>
       <main className="main">
-        <TodoList
-          todos={state.todos}
-          projects={state.projects}
-          selectedProjectId={selectedProject}
-          projectSummaries={state.metadata.project_summaries}
-          insights={state.metadata.insights}
-          onRefresh={refresh}
-        />
+        <div className="view-toggle">
+          <button
+            className={`view-toggle-btn${view === "list" ? " active" : ""}`}
+            onClick={() => switchView("list")}
+          >
+            List
+          </button>
+          <button
+            className={`view-toggle-btn${view === "dashboard" ? " active" : ""}`}
+            onClick={() => switchView("dashboard")}
+          >
+            Dashboard
+          </button>
+        </div>
+        {view === "dashboard" ? (
+          <Dashboard
+            todos={state.todos}
+            projects={state.projects}
+            projectSummaries={state.metadata.project_summaries}
+            history={state.metadata.history}
+            onSelectProject={(id) => { selectProject(id); switchView("list"); }}
+          />
+        ) : (
+          <TodoList
+            todos={state.todos}
+            projects={state.projects}
+            selectedProjectId={selectedProject}
+            projectSummaries={state.metadata.project_summaries}
+            insights={state.metadata.insights}
+            onRefresh={refresh}
+          />
+        )}
       </main>
     </div>
   );
