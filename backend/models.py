@@ -35,14 +35,17 @@ class Todo(BaseModel):
     text: str
     status: TodoStatus = "next"
     source: Literal["claude", "user", "claude_run"] = "user"
+    emoji: Optional[str] = None
     session_id: Optional[str] = None
     created_at: str = Field(default_factory=_now)
     completed_at: Optional[str] = None
     run_output: Optional[str] = None
-    run_status: Optional[Literal["running", "done", "error", "stopped"]] = None
+    run_status: Optional[Literal["running", "done", "error", "stopped", "queued"]] = None
     run_trigger: Optional[Literal["manual", "autopilot"]] = None
     run_pid: Optional[int] = None
     run_output_file: Optional[str] = None
+    queued_at: Optional[str] = None
+    sort_order: int = 0
 
     @model_validator(mode="before")
     @classmethod
@@ -148,11 +151,16 @@ class TodoUpdate(BaseModel):
     source: Optional[Literal["claude", "user", "claude_run"]] = None
 
 
+class TodoReorder(BaseModel):
+    todo_ids: List[str]
+
+
 class FullState(BaseModel):
     projects: List[Project]
     todos: List[Todo]
     metadata: Metadata
     analysis_locked: bool = False
+    autopilot_running: bool = False
 
 
 # ── Claude analysis result (what Claude returns) ───────────────

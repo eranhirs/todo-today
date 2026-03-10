@@ -1,6 +1,8 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import type { Todo, TodoStatus } from "../types";
 import { api } from "../api";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 
 interface Props {
   todo: Todo;
@@ -9,6 +11,7 @@ interface Props {
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   isFocused?: boolean;
   triggerEdit?: boolean;
+  projectBusy?: boolean;
 }
 
 const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
@@ -30,7 +33,7 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit }: Props) {
+export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
@@ -38,12 +41,12 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
   const [followupText, setFollowupText] = useState("");
   const pillBarRef = useRef<HTMLDivElement>(null);
   const outputRef = useRef<HTMLPreElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const followupRef = useRef<HTMLInputElement>(null);
 
-  // Auto-show output while running
+  // Auto-show output while running or when interrupted (so follow-up bar is visible)
   useEffect(() => {
-    if (todo.run_status === "running" && todo.run_output) {
+    if ((todo.run_status === "running" || todo.run_status === "stopped") && todo.run_output) {
       setShowOutput(true);
     }
   }, [todo.run_status, todo.run_output]);
@@ -54,6 +57,13 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [showOutput, todo.run_output]);
+
+  // Auto-focus follow-up input when interrupted
+  useEffect(() => {
+    if (todo.run_status === "stopped" && showOutput && followupRef.current) {
+      followupRef.current.focus();
+    }
+  }, [todo.run_status, showOutput]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -111,18 +121,34 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
 
   const runWithClaude = async () => {
     try {
-      await api.runTodo(todo.id);
-      addToast(`Started running "${todo.text}" with Claude`, "info");
+      const result = await api.runTodo(todo.id);
+      if (result.status === "queued") {
+        addToast(`Queued "${todo.text}" — will run when the current task finishes`, "info");
+      } else {
+        addToast(`Started running "${todo.text}" with Claude`, "info");
+      }
       onRefresh();
-    } catch {
-      addToast(`Failed to start run for "${todo.text}"`, "error");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      addToast(msg, "error");
+    }
+  };
+
+  const dequeue = async () => {
+    try {
+      await api.dequeueTodo(todo.id);
+      addToast(`Removed "${todo.text}" from queue`, "info");
+      onRefresh();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Unknown error";
+      addToast(msg, "error");
     }
   };
 
   const stopRun = async () => {
     try {
       await api.stopTodo(todo.id);
-      addToast(`Stopped "${todo.text}"`, "info");
+      addToast(`Paused "${todo.text}" — use follow-up to continue`, "info");
       onRefresh();
     } catch {
       addToast(`Failed to stop "${todo.text}"`, "error");
@@ -173,6 +199,9 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" && e.shiftKey) {
+      return; // Allow newline
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       saveEdit();
@@ -181,10 +210,16 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
     }
   };
 
+  const renderedText = useMemo(() => {
+    const raw = marked.parseInline(todo.text) as string;
+    return DOMPurify.sanitize(raw);
+  }, [todo.text]);
+
   const isRunning = todo.run_status === "running";
+  const isQueued = todo.run_status === "queued";
 
   return (
-    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}`}>
+    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${isQueued ? " todo-queued" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}`}>
       <div className="todo-content">
         <div className={`status-pills${pillsExpanded ? " expanded" : ""}`} ref={pillBarRef}>
           {STATUS_OPTIONS.map((opt) => {
@@ -213,18 +248,23 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
           })}
         </div>
         {editing ? (
-          <input
+          <textarea
             ref={inputRef}
             className="todo-text-input"
             value={editText}
+            rows={Math.min(editText.split("\n").length, 6)}
             onChange={(e) => setEditText(e.target.value)}
             onBlur={saveEdit}
             onKeyDown={handleKeyDown}
           />
         ) : (
-          <span className="todo-text" onDoubleClick={startEdit}>{todo.text}</span>
+          <span className="todo-text" onDoubleClick={startEdit}>
+            {todo.emoji && <span className="todo-emoji">{todo.emoji}</span>}
+            <span dangerouslySetInnerHTML={{ __html: renderedText }} />
+          </span>
         )}
         {isRunning && <span className="run-spinner" title="Claude is working on this...">⟳</span>}
+        {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
       </div>
       <div className="todo-meta">
         <span className="todo-timestamp" title={todo.created_at}>
@@ -261,13 +301,19 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
           <button
             className="btn-icon btn-stop"
             onClick={stopRun}
-            title="Stop running"
+            title="Pause — interrupt and continue via follow-up"
           >■</button>
+        ) : isQueued ? (
+          <button
+            className="btn-icon btn-dequeue"
+            onClick={dequeue}
+            title="Remove from queue"
+          >✗</button>
         ) : (
           <button
             className="btn-icon btn-run"
             onClick={runWithClaude}
-            title="Run with Claude"
+            title={projectBusy ? "Will be queued — another task is running" : "Run with Claude"}
           >▶</button>
         )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
@@ -277,12 +323,12 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
           <pre ref={outputRef}>{todo.run_output}</pre>
         </div>
       )}
-      {showOutput && todo.session_id && !isRunning && (todo.run_status === "done" || todo.run_status === "error") && (
+      {showOutput && todo.session_id && !isRunning && (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped") && (
         <div className="followup-bar">
           <input
             ref={followupRef}
             className="followup-input"
-            placeholder="Send follow-up to this session..."
+            placeholder={todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
             value={followupText}
             onChange={(e) => setFollowupText(e.target.value)}
             onKeyDown={(e) => {

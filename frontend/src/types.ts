@@ -14,12 +14,14 @@ export interface Todo {
   text: string;
   status: TodoStatus;
   source: "claude" | "user" | "claude_run";
+  emoji: string | null;
   session_id: string | null;
   created_at: string;
   completed_at: string | null;
   run_output: string | null;
-  run_status: "running" | "done" | "error" | "stopped" | null;
+  run_status: "running" | "done" | "error" | "stopped" | "queued" | null;
   run_trigger: "manual" | "autopilot" | null;
+  sort_order: number;
 }
 
 export interface Insight {
@@ -94,4 +96,5 @@ export interface FullState {
   todos: Todo[];
   metadata: Metadata;
   analysis_locked: boolean;
+  autopilot_running: boolean;
 }

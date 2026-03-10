@@ -18,7 +18,7 @@ from .routers.todos import (
     parse_output_file_result,
     reconnect_todo_run,
 )
-from .scheduler import is_analysis_locked, start_scheduler, stop_scheduler
+from .scheduler import is_analysis_locked, is_autopilot_running, start_scheduler, stop_scheduler
 from .storage import StorageContext
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -120,6 +120,7 @@ def full_state() -> FullState:
             todos=ctx.store.todos,
             metadata=ctx.metadata,
             analysis_locked=is_analysis_locked(),
+            autopilot_running=is_autopilot_running(),
         )
 
 

@@ -28,6 +28,21 @@ from .storage import StorageContext
 
 log = logging.getLogger(__name__)
 
+# Regex to detect a leading emoji (covers most common emoji ranges)
+_LEADING_EMOJI_RE = re.compile(
+    r"^([\U0001F300-\U0001FAFF\U00002702-\U000027B0\U0000FE00-\U0000FE0F"
+    r"\U0000200D\U000020E3\U00003297\U00003299\U00002600-\U000026FF"
+    r"\U00002B50-\U00002B55]+)\s*",
+)
+
+
+def _extract_emoji(text: str) -> tuple[str | None, str]:
+    """Extract a leading emoji from text. Returns (emoji, remaining_text)."""
+    m = _LEADING_EMOJI_RE.match(text)
+    if m:
+        return m.group(1).strip(), text[m.end():].strip()
+    return None, text
+
 CLAUDE_DIR = Path.home() / ".claude" / "projects"
 # How far back to look for active sessions
 SESSION_MAX_AGE = timedelta(hours=24)
@@ -579,12 +594,14 @@ Important:
 - Always create completed todos for meaningful work done in sessions — this is how the user tracks accomplishments
 - Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
 - Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
+- **Prefix every todo `text` with a single relevant emoji** that represents the nature of the work (e.g. 🐛 for bug fixes, ✨ for new features, ♻️ for refactoring, 🧪 for tests, 📝 for docs, 🔧 for config, 🎨 for styling, 🚀 for deployment, etc.). The emoji will be parsed out automatically.
 - Only create a `"waiting"` todo when a session needs user action: `waiting_for_user` (Claude asked a question) or `waiting_for_tool_approval` (Claude wants to run a tool and needs approval). Use the format "Respond to Claude: <brief description of what it's asking or wants to do>". Do NOT create waiting todos for `active` sessions (a tool ran and Claude is continuing) — those don't need user action.
 - Don't duplicate existing todos or existing insights
 - **Supersession rule**: Before creating a `new_todo`, scan the existing todos list for any todo covering the same work (same session, same topic). If one exists: use `modified_todos` to update its text/status instead of creating a new one. If the old todo is now irrelevant (work completed or moved past it), use `status_updates` to mark it "stale" or "completed". Never leave multiple active todos for the same piece of work.
 - **"Waiting" cleanup**: If a session's state has moved past `waiting_for_tool_approval` or `waiting_for_user`, mark any existing "waiting" todo for that session as "stale" via `status_updates`.
 - `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
 - **Extract suggestions as todos**: When a session produces a list of concrete suggestions, ideas, or improvement proposals, extract each one as an individual `consider` todo. Don't summarize them as a single "review suggestions" item — the user wants each idea tracked separately so they can act on them independently.
+- **Completed todos are permanent history.** NEVER mark a completed todo as "stale" — completed work must remain visible as a record of accomplishments. Do not include completed todo IDs in `status_updates` with status "stale" or in `modified_todos` with status "stale".
 - **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
 
 First, write a brief analysis of what you observe in the sessions (2-4 sentences). Then output the JSON inside a ```json fenced code block.""")
@@ -775,6 +792,10 @@ def _apply_result(
         if t.source == "user" and su.status != "stale":
             log.warning("status_updates: skipping non-stale status %r for user todo %s", su.status, su.id)
             continue
+        # Never allow completed todos to be moved back to stale — completed work is permanent history
+        if t.status == "completed" and su.status == "stale":
+            log.warning("status_updates: refusing to mark completed todo %s as stale", su.id)
+            continue
         if t.status == su.status:
             continue
         was_completed = t.status == "completed"
@@ -798,6 +819,9 @@ def _apply_result(
         # Strip leftover "Next:"/"Consider:" prefixes defensively
         text = re.sub(r"^(Next|Consider|Waiting|Stale):\s*", "", nt.text, flags=re.IGNORECASE)
 
+        # Extract leading emoji from text
+        emoji, text = _extract_emoji(text)
+
         # Drop waiting todos for sessions that don't need user action
         if nt.status == "waiting" and nt.session_id and nt.session_id not in _actionable_sessions:
             log.info("Dropping waiting todo for non-actionable session %s: %s", nt.session_id, text)
@@ -806,7 +830,7 @@ def _apply_result(
         if (project_id, text.lower()) in existing_texts:
             continue
 
-        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=nt.session_id)
+        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=nt.session_id, emoji=emoji)
         if nt.status == "completed":
             todo.completed_at = _now()
         ctx.store.todos.append(todo)
@@ -831,7 +855,10 @@ def _apply_result(
             continue
         changed = False
         if mod.text is not None and mod.text != t.text:
-            t.text = mod.text
+            emoji, clean_text = _extract_emoji(mod.text)
+            t.text = clean_text
+            if emoji:
+                t.emoji = emoji
             changed = True
         if mod.project_id is not None and mod.project_id != t.project_id:
             resolved = _resolve_project_id(mod.project_id, ctx.store.projects)
@@ -841,18 +868,22 @@ def _apply_result(
             else:
                 log.warning("modified_todos: unresolvable project_id=%r for todo %s", mod.project_id, mod.id)
         if mod.status is not None and mod.status != t.status:
-            was_completed = t.status == "completed"
-            t.status = mod.status
-            if mod.status == "completed" and not was_completed:
-                t.completed_at = _now()
-            elif mod.status != "completed" and was_completed:
-                t.completed_at = None
-            changed = True
+            # Never allow completed todos to be moved back to stale
+            if t.status == "completed" and mod.status == "stale":
+                log.warning("modified_todos: refusing to mark completed todo %s as stale", mod.id)
+            else:
+                was_completed = t.status == "completed"
+                t.status = mod.status
+                if mod.status == "completed" and not was_completed:
+                    t.completed_at = _now()
+                elif mod.status != "completed" and was_completed:
+                    t.completed_at = None
+                changed = True
         if changed:
             counters.todos_modified += 1
             counters.modified_todo_texts.append(t.text)
-        # Auto-remove non-user todos marked stale
-        if mod.status == "stale" and t.source != "user":
+        # Auto-remove non-user todos marked stale (only if the status was actually changed)
+        if t.status == "stale" and t.source != "user":
             stale_remove_ids.add(mod.id)
 
     # Update summaries

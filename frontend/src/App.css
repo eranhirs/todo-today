@@ -106,6 +106,7 @@ body {
 .status-detail { font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px; }
 .model-override-note { color: var(--accent); }
 .wake-message { color: var(--text-dim); font-style: italic; }
+.autopilot-indicator { color: var(--accent-light); font-weight: 500; }
 
 .btn-wake {
   margin-top: 8px;
@@ -301,9 +302,10 @@ body {
   display: flex;
   gap: 8px;
   margin-bottom: 8px;
+  align-items: flex-start;
 }
 
-.add-form input, .add-todo input {
+.add-form input, .add-todo input, .add-todo textarea {
   flex: 1;
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -313,7 +315,29 @@ body {
   font-size: 0.9rem;
   outline: none;
 }
-.add-form input:focus, .add-todo input:focus { border-color: var(--accent); }
+.add-todo textarea {
+  resize: none;
+  font-family: inherit;
+  line-height: 1.4;
+  min-height: 36px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+.add-form input:focus, .add-todo input:focus, .add-todo textarea:focus { border-color: var(--accent); }
+
+.add-todo-project-select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+  outline: none;
+  min-width: 120px;
+  max-width: 180px;
+  cursor: pointer;
+}
+.add-todo-project-select:focus { border-color: var(--accent); }
 
 .add-form button, .add-todo button {
   padding: 8px 14px;
@@ -432,7 +456,24 @@ body {
   font-weight: 600;
 }
 
-.todo-text { font-size: 0.95rem; cursor: text; }
+.todo-text {
+  font-size: 0.95rem;
+  cursor: text;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+.todo-text code {
+  background: var(--bg-alt, rgba(128,128,128,0.15));
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.todo-text a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.todo-text strong { font-weight: 600; }
+.todo-emoji { margin-right: 0.35em; }
 
 .todo-text-input {
   font-size: 0.95rem;
@@ -445,6 +486,8 @@ body {
   outline: none;
   flex: 1;
   min-width: 0;
+  resize: none;
+  line-height: 1.4;
 }
 
 .todo-meta {
@@ -1160,6 +1203,25 @@ body {
   to { transform: rotate(360deg); }
 }
 
+.todo-queued {
+  border-left-color: var(--yellow, #e5c07b) !important;
+}
+
+.queued-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--yellow, #e5c07b);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.btn-dequeue {
+  font-size: 0.75rem !important;
+  color: var(--yellow, #e5c07b) !important;
+}
+.btn-dequeue:hover { color: #fff !important; background: var(--yellow, #e5c07b) !important; }
+
 .btn-run {
   font-size: 0.75rem !important;
   color: var(--green) !important;
@@ -1606,4 +1668,39 @@ body {
 .shortcuts-hint:hover {
   border-color: var(--accent);
   color: var(--accent-light);
+}
+
+/* ── Drag-and-drop reordering ─────────────────────────────── */
+
+.todo-drag-wrapper {
+  cursor: grab;
+  position: relative;
+}
+
+.todo-drag-wrapper:active {
+  cursor: grabbing;
+}
+
+.todo-drag-wrapper.drop-above::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  z-index: 10;
+}
+
+.todo-drag-wrapper.drop-below::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  z-index: 10;
 }

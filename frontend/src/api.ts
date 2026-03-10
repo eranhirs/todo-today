@@ -7,7 +7,15 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json" },
     ...opts,
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // Try to extract detail from FastAPI error response
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body.detail) detail = body.detail;
+    } catch { /* ignore parse errors */ }
+    throw new Error(detail);
+  }
   if (res.status === 204) return undefined as T;
   return res.json();
 }
@@ -39,11 +47,20 @@ export const api = {
   deleteTodo: (id: string) =>
     request<void>(`/todos/${id}`, { method: "DELETE" }),
 
+  reorderTodos: (todoIds: string[]) =>
+    request<{ status: string }>("/todos/reorder", {
+      method: "PUT",
+      body: JSON.stringify({ todo_ids: todoIds }),
+    }),
+
   runTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/run`, { method: "POST" }),
 
   stopTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/stop`, { method: "POST" }),
+
+  dequeueTodo: (id: string) =>
+    request<{ status: string }>(`/todos/${id}/dequeue`, { method: "POST" }),
 
   followupTodo: (id: string, message: string) =>
     request<{ status: string }>(`/todos/${id}/followup`, {

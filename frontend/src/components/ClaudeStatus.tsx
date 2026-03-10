@@ -5,6 +5,7 @@ import { api } from "../api";
 interface Props {
   metadata: Metadata;
   analysisLocked: boolean;
+  autopilotRunning: boolean;
   onRefresh: () => void;
 }
 
@@ -29,7 +30,7 @@ function formatTime(epoch: number): string {
   return `${Math.floor(diffH / 24)}d ago`;
 }
 
-export function ClaudeStatus({ metadata, analysisLocked, onRefresh }: Props) {
+export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRefresh }: Props) {
   const [waking, setWaking] = useState(false);
 
   const busy = waking || analysisLocked;
@@ -56,6 +57,9 @@ export function ClaudeStatus({ metadata, analysisLocked, onRefresh }: Props) {
       );
       if (res.status === "skipped" || res.status === "busy") {
         setWakeMessage(res.message ?? (res.status === "busy" ? "Analysis already in progress" : "No changes since last analysis"));
+      } else if (res.status === "ok" && res.message) {
+        // Informational message (e.g. autopilot tasks started without new analysis)
+        setWakeMessage(res.message);
       } else {
         setWakeMessage(null);
       }
@@ -229,6 +233,9 @@ export function ClaudeStatus({ metadata, analysisLocked, onRefresh }: Props) {
           Last analysis: {timeAgo(metadata.last_analysis.timestamp)}
           {metadata.last_analysis.model && ` (${metadata.last_analysis.model})`} — {metadata.last_analysis.summary}
         </div>
+      )}
+      {autopilotRunning && (
+        <div className="status-detail autopilot-indicator">Autopilot running...</div>
       )}
       <button className="btn-wake" onClick={() => handleWake()} disabled={busy}>
         {busy ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}

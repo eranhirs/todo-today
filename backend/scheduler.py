@@ -30,8 +30,9 @@ _analysis_lock = asyncio.Lock()
 _ANALYSIS_TIMEOUT = 300  # seconds
 # Queued session keys from hooks — analyzed when the lock is free
 _pending_hook_sessions: set[str] = set()
-# Guard against concurrent autopilot runs
+# Guard against concurrent autopilot runs; queued flag ensures at most one pending cycle
 _autopilot_running = False
+_autopilot_queued = False
 
 
 async def _run_with_lock(coro, timeout: float = _ANALYSIS_TIMEOUT):
@@ -51,32 +52,51 @@ async def _run_with_lock(coro, timeout: float = _ANALYSIS_TIMEOUT):
         _analysis_lock.release()
 
 
-async def _auto_run_todos() -> None:
-    """Pick eligible 'next' todos and run them with Claude, respecting per-project autopilot quota."""
-    global _autopilot_running
+async def _auto_run_todos() -> bool:
+    """Pick eligible 'next' todos and run them with Claude, respecting per-project autopilot quota.
+
+    If autopilot is already running, queues one cycle instead of dropping it.
+    Returns True if any todos were started (across all cycles including queued re-runs).
+    """
+    global _autopilot_running, _autopilot_queued
     if _autopilot_running:
-        log.info("Autopilot: already running, skipping this cycle")
-        return
+        _autopilot_queued = True
+        log.info("Autopilot: already running, queued for next cycle")
+        return False
     _autopilot_running = True
+    started_any = False
     try:
-        await _auto_run_todos_inner()
+        started_any = await _auto_run_todos_inner()
+        # Drain the queue: if another cycle was requested while we ran, run once more
+        while _autopilot_queued:
+            _autopilot_queued = False
+            log.info("Autopilot: running queued cycle")
+            if await _auto_run_todos_inner():
+                started_any = True
     finally:
         _autopilot_running = False
+        _autopilot_queued = False
+    return started_any
 
 
-async def _auto_run_todos_inner() -> None:
-    """Inner implementation of autopilot — always called via _auto_run_todos guard."""
+async def _auto_run_todos_inner() -> bool:
+    """Inner implementation of autopilot — always called via _auto_run_todos guard.
+
+    Queues eligible todos via start_todo_run, which either starts them immediately
+    or adds them to the per-project queue. The queue drains automatically as each
+    run finishes.
+
+    Returns True if any todos were started or queued.
+    """
+    started_any = False
     with StorageContext(read_only=True) as ctx:
         todos = list(ctx.store.todos)
         projects = {p.id: p for p in ctx.store.projects}
 
     # Group eligible todos by project
     by_project: dict[str, list] = {}
-    has_running: set[str] = set()
     for t in todos:
-        if t.run_status == "running" or is_todo_running(t.id):
-            has_running.add(t.project_id)
-        if t.status == "next":
+        if t.status == "next" and t.run_status != "queued":
             by_project.setdefault(t.project_id, []).append(t)
 
     for project_id, candidates in by_project.items():
@@ -93,41 +113,30 @@ async def _auto_run_todos_inner() -> None:
                 continue
         if remaining_quota <= 0:
             continue
-        if project_id in has_running:
-            log.info("Autopilot: skipping project %s — already has a running todo", project_id)
-            continue
 
-        # Sort by created_at (oldest first) and pick up to remaining quota
-        candidates.sort(key=lambda t: t.created_at)
+        # Sort using same prioritization as the UI's "Up Next" section:
+        # sort_order ascending, then created_at descending as tiebreaker
+        candidates.sort(key=lambda t: t.created_at, reverse=True)
+        candidates.sort(key=lambda t: t.sort_order)
         to_run = candidates[:remaining_quota]
 
         for todo in to_run:
-            log.info("Autopilot: starting todo %s (%s) [quota remaining: %d]", todo.id, todo.text[:60], remaining_quota)
+            log.info("Autopilot: queueing todo %s (%s) [quota remaining: %d]", todo.id, todo.text[:60], remaining_quota)
             err = start_todo_run(todo.id, autopilot=True)
-            if err:
+            if err and err != "queued":
                 log.warning("Autopilot: failed to start todo %s: %s", todo.id, err)
                 continue
-            # Decrement quota immediately
+            started_any = True
+            # Decrement quota immediately (whether started or queued)
             with StorageContext() as ctx:
                 for p in ctx.store.projects:
                     if p.id == project_id:
                         p.auto_run_quota = max(0, p.auto_run_quota - 1)
                         remaining_quota = p.auto_run_quota
-                        log.info("Autopilot: decremented quota for %s, remaining: %d", project_id, remaining_quota)
+                        status = "queued" if err == "queued" else "started"
+                        log.info("Autopilot: %s todo, decremented quota for %s, remaining: %d", status, project_id, remaining_quota)
                         break
-            # Wait for completion before starting next in same project
-            await _wait_for_todo(todo.id)
-
-
-async def _wait_for_todo(todo_id: str, poll_interval: float = 5.0, timeout: float = 600.0) -> None:
-    """Poll until a todo's background thread finishes."""
-    import time
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not is_todo_running(todo_id):
-            return
-        await asyncio.sleep(poll_interval)
-    log.warning("Autopilot: timed out waiting for todo %s after %ds", todo_id, timeout)
+    return started_any
 
 
 async def _analysis_job() -> None:
@@ -192,7 +201,16 @@ async def trigger_analysis(
         )
     except asyncio.TimeoutError:
         return {"status": "error", "message": f"Analysis timed out after {_ANALYSIS_TIMEOUT}s"}
+    # Run autopilot regardless of whether analysis found new sessions
+    autopilot_ran = False
+    try:
+        autopilot_ran = await _auto_run_todos()
+    except Exception:
+        log.exception("Autopilot failed after manual wake-up")
+
     if entry is None:
+        if autopilot_ran:
+            return {"status": "ok", "message": "No session changes, but autopilot tasks started"}
         return {"status": "skipped", "message": "No session changes since last analysis"}
     return {"status": "ok", "entry": entry.model_dump()}
 
@@ -268,6 +286,11 @@ def set_interval(minutes: int) -> None:
 def is_analysis_locked() -> bool:
     """Return whether the analysis lock is currently held."""
     return _analysis_lock.locked()
+
+
+def is_autopilot_running() -> bool:
+    """Return whether the autopilot loop is currently active."""
+    return _autopilot_running
 
 
 def stop_scheduler() -> None:

@@ -88,7 +88,7 @@ function App() {
   const [showInsightsDropdown, setShowInsightsDropdown] = useState(false);
   const [focusedTodoId, setFocusedTodoId] = useState<string | null>(null);
   const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
-  const addInputRef = useRef<HTMLInputElement | null>(null);
+  const addInputRef = useRef<HTMLTextAreaElement | null>(null);
   const insightsDropdownRef = useRef<HTMLDivElement | null>(null);
 
   const knownWaitingIds = useRef<Set<string> | null>(null);
@@ -247,6 +247,11 @@ function App() {
       ? state.todos.filter((t) => t.project_id === selectedProject)
       : state.todos;
 
+    const sortByOrder = (a: Todo, b: Todo) => {
+      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+      return b.created_at.localeCompare(a.created_at);
+    };
+
     const upNextOrder = { waiting: 0, in_progress: 1, next: 2 } as const;
     const upNext = filtered
       .filter((t) => t.status === "waiting" || t.status === "in_progress" || t.status === "next")
@@ -254,7 +259,7 @@ function App() {
         const oa = upNextOrder[a.status as keyof typeof upNextOrder] ?? 2;
         const ob = upNextOrder[b.status as keyof typeof upNextOrder] ?? 2;
         if (oa !== ob) return oa - ob;
-        return b.created_at.localeCompare(a.created_at);
+        return sortByOrder(a, b);
       });
 
     const backlog = filtered
@@ -262,7 +267,7 @@ function App() {
       .sort((a, b) => {
         if (a.status === "consider" && b.status === "stale") return -1;
         if (a.status === "stale" && b.status === "consider") return 1;
-        return b.created_at.localeCompare(a.created_at);
+        return sortByOrder(a, b);
       });
 
     const done = filtered
@@ -448,7 +453,7 @@ function App() {
       )}
       <aside className="sidebar">
         <h1 className="app-title">Claude Todos</h1>
-        <ClaudeStatus metadata={state.metadata} analysisLocked={state.analysis_locked} onRefresh={refresh} />
+        <ClaudeStatus metadata={state.metadata} analysisLocked={state.analysis_locked} autopilotRunning={state.autopilot_running} onRefresh={refresh} />
         <ProjectList
           projects={state.projects}
           todos={state.todos}
