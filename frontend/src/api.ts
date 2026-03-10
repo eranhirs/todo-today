@@ -45,6 +45,12 @@ export const api = {
   stopTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/stop`, { method: "POST" }),
 
+  followupTodo: (id: string, message: string) =>
+    request<{ status: string }>(`/todos/${id}/followup`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
+
   wakeUpClaude: (model?: string, force?: boolean, sessionKeys?: string[]) =>
     request<{ status: string; message?: string }>("/claude/wake", {
       method: "POST",

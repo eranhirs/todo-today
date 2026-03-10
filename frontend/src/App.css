@@ -148,6 +148,52 @@ body {
 
 .project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 
+.project-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--border);
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+.project-item.active .project-count-badge {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.project-indicator {
+  display: inline-block;
+  font-size: 0.5rem;
+  margin-left: 5px;
+  vertical-align: middle;
+  line-height: 1;
+}
+.indicator-running {
+  color: var(--accent-light);
+  animation: pulse-indicator 1.5s ease-in-out infinite;
+}
+.indicator-in-progress {
+  color: var(--blue);
+}
+.indicator-waiting {
+  color: var(--amber);
+}
+.project-item.active .indicator-running { color: #fff; }
+.project-item.active .indicator-in-progress { color: rgba(255, 255, 255, 0.8); }
+.project-item.active .indicator-waiting { color: rgba(255, 255, 255, 0.8); }
+
+@keyframes pulse-indicator {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 .autopilot-select {
   padding: 1px 2px;
   border: 1px solid transparent;
@@ -531,6 +577,100 @@ body {
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* Main toolbar (view toggle + bell) */
+
+.main-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* Insights bell */
+
+.insights-bell-wrapper {
+  position: relative;
+}
+
+.insights-bell {
+  position: relative;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 5px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s, color 0.2s;
+}
+.insights-bell:hover {
+  border-color: var(--claude);
+  color: var(--claude);
+}
+.insights-bell.has-insights {
+  color: var(--claude);
+  border-color: var(--claude);
+}
+
+.insights-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--claude);
+  color: var(--bg);
+  font-size: 0.6rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  animation: badge-pop 0.3s ease-out;
+}
+
+@keyframes badge-pop {
+  0% { transform: scale(0); }
+  70% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+.insights-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 380px;
+  max-height: 400px;
+  overflow-y: auto;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 500;
+  animation: dropdown-in 0.15s ease-out;
+}
+
+@keyframes dropdown-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.insights-dropdown-empty {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 12px 0;
+}
+
+.insights-dropdown .insights-banner {
+  margin-bottom: 0;
 }
 
 /* Insights banner */
@@ -1057,6 +1197,36 @@ body {
 
 .todo-item { flex-wrap: wrap; }
 
+.followup-bar {
+  display: flex;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 10px;
+  background: #0d0f16;
+  border-radius: 0 0 6px 6px;
+  margin-top: -4px;
+}
+
+.followup-input {
+  flex: 1;
+  background: #161926;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 8px;
+  font-size: 0.8rem;
+  font-family: inherit;
+}
+
+.followup-input::placeholder {
+  color: var(--text-dim);
+}
+
+.followup-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 /* ── Dashboard ──────────────────────────────────────────────── */
 
 .dashboard {
@@ -1076,7 +1246,6 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
-  margin-bottom: 16px;
 }
 
 .view-toggle-btn {

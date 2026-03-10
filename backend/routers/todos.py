@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ..models import Todo, TodoCreate, TodoUpdate, _now
 from ..storage import DATA_DIR, StorageContext
@@ -165,10 +166,11 @@ def _invoke_claude(
         "--dangerously-skip-permissions",
         "--disallowedTools", "AskUserQuestion",
         "--model", model,
-        "--session-id", session_id,
     ]
     if resume:
-        cmd.append("--resume")
+        cmd.extend(["--resume", session_id])
+    else:
+        cmd.extend(["--session-id", session_id])
 
     # Open file in append mode so multiple invocations accumulate output
     fout = open(output_file, "a")
@@ -276,12 +278,20 @@ def _tail_output_file(
 
 
 def _pid_alive(pid: int) -> bool:
-    """Check if a process with the given PID is alive."""
+    """Check if a process with the given PID is alive (not a zombie)."""
     try:
         os.kill(pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+    # Check for zombie on Linux — zombies respond to kill(0) but are defunct
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("State:"):
+                    return "Z" not in line  # Z = zombie
+    except (FileNotFoundError, PermissionError):
+        pass
+    return True
 
 
 def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus") -> None:
@@ -297,11 +307,12 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         session_header = f"Session: {session_id}\n\n"
         accumulated: list[str] = []
 
-        # Store output file path on todo
+        # Store output file path and session_id on todo
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
                     t.run_output_file = str(output_file)
+                    t.session_id = session_id
                     break
 
         # Ensure clean output file
@@ -626,4 +637,98 @@ def run_todo(todo_id: str) -> dict:
     if err:
         raise HTTPException(500, err)
 
+    return {"status": "started"}
+
+
+class FollowupRequest(BaseModel):
+    message: str
+
+
+def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus") -> None:
+    """Background thread: send a follow-up message to an existing Claude session."""
+    output_file = _RUNS_DIR / f"{todo_id}.jsonl"
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+        # Use the already-updated output (includes user message) as the header
+        with StorageContext(read_only=True) as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    existing_output = t.run_output or ""
+                    break
+            else:
+                existing_output = ""
+
+        session_header = existing_output
+        accumulated: list[str] = []
+
+        # Ensure clean output file
+        output_file.write_text("")
+
+        final_result, stream_objects, returncode = _invoke_claude(
+            todo_id, message, session_id, source_path, model, env,
+            accumulated, session_header, output_file, resume=True,
+        )
+
+        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
+
+    except Exception as e:
+        log.exception("Claude follow-up error for todo %s", todo_id)
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    t.run_status = "error"
+                    t.run_output = (t.run_output or "") + f"\n\n--- Follow-up Error ---\n{e}"
+                    t.run_pid = None
+                    t.run_output_file = None
+                    break
+        _cleanup_output_file(output_file)
+    finally:
+        _running_tasks.pop(todo_id, None)
+
+
+@router.post("/{todo_id}/followup")
+def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
+    """Send a follow-up message to a completed Claude session."""
+    if _DEMO_MODE:
+        raise HTTPException(403, "Disabled in demo mode")
+
+    if todo_id in _running_tasks and _running_tasks[todo_id].is_alive():
+        raise HTTPException(409, "This todo is already running")
+
+    with StorageContext() as ctx:
+        todo = None
+        source_path = None
+        for t in ctx.store.todos:
+            if t.id == todo_id:
+                todo = t
+                break
+        if todo is None:
+            raise HTTPException(404, "Todo not found")
+        if not todo.session_id:
+            raise HTTPException(400, "No session to follow up on — run the todo first")
+        if todo.run_status == "running":
+            raise HTTPException(409, "Todo is currently running")
+
+        session_id = todo.session_id
+
+        for p in ctx.store.projects:
+            if p.id == todo.project_id:
+                source_path = p.source_path
+                break
+        if not source_path:
+            raise HTTPException(400, "Project has no source_path configured")
+
+        todo.run_status = "running"
+        # Immediately show the user's follow-up message in the output
+        todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}\n"
+        run_model = ctx.metadata.run_model
+
+    thread = threading.Thread(
+        target=_followup_claude_for_todo,
+        args=(todo_id, body.message, session_id, source_path, run_model),
+        daemon=True,
+    )
+    thread.start()
+    _running_tasks[todo_id] = thread
     return {"status": "started"}

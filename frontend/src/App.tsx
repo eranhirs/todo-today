@@ -9,6 +9,7 @@ import { UpdateHistory } from "./components/UpdateHistory";
 import { AutopilotHistory } from "./components/AutopilotHistory";
 import { HookDebug } from "./components/HookDebug";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay";
+import { Insights } from "./components/Insights";
 import "./App.css";
 
 const POLL_INTERVAL = 3_000;
@@ -84,9 +85,11 @@ function App() {
   }, []);
 
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showInsightsDropdown, setShowInsightsDropdown] = useState(false);
   const [focusedTodoId, setFocusedTodoId] = useState<string | null>(null);
   const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
   const addInputRef = useRef<HTMLInputElement | null>(null);
+  const insightsDropdownRef = useRef<HTMLDivElement | null>(null);
 
   const knownWaitingIds = useRef<Set<string> | null>(null);
   const knownRunningIds = useRef<Set<string>>(new Set());
@@ -405,6 +408,18 @@ function App() {
     return () => window.removeEventListener("keydown", handler);
   }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast]);
 
+  // Close insights dropdown on outside click
+  useEffect(() => {
+    if (!showInsightsDropdown) return;
+    const handler = (e: MouseEvent) => {
+      if (insightsDropdownRef.current && !insightsDropdownRef.current.contains(e.target as Node)) {
+        setShowInsightsDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showInsightsDropdown]);
+
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
       Notification.requestPermission();
@@ -436,6 +451,7 @@ function App() {
         <ClaudeStatus metadata={state.metadata} analysisLocked={state.analysis_locked} onRefresh={refresh} />
         <ProjectList
           projects={state.projects}
+          todos={state.todos}
           selectedId={selectedProject}
           onSelect={selectProject}
           onRefresh={refresh}
@@ -497,20 +513,55 @@ function App() {
         <HookDebug />
       </aside>
       <main className="main">
-        <div className="view-toggle">
-          <button
-            className={`view-toggle-btn${view === "list" ? " active" : ""}`}
-            onClick={() => switchView("list")}
-          >
-            List
-          </button>
-          <button
-            className={`view-toggle-btn${view === "dashboard" ? " active" : ""}`}
-            onClick={() => switchView("dashboard")}
-          >
-            Dashboard
-          </button>
-        </div>
+        {(() => {
+          const allInsights = state.metadata.insights;
+          const filteredInsights = selectedProject
+            ? allInsights.filter((i) => i.project_id === selectedProject || i.project_id === "")
+            : allInsights;
+          const activeInsights = filteredInsights.filter((i) => !i.dismissed);
+          const activeCount = activeInsights.length;
+          return (
+            <>
+              <div className="main-toolbar">
+                <div className="view-toggle">
+                  <button
+                    className={`view-toggle-btn${view === "list" ? " active" : ""}`}
+                    onClick={() => switchView("list")}
+                  >
+                    List
+                  </button>
+                  <button
+                    className={`view-toggle-btn${view === "dashboard" ? " active" : ""}`}
+                    onClick={() => switchView("dashboard")}
+                  >
+                    Dashboard
+                  </button>
+                </div>
+                <div className="insights-bell-wrapper" ref={insightsDropdownRef}>
+                  <button
+                    className={`insights-bell${activeCount > 0 ? " has-insights" : ""}`}
+                    onClick={() => setShowInsightsDropdown((v) => !v)}
+                    title={activeCount > 0 ? `${activeCount} insight${activeCount !== 1 ? "s" : ""}` : "No insights"}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                    </svg>
+                    {activeCount > 0 && <span className="insights-badge">{activeCount}</span>}
+                  </button>
+                  {showInsightsDropdown && (
+                    <div className="insights-dropdown">
+                      <Insights insights={filteredInsights} onRefresh={refresh} />
+                      {activeCount === 0 && (
+                        <div className="insights-dropdown-empty">No active insights</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          );
+        })()}
         {view === "dashboard" ? (
           <Dashboard
             todos={state.todos}
@@ -525,7 +576,6 @@ function App() {
             projects={state.projects}
             selectedProjectId={selectedProject}
             projectSummaries={state.metadata.project_summaries}
-            insights={state.metadata.insights}
             onRefresh={refresh}
             addToast={addToast}
             onOptimisticUpdate={(fn) => setState((prev) => prev ? { ...prev, todos: fn(prev.todos) } : prev)}

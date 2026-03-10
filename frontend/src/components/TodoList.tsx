@@ -1,7 +1,6 @@
 import { useState } from "react";
-import type { Insight, Project, Todo } from "../types";
+import type { Project, Todo } from "../types";
 import { AddTodo } from "./AddTodo";
-import { Insights } from "./Insights";
 import { TodoItem } from "./TodoItem";
 
 interface Props {
@@ -9,7 +8,6 @@ interface Props {
   projects: Project[];
   selectedProjectId: string | null;
   projectSummaries: Record<string, string>;
-  insights: Insight[];
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
@@ -18,7 +16,7 @@ interface Props {
   addInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, insights, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef }: Props) {
   const [showUpNext, setShowUpNext] = useState(true);
   const [showBacklog, setShowBacklog] = useState(true);
   const [showDone, setShowDone] = useState(true);
@@ -26,10 +24,6 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const filtered = selectedProjectId
     ? todos.filter((t) => t.project_id === selectedProjectId)
     : todos;
-
-  const filteredInsights = selectedProjectId
-    ? insights.filter((i) => i.project_id === selectedProjectId || i.project_id === "")
-    : insights;
 
   // Up Next: waiting (first), then in_progress, then next
   const upNextOrder = { waiting: 0, in_progress: 1, next: 2 } as const;
@@ -72,8 +66,6 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     <div className="todo-list">
       <h2>{selectedProjectId ? projectName(selectedProjectId) : "All Projects"}</h2>
       {summary && <p className="project-summary">{summary}</p>}
-
-      <Insights insights={filteredInsights} onRefresh={onRefresh} />
 
       {selectedProjectId && <AddTodo projectId={selectedProjectId} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />}
 

@@ -35,9 +35,11 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
   const [pillsExpanded, setPillsExpanded] = useState(false);
+  const [followupText, setFollowupText] = useState("");
   const pillBarRef = useRef<HTMLDivElement>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const followupRef = useRef<HTMLInputElement>(null);
 
   // Auto-show output while running
   useEffect(() => {
@@ -124,6 +126,19 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
       onRefresh();
     } catch {
       addToast(`Failed to stop "${todo.text}"`, "error");
+    }
+  };
+
+  const sendFollowup = async () => {
+    const msg = followupText.trim();
+    if (!msg) return;
+    try {
+      await api.followupTodo(todo.id, msg);
+      setFollowupText("");
+      addToast("Follow-up sent", "info");
+      onRefresh();
+    } catch {
+      addToast("Failed to send follow-up", "error");
     }
   };
 
@@ -260,6 +275,24 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
       {showOutput && todo.run_output && (
         <div className="run-output">
           <pre ref={outputRef}>{todo.run_output}</pre>
+        </div>
+      )}
+      {showOutput && todo.session_id && !isRunning && (todo.run_status === "done" || todo.run_status === "error") && (
+        <div className="followup-bar">
+          <input
+            ref={followupRef}
+            className="followup-input"
+            placeholder="Send follow-up to this session..."
+            value={followupText}
+            onChange={(e) => setFollowupText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                sendFollowup();
+              }
+            }}
+          />
+          <button className="btn-icon btn-run" onClick={sendFollowup} title="Send follow-up">↵</button>
         </div>
       )}
     </div>
