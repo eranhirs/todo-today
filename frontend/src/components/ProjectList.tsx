@@ -100,7 +100,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
             </span>
             {c && c.total > 0 && <span className="project-count-badge">{c.total}</span>}
             <select
-              className="autopilot-select"
+              className={`autopilot-select ${p.auto_run_quota > 0 ? "autopilot-active" : ""}`}
               value={p.auto_run_quota}
               onClick={(e) => e.stopPropagation()}
               onChange={async (e) => {
@@ -108,15 +108,15 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
                 await api.updateProject(p.id, { auto_run_quota: Number(e.target.value) });
                 onRefresh();
               }}
-              title={p.auto_run_quota > 0 ? `Autopilot: ${p.auto_run_quota} remaining` : "Autopilot off"}
+              title={p.auto_run_quota > 0 ? `Autopilot: will auto-run ${p.auto_run_quota} todo(s) on next analysis, then stop` : "Autopilot off"}
             >
               <option value={0}>off</option>
               {(() => {
                 const presets = [1, 2, 3, 5, 10];
                 const current = p.auto_run_quota;
-                const options = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
-                return options.map((n) => (
-                  <option key={n} value={n}>&#x1F916; {n}</option>
+                const all = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
+                return all.map((n) => (
+                  <option key={n} value={n}>{n === current && current > 0 ? `🚀 ${n} left` : `🚀 ${n}`}</option>
                 ));
               })()}
             </select>

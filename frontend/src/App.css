@@ -206,7 +206,20 @@ body {
   flex-shrink: 0;
 }
 .autopilot-select:hover { border-color: var(--border); color: var(--text); }
+.autopilot-select.autopilot-active {
+  color: var(--accent-light);
+  border-color: var(--accent-light);
+  background: rgba(108, 92, 231, 0.1);
+}
+.autopilot-select.autopilot-active:hover {
+  background: rgba(108, 92, 231, 0.2);
+}
 .project-item.active .autopilot-select { color: rgba(255,255,255,0.8); }
+.project-item.active .autopilot-select.autopilot-active {
+  color: var(--accent-light);
+  border-color: rgba(108, 92, 231, 0.5);
+  background: rgba(108, 92, 231, 0.15);
+}
 .project-item.active .autopilot-select:hover { border-color: rgba(255,255,255,0.4); color: #fff; }
 
 /* Buttons */
