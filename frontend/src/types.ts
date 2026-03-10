@@ -91,4 +91,5 @@ export interface FullState {
   projects: Project[];
   todos: Todo[];
   metadata: Metadata;
+  analysis_locked: boolean;
 }

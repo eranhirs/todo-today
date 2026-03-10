@@ -148,6 +148,7 @@ class FullState(BaseModel):
     projects: List[Project]
     todos: List[Todo]
     metadata: Metadata
+    analysis_locked: bool = False
 
 
 # ── Claude analysis result (what Claude returns) ───────────────

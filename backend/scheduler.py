@@ -239,6 +239,11 @@ def set_interval(minutes: int) -> None:
     log.info("Analysis interval changed to %dm", minutes)
 
 
+def is_analysis_locked() -> bool:
+    """Return whether the analysis lock is currently held."""
+    return _analysis_lock.locked()
+
+
 def stop_scheduler() -> None:
     scheduler.shutdown(wait=False)
     log.info("Scheduler stopped")

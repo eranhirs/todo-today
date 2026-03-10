@@ -122,37 +122,62 @@ def _extract_assistant_text(line_json: dict) -> Optional[str]:
     return "\n".join(parts) if parts else None
 
 
-def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus") -> None:
-    """Background thread: stream claude -p output and flush progress to the store."""
-    proc = None
+_MAX_PLAN_RETRIES = 3  # max times we'll auto-accept a plan and continue
+
+
+def _detect_exit_plan_mode(stream_lines: list[dict]) -> bool:
+    """Check if the session ended by calling ExitPlanMode."""
+    for obj in reversed(stream_lines):
+        if obj.get("type") != "assistant":
+            continue
+        for block in obj.get("message", {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                if block.get("name") == "ExitPlanMode":
+                    return True
+        # Only check the last assistant message
+        break
+    return False
+
+
+def _invoke_claude(
+    todo_id: str,
+    prompt: str,
+    session_id: str,
+    source_path: str,
+    model: str,
+    env: dict,
+    accumulated: list[str],
+    session_header: str,
+    resume: bool = False,
+) -> tuple[Optional[dict], list[dict], int]:
+    """Run a single claude -p invocation. Returns (final_result, stream_objects, returncode)."""
+    cmd = [
+        "claude", "-p", "--output-format", "stream-json", "--verbose",
+        "--dangerously-skip-permissions",
+        "--disallowedTools", "AskUserQuestion",
+        "--model", model,
+        "--session-id", session_id,
+    ]
+    if resume:
+        cmd.append("--resume")
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=source_path,
+        env=env,
+    )
+    proc.stdin.write(prompt)
+    proc.stdin.close()
+
+    last_flush = time.monotonic()
+    final_result = None
+    stream_objects: list[dict] = []
+
     try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        session_id = str(uuid.uuid4())
-        prompt = (
-            f"Implement this task fully — write all the code, make all the changes, "
-            f"do not stop to ask for feedback or approval: {todo_text}"
-        )
-        proc = subprocess.Popen(
-            ["claude", "-p", "--output-format", "stream-json", "--verbose",
-             "--dangerously-skip-permissions",
-             "--disallowedTools", "AskUserQuestion",
-             "--model", model,
-             "--session-id", session_id],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=source_path,
-            env=env,
-        )
-        proc.stdin.write(prompt)
-        proc.stdin.close()
-
-        session_header = f"Session: {session_id}\n\n"
-        accumulated: list[str] = []
-        last_flush = time.monotonic()
-        final_result = None
-
         for line in proc.stdout:
             line = line.strip()
             if not line:
@@ -162,6 +187,8 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             except json.JSONDecodeError:
                 continue
 
+            stream_objects.append(obj)
+
             if obj.get("type") == "result":
                 final_result = obj
                 continue
@@ -170,37 +197,77 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             if text:
                 accumulated.append(text)
 
-            # Flush to store periodically
             now = time.monotonic()
             if now - last_flush >= _FLUSH_INTERVAL and accumulated:
                 _flush_progress(todo_id, session_header + "\n".join(accumulated))
                 last_flush = now
 
         proc.wait(timeout=30)
+    except Exception:
+        if proc.poll() is None:
+            proc.kill()
+        raise
 
-        if proc.returncode != 0:
-            stderr = proc.stderr.read()[:2000] if proc.stderr else ""
-            error_msg = stderr or f"Exit code {proc.returncode}"
-            log.error("Claude run failed for todo %s: %s", todo_id, error_msg)
+    return final_result, stream_objects, proc.returncode
+
+
+def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus") -> None:
+    """Background thread: run claude -p, auto-accepting plan mode if needed."""
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        session_id = str(uuid.uuid4())
+        prompt = (
+            f"Implement this task fully — write all the code, make all the changes, "
+            f"do not stop to ask for feedback or approval: {todo_text}"
+        )
+        session_header = f"Session: {session_id}\n\n"
+        accumulated: list[str] = []
+
+        final_result = None
+        returncode = 0
+
+        for attempt in range(_MAX_PLAN_RETRIES + 1):
+            is_resume = attempt > 0
+            if is_resume:
+                prompt = "Plan accepted. Now implement it fully."
+                log.info("Auto-accepting plan for todo %s (attempt %d)", todo_id, attempt + 1)
+                accumulated.append("\n--- Plan accepted, continuing ---\n")
+
+            final_result, stream_objects, returncode = _invoke_claude(
+                todo_id, prompt, session_id, source_path, model, env,
+                accumulated, session_header, resume=is_resume,
+            )
+
+            if returncode != 0:
+                break
+
+            # If Claude exited plan mode, auto-accept and continue
+            if _detect_exit_plan_mode(stream_objects) and attempt < _MAX_PLAN_RETRIES:
+                continue
+
+            # Otherwise we're done
+            break
+
+        if returncode != 0:
+            stderr_msg = f"Exit code {returncode}"
+            log.error("Claude run failed for todo %s: %s", todo_id, stderr_msg)
             output_so_far = "\n".join(accumulated)
             if output_so_far:
-                error_msg = output_so_far + "\n\n--- ERROR ---\n" + error_msg
+                stderr_msg = output_so_far + "\n\n--- ERROR ---\n" + stderr_msg
             with StorageContext() as ctx:
                 for t in ctx.store.todos:
                     if t.id == todo_id:
                         t.run_status = "error"
-                        t.run_output = (session_header + error_msg)[:50000]
+                        t.run_output = (session_header + stderr_msg)[:50000]
                         break
             return
 
-        # Use final result text if available, else accumulated stream
         output_text = "\n".join(accumulated)
         had_errors = False
         if final_result:
             result_text = final_result.get("result")
             if result_text:
                 output_text = result_text
-            # Check if there were permission denials or errors
             if final_result.get("is_error"):
                 had_errors = True
             if final_result.get("permission_denials"):
@@ -227,8 +294,6 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                     t.run_output = str(e)
                     break
     finally:
-        if proc and proc.poll() is None:
-            proc.kill()
         _running_tasks.pop(todo_id, None)
 
 

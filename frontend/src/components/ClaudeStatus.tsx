@@ -4,6 +4,7 @@ import { api } from "../api";
 
 interface Props {
   metadata: Metadata;
+  analysisLocked: boolean;
   onRefresh: () => void;
 }
 
@@ -28,8 +29,10 @@ function formatTime(epoch: number): string {
   return `${Math.floor(diffH / 24)}d ago`;
 }
 
-export function ClaudeStatus({ metadata, onRefresh }: Props) {
+export function ClaudeStatus({ metadata, analysisLocked, onRefresh }: Props) {
   const [waking, setWaking] = useState(false);
+
+  const busy = waking || analysisLocked;
   const [selectedModel, setSelectedModel] = useState(metadata.analysis_model);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
@@ -210,7 +213,7 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
       {wakeMessage && (
         <div className="status-detail wake-message">
           {wakeMessage}{" "}
-          <button className="btn-link" onClick={() => handleWake(true)} disabled={waking}>
+          <button className="btn-link" onClick={() => handleWake(true)} disabled={busy}>
             Force analyze
           </button>
         </div>
@@ -224,8 +227,8 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
           {metadata.last_analysis.model && ` (${metadata.last_analysis.model})`} — {metadata.last_analysis.summary}
         </div>
       )}
-      <button className="btn-wake" onClick={() => handleWake()} disabled={waking}>
-        {waking ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}
+      <button className="btn-wake" onClick={() => handleWake()} disabled={busy}>
+        {busy ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}
       </button>
       <div className="session-picker-section">
         <button className="btn-link session-picker-toggle" onClick={handleBrowseSessions} disabled={loadingSessions}>
@@ -244,7 +247,7 @@ export function ClaudeStatus({ metadata, onRefresh }: Props) {
                 className="btn-wake"
                 style={{ padding: "4px 10px", fontSize: "0.75rem", marginTop: 0 }}
                 onClick={handleAnalyzeSelected}
-                disabled={selectedKeys.size === 0 || waking}
+                disabled={selectedKeys.size === 0 || busy}
               >
                 Analyze Selected ({selectedKeys.size})
               </button>

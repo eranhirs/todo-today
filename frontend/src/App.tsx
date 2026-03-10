@@ -231,7 +231,7 @@ function App() {
       )}
       <aside className="sidebar">
         <h1 className="app-title">Claude Todos</h1>
-        <ClaudeStatus metadata={state.metadata} onRefresh={refresh} />
+        <ClaudeStatus metadata={state.metadata} analysisLocked={state.analysis_locked} onRefresh={refresh} />
         <ProjectList
           projects={state.projects}
           selectedId={selectedProject}

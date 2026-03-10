@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .models import FullState
 from .routers import claude, projects, todos
-from .scheduler import start_scheduler, stop_scheduler
+from .scheduler import is_analysis_locked, start_scheduler, stop_scheduler
 from .storage import StorageContext
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -59,6 +59,7 @@ def full_state() -> FullState:
             projects=ctx.store.projects,
             todos=ctx.store.todos,
             metadata=ctx.metadata,
+            analysis_locked=is_analysis_locked(),
         )
 
 
