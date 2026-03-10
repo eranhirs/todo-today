@@ -6,7 +6,9 @@ import { TodoList } from "./components/TodoList";
 import { Dashboard } from "./components/Dashboard";
 import { ClaudeStatus } from "./components/ClaudeStatus";
 import { UpdateHistory } from "./components/UpdateHistory";
+import { AutopilotHistory } from "./components/AutopilotHistory";
 import { HookDebug } from "./components/HookDebug";
+import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay";
 import "./App.css";
 
 const POLL_INTERVAL = 3_000;
@@ -81,6 +83,11 @@ function App() {
     window.history.replaceState({}, "", url.toString());
   }, []);
 
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [focusedTodoId, setFocusedTodoId] = useState<string | null>(null);
+  const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
+  const addInputRef = useRef<HTMLInputElement | null>(null);
+
   const knownWaitingIds = useRef<Set<string> | null>(null);
   const knownRunningIds = useRef<Set<string>>(new Set());
   const knownHookStates = useRef<Map<string, string>>(new Map());
@@ -100,6 +107,15 @@ function App() {
   const dismissToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  /** Send both an in-app toast and a browser notification with identical content */
+  const notify = useCallback((msg: string, type: ToastType, icon: string) => {
+    addToast(msg, type);
+    if ("Notification" in window && Notification.permission === "granted") {
+      const n = new Notification("Claude Todos", { body: msg, icon });
+      n.onclick = () => { window.focus(); n.close(); };
+    }
+  }, [addToast]);
 
   const notifyNewWaitingTodos = useCallback((todos: Todo[]) => {
     const currentWaitingIds = new Set(
@@ -121,22 +137,10 @@ function App() {
 
     if (newWaiting.length === 0) return;
 
-    // In-app toast (always works)
     for (const todo of newWaiting) {
-      addToast(todo.text, "warning");
+      notify(todo.text, "warning", NOTIF_ICONS.todo);
     }
-
-    // Browser notification (best-effort)
-    if ("Notification" in window && Notification.permission === "granted") {
-      for (const todo of newWaiting) {
-        const body = todo.session_id
-          ? `${todo.text}\n(session: ${todo.session_id.slice(0, 8)}…)`
-          : todo.text;
-        const n = new Notification("Claude Todos", { body, icon: NOTIF_ICONS.todo });
-        n.onclick = () => { window.focus(); n.close(); };
-      }
-    }
-  }, [addToast]);
+  }, [notify]);
 
   const hookSeeded = useRef(false);
 
@@ -180,22 +184,17 @@ function App() {
           continue;
         }
 
-        addToast(msg, type);
-
-        if ("Notification" in window && Notification.permission === "granted") {
-          const icon = entry.state === "waiting_for_tool_approval" ? NOTIF_ICONS.approval
-            : entry.state === "waiting_for_user" ? NOTIF_ICONS.user_input
-            : NOTIF_ICONS.ended;
-          const n = new Notification(`Claude Todos — ${project}`, { body: msg, icon });
-          n.onclick = () => { window.focus(); n.close(); };
-        }
+        const icon = entry.state === "waiting_for_tool_approval" ? NOTIF_ICONS.approval
+          : entry.state === "waiting_for_user" ? NOTIF_ICONS.user_input
+          : NOTIF_ICONS.ended;
+        notify(msg, type, icon);
       }
 
       knownHookStates.current = next;
     } catch {
       // hooks endpoint may not exist or hooks not installed — ignore
     }
-  }, [addToast]);
+  }, [notify]);
 
   const notifyRunCompletions = useCallback((todos: Todo[]) => {
     const prev = knownRunningIds.current;
@@ -209,20 +208,14 @@ function App() {
         const todo = todos.find((t) => t.id === id);
         if (todo) {
           const isError = todo.run_status === "error";
-          addToast(isError ? `Run failed: ${todo.text}` : `Run completed: ${todo.text}`, isError ? "error" : "success");
-          if ("Notification" in window && Notification.permission === "granted") {
-            const n = new Notification("Claude Todos", {
-              body: isError ? `Run failed: ${todo.text}` : `Run completed: ${todo.text}`,
-              icon: isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success,
-            });
-            n.onclick = () => { window.focus(); n.close(); };
-          }
+          const msg = isError ? `Run failed: ${todo.text}` : `Run completed: ${todo.text}`;
+          notify(msg, isError ? "error" : "success", isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success);
         }
       }
     }
 
     knownRunningIds.current = nowRunning;
-  }, [addToast]);
+  }, [notify]);
 
   // Use a ref to always call the latest callbacks without re-creating the interval
   const refreshRef = useRef<(() => Promise<void>) | null>(null);
@@ -243,6 +236,174 @@ function App() {
   const refresh = useCallback(async () => {
     await refreshRef.current?.();
   }, []);
+
+  // Build flat ordered list of visible todos (mirrors TodoList render order)
+  const getVisibleTodos = useCallback((): Todo[] => {
+    if (!state || view !== "list") return [];
+    const filtered = selectedProject
+      ? state.todos.filter((t) => t.project_id === selectedProject)
+      : state.todos;
+
+    const upNextOrder = { waiting: 0, in_progress: 1, next: 2 } as const;
+    const upNext = filtered
+      .filter((t) => t.status === "waiting" || t.status === "in_progress" || t.status === "next")
+      .sort((a, b) => {
+        const oa = upNextOrder[a.status as keyof typeof upNextOrder] ?? 2;
+        const ob = upNextOrder[b.status as keyof typeof upNextOrder] ?? 2;
+        if (oa !== ob) return oa - ob;
+        return b.created_at.localeCompare(a.created_at);
+      });
+
+    const backlog = filtered
+      .filter((t) => t.status === "consider" || t.status === "stale")
+      .sort((a, b) => {
+        if (a.status === "consider" && b.status === "stale") return -1;
+        if (a.status === "stale" && b.status === "consider") return 1;
+        return b.created_at.localeCompare(a.created_at);
+      });
+
+    const done = filtered
+      .filter((t) => t.status === "completed")
+      .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
+
+    return [...upNext, ...backlog, ...done];
+  }, [state, view, selectedProject]);
+
+  const STATUS_KEYS: Record<string, Todo["status"]> = {
+    "1": "next",
+    "2": "in_progress",
+    "3": "completed",
+    "4": "consider",
+    "5": "waiting",
+  };
+
+  // Global keyboard shortcut handler
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+
+      // ? always toggles overlay
+      if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
+        if (isInput) return;
+        e.preventDefault();
+        setShowShortcuts((v) => !v);
+        return;
+      }
+
+      // Escape: close overlay, clear focus, or blur input
+      if (e.key === "Escape") {
+        if (showShortcuts) {
+          setShowShortcuts(false);
+          return;
+        }
+        if (isInput) {
+          (e.target as HTMLElement).blur();
+          return;
+        }
+        setFocusedTodoId(null);
+        setEditingTodoId(null);
+        return;
+      }
+
+      // Skip other shortcuts when typing in an input
+      if (isInput) return;
+      // Skip when overlay is showing
+      if (showShortcuts) return;
+
+      const todos = getVisibleTodos();
+
+      if (e.key === "n") {
+        e.preventDefault();
+        addInputRef.current?.focus();
+        setFocusedTodoId(null);
+        return;
+      }
+
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        if (todos.length === 0) return;
+        setEditingTodoId(null);
+        if (focusedTodoId === null) {
+          setFocusedTodoId(todos[0].id);
+        } else {
+          const idx = todos.findIndex((t) => t.id === focusedTodoId);
+          if (idx < todos.length - 1) {
+            setFocusedTodoId(todos[idx + 1].id);
+          }
+        }
+        return;
+      }
+
+      if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (todos.length === 0) return;
+        setEditingTodoId(null);
+        if (focusedTodoId === null) {
+          setFocusedTodoId(todos[todos.length - 1].id);
+        } else {
+          const idx = todos.findIndex((t) => t.id === focusedTodoId);
+          if (idx > 0) {
+            setFocusedTodoId(todos[idx - 1].id);
+          }
+        }
+        return;
+      }
+
+      // Status shortcuts 1-5
+      if (STATUS_KEYS[e.key] && focusedTodoId) {
+        e.preventDefault();
+        const newStatus = STATUS_KEYS[e.key];
+        // Optimistic update + API call
+        setState((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            todos: prev.todos.map((t) =>
+              t.id === focusedTodoId ? { ...t, status: newStatus } : t
+            ),
+          };
+        });
+        api.updateTodo(focusedTodoId, { status: newStatus }).then(() => refresh());
+        return;
+      }
+
+      if (e.key === "e" && focusedTodoId) {
+        e.preventDefault();
+        setEditingTodoId(focusedTodoId);
+        // Reset after a tick so the TodoItem can pick it up
+        setTimeout(() => setEditingTodoId(null), 100);
+        return;
+      }
+
+      if (e.key === "x" && focusedTodoId) {
+        e.preventDefault();
+        const idToDelete = focusedTodoId;
+        // Move focus to next item
+        const idx = todos.findIndex((t) => t.id === idToDelete);
+        const nextId = idx < todos.length - 1 ? todos[idx + 1].id : (idx > 0 ? todos[idx - 1].id : null);
+        setFocusedTodoId(nextId);
+        setState((prev) => {
+          if (!prev) return prev;
+          return { ...prev, todos: prev.todos.filter((t) => t.id !== idToDelete) };
+        });
+        api.deleteTodo(idToDelete).then(() => refresh());
+        return;
+      }
+
+      if (e.key === "r" && focusedTodoId) {
+        e.preventDefault();
+        api.runTodo(focusedTodoId).then(() => {
+          addToast(`Started running todo with Claude`, "info");
+          refresh();
+        });
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast]);
 
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
@@ -280,6 +441,11 @@ function App() {
           onRefresh={refresh}
         />
         <UpdateHistory history={state.metadata.history} />
+        <AutopilotHistory
+          todos={state.todos}
+          projects={state.projects}
+          selectedProjectId={selectedProject}
+        />
         <div className="notif-log-section">
           <button className="btn-link notif-log-toggle" onClick={() => setShowNotifLog((v) => !v)}>
             {showNotifLog ? "▾" : "▸"} Notifications ({notificationLog.length})
@@ -300,13 +466,15 @@ function App() {
                 ["Run completed", "Deploy script succeeded", "run_success"],
                 ["Run failed", "Tests failed with 2 errors", "run_error"],
               ];
-              // Cycle through one at a time to avoid browser rate-limiting
-              const idx = (window as any).__notifTestIdx ?? 0;
-              const [title, body, key] = samples[idx % samples.length];
-              (window as any).__notifTestIdx = idx + 1;
-              const n = new Notification(`Claude Todos — ${title}`, { body, icon: NOTIF_ICONS[key] });
-              n.onclick = () => { window.focus(); n.close(); };
-              addToast(`Test: ${title}`, "info");
+              // Fire after 3s so user can switch tabs (Chrome suppresses
+              // notifications when the page is focused)
+              addToast("Notification in 3s — switch to another tab!", "info");
+              setTimeout(() => {
+                const idx = (window as any).__notifTestIdx ?? 0;
+                const [, body, key] = samples[idx % samples.length];
+                (window as any).__notifTestIdx = idx + 1;
+                notify(`[Test] ${body}`, idx % 2 === 0 ? "warning" : "success", NOTIF_ICONS[key]);
+              }, 3000);
             }}
           >
             Test
@@ -359,9 +527,20 @@ function App() {
             projectSummaries={state.metadata.project_summaries}
             insights={state.metadata.insights}
             onRefresh={refresh}
+            addToast={addToast}
+            onOptimisticUpdate={(fn) => setState((prev) => prev ? { ...prev, todos: fn(prev.todos) } : prev)}
+            focusedTodoId={focusedTodoId}
+            editingTodoId={editingTodoId}
+            addInputRef={addInputRef}
           />
         )}
       </main>
+      {showShortcuts && <KeyboardShortcutsOverlay onClose={() => setShowShortcuts(false)} />}
+      <button
+        className="shortcuts-hint"
+        onClick={() => setShowShortcuts(true)}
+        title="Keyboard shortcuts (?)"
+      >?</button>
     </div>
   );
 }

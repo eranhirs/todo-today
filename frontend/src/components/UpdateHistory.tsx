@@ -128,6 +128,7 @@ export function UpdateHistory({ history }: Props) {
                 <div className="history-time">
                   {new Date(entry.timestamp).toLocaleString()}
                   <span className="history-duration">({entry.duration_seconds}s)</span>
+                  {entry.trigger && <span className={`history-trigger-badge trigger-${entry.trigger}`}>{entry.trigger}</span>}
                   {entry.cost_usd > 0 && <span className="history-cost">${entry.cost_usd.toFixed(4)}</span>}
                   {entry.error && <span className="history-error-badge">error</span>}
                 </div>

@@ -12,6 +12,7 @@ interface Props {
 export function ProjectList({ projects, selectedId, onSelect, onRefresh }: Props) {
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
 
   const handleAdd = async () => {
     if (!name.trim()) return;
@@ -21,10 +22,16 @@ export function ProjectList({ projects, selectedId, onSelect, onRefresh }: Props
     onRefresh();
   };
 
-  const handleDelete = async (id: string, e: React.MouseEvent) => {
+  const handleDeleteClick = (id: string, projectName: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    await api.deleteProject(id);
-    if (selectedId === id) onSelect(null);
+    setConfirmDelete({ id, name: projectName });
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!confirmDelete) return;
+    await api.deleteProject(confirmDelete.id);
+    if (selectedId === confirmDelete.id) onSelect(null);
+    setConfirmDelete(null);
     onRefresh();
   };
 
@@ -68,16 +75,33 @@ export function ProjectList({ projects, selectedId, onSelect, onRefresh }: Props
               await api.updateProject(p.id, { auto_run_quota: Number(e.target.value) });
               onRefresh();
             }}
-            title={p.auto_run_quota > 0 ? `Autopilot: ${p.auto_run_quota} todo(s) per cycle` : "Autopilot off"}
+            title={p.auto_run_quota > 0 ? `Autopilot: ${p.auto_run_quota} remaining` : "Autopilot off"}
           >
             <option value={0}>off</option>
-            {[1, 2, 3, 5].map((n) => (
-              <option key={n} value={n}>🤖 {n}</option>
-            ))}
+            {(() => {
+              const presets = [1, 2, 3, 5, 10];
+              const current = p.auto_run_quota;
+              const options = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
+              return options.map((n) => (
+                <option key={n} value={n}>🤖 {n}</option>
+              ));
+            })()}
           </select>
-          <button className="btn-icon btn-delete" onClick={(e) => handleDelete(p.id, e)} title="Delete">×</button>
+          <button className="btn-icon btn-delete" onClick={(e) => handleDeleteClick(p.id, p.name, e)} title="Delete">×</button>
         </div>
       ))}
+      {confirmDelete && (
+        <div className="confirm-overlay" onClick={() => setConfirmDelete(null)}>
+          <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+            <p>Delete project <strong>{confirmDelete.name}</strong>?</p>
+            <p className="confirm-warning">This will delete all todos in this project.</p>
+            <div className="confirm-actions">
+              <button className="btn-cancel" onClick={() => setConfirmDelete(null)}>Cancel</button>
+              <button className="btn-danger" onClick={handleDeleteConfirm}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

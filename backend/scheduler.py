@@ -30,6 +30,8 @@ _analysis_lock = asyncio.Lock()
 _ANALYSIS_TIMEOUT = 300  # seconds
 # Queued session keys from hooks — analyzed when the lock is free
 _pending_hook_sessions: set[str] = set()
+# Guard against concurrent autopilot runs
+_autopilot_running = False
 
 
 async def _run_with_lock(coro, timeout: float = _ANALYSIS_TIMEOUT):
@@ -51,6 +53,19 @@ async def _run_with_lock(coro, timeout: float = _ANALYSIS_TIMEOUT):
 
 async def _auto_run_todos() -> None:
     """Pick eligible 'next' todos and run them with Claude, respecting per-project autopilot quota."""
+    global _autopilot_running
+    if _autopilot_running:
+        log.info("Autopilot: already running, skipping this cycle")
+        return
+    _autopilot_running = True
+    try:
+        await _auto_run_todos_inner()
+    finally:
+        _autopilot_running = False
+
+
+async def _auto_run_todos_inner() -> None:
+    """Inner implementation of autopilot — always called via _auto_run_todos guard."""
     with StorageContext(read_only=True) as ctx:
         todos = list(ctx.store.todos)
         projects = {p.id: p for p in ctx.store.projects}
@@ -68,23 +83,38 @@ async def _auto_run_todos() -> None:
         proj = projects.get(project_id)
         if not proj or not proj.source_path:
             continue
-        # Per-project autopilot: 0 = disabled
-        if proj.auto_run_quota <= 0:
+        # Re-read quota fresh from storage (it decrements)
+        with StorageContext(read_only=True) as ctx:
+            for p in ctx.store.projects:
+                if p.id == project_id:
+                    remaining_quota = p.auto_run_quota
+                    break
+            else:
+                continue
+        if remaining_quota <= 0:
             continue
         if project_id in has_running:
             log.info("Autopilot: skipping project %s — already has a running todo", project_id)
             continue
 
-        # Sort by created_at (oldest first) and pick up to project's quota
+        # Sort by created_at (oldest first) and pick up to remaining quota
         candidates.sort(key=lambda t: t.created_at)
-        to_run = candidates[:proj.auto_run_quota]
+        to_run = candidates[:remaining_quota]
 
         for todo in to_run:
-            log.info("Autopilot: starting todo %s (%s)", todo.id, todo.text[:60])
-            err = start_todo_run(todo.id)
+            log.info("Autopilot: starting todo %s (%s) [quota remaining: %d]", todo.id, todo.text[:60], remaining_quota)
+            err = start_todo_run(todo.id, autopilot=True)
             if err:
                 log.warning("Autopilot: failed to start todo %s: %s", todo.id, err)
                 continue
+            # Decrement quota immediately
+            with StorageContext() as ctx:
+                for p in ctx.store.projects:
+                    if p.id == project_id:
+                        p.auto_run_quota = max(0, p.auto_run_quota - 1)
+                        remaining_quota = p.auto_run_quota
+                        log.info("Autopilot: decremented quota for %s, remaining: %d", project_id, remaining_quota)
+                        break
             # Wait for completion before starting next in same project
             await _wait_for_todo(todo.id)
 
@@ -116,7 +146,7 @@ async def _analysis_job() -> None:
         ctx.metadata.heartbeat = _now()
     log.info("Starting scheduled analysis")
     try:
-        entry = await _run_with_lock(asyncio.to_thread(run_analysis))
+        entry = await _run_with_lock(asyncio.to_thread(run_analysis, trigger="scheduled"))
     except asyncio.TimeoutError:
         return
     if entry is None:
@@ -157,7 +187,7 @@ async def trigger_analysis(
     try:
         entry = await _run_with_lock(
             asyncio.to_thread(
-                run_analysis, force=force, model=model, session_keys=session_keys,
+                run_analysis, force=force, model=model, session_keys=session_keys, trigger="manual",
             ),
         )
     except asyncio.TimeoutError:
@@ -200,7 +230,7 @@ async def _drain_hook_queue() -> None:
         log.info("Draining hook analysis queue: %d sessions", len(keys))
         try:
             entry = await _run_with_lock(
-                asyncio.to_thread(run_analysis, session_keys=keys),
+                asyncio.to_thread(run_analysis, session_keys=keys, trigger="hook"),
             )
             if entry:
                 log.info("Hook analysis complete: %s", entry.summary)
@@ -209,11 +239,7 @@ async def _drain_hook_queue() -> None:
         except asyncio.TimeoutError:
             return
 
-    # Auto-run eligible todos after hook analysis (outside the lock)
-    try:
-        await _auto_run_todos()
-    except Exception:
-        log.exception("Autopilot failed after hook analysis")
+    # Autopilot only runs after scheduled (heartbeat) analysis, not hooks
 
 
 def start_scheduler() -> None:

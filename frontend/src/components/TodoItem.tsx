@@ -5,14 +5,18 @@ import { api } from "../api";
 interface Props {
   todo: Todo;
   onRefresh: () => void;
+  addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
+  onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
+  isFocused?: boolean;
+  triggerEdit?: boolean;
 }
 
 const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
-  { value: "next", label: "Up Next", icon: "→" },
-  { value: "in_progress", label: "In Progress", icon: "●" },
-  { value: "completed", label: "Completed", icon: "✓" },
-  { value: "consider", label: "Consider", icon: "?" },
-  { value: "waiting", label: "Waiting", icon: "⏸" },
+  { value: "next", label: "Next", icon: "→" },
+  { value: "in_progress", label: "Active", icon: "●" },
+  { value: "completed", label: "Done", icon: "✓" },
+  { value: "consider", label: "Maybe", icon: "?" },
+  { value: "waiting", label: "Wait", icon: "⏸" },
   { value: "stale", label: "Stale", icon: "✗" },
 ];
 
@@ -26,10 +30,12 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export function TodoItem({ todo, onRefresh }: Props) {
+export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
+  const [pillsExpanded, setPillsExpanded] = useState(false);
+  const pillBarRef = useRef<HTMLDivElement>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -54,22 +60,70 @@ export function TodoItem({ todo, onRefresh }: Props) {
     }
   }, [editing]);
 
+  // Close pill bar on outside click
+  useEffect(() => {
+    if (!pillsExpanded) return;
+    const handler = (e: MouseEvent) => {
+      if (pillBarRef.current && !pillBarRef.current.contains(e.target as Node)) {
+        setPillsExpanded(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [pillsExpanded]);
+
+  // Allow parent to trigger edit mode via prop
+  useEffect(() => {
+    if (triggerEdit && !editing) {
+      startEdit();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [triggerEdit]);
+
   const changeStatus = async (newStatus: TodoStatus) => {
-    await api.updateTodo(todo.id, { status: newStatus });
-    onRefresh();
+    const prevStatus = todo.status;
+    onOptimisticUpdate((todos) =>
+      todos.map((t) => t.id === todo.id ? { ...t, status: newStatus } : t)
+    );
+    try {
+      await api.updateTodo(todo.id, { status: newStatus });
+      onRefresh();
+    } catch {
+      onOptimisticUpdate((todos) =>
+        todos.map((t) => t.id === todo.id ? { ...t, status: prevStatus } : t)
+      );
+      addToast(`Failed to update status for "${todo.text}"`, "error");
+    }
   };
 
   const remove = async () => {
-    await api.deleteTodo(todo.id);
-    onRefresh();
+    onOptimisticUpdate((todos) => todos.filter((t) => t.id !== todo.id));
+    try {
+      await api.deleteTodo(todo.id);
+      onRefresh();
+    } catch {
+      onOptimisticUpdate((todos) => [...todos, todo]);
+      addToast(`Failed to delete "${todo.text}"`, "error");
+    }
   };
 
   const runWithClaude = async () => {
     try {
       await api.runTodo(todo.id);
+      addToast(`Started running "${todo.text}" with Claude`, "info");
       onRefresh();
     } catch {
-      // already running or other error
+      addToast(`Failed to start run for "${todo.text}"`, "error");
+    }
+  };
+
+  const stopRun = async () => {
+    try {
+      await api.stopTodo(todo.id);
+      addToast(`Stopped "${todo.text}"`, "info");
+      onRefresh();
+    } catch {
+      addToast(`Failed to stop "${todo.text}"`, "error");
     }
   };
 
@@ -81,8 +135,19 @@ export function TodoItem({ todo, onRefresh }: Props) {
   const saveEdit = async () => {
     const trimmed = editText.trim();
     if (trimmed && trimmed !== todo.text) {
-      await api.updateTodo(todo.id, { text: trimmed, source: "user" });
-      onRefresh();
+      const prevText = todo.text;
+      onOptimisticUpdate((todos) =>
+        todos.map((t) => t.id === todo.id ? { ...t, text: trimmed } : t)
+      );
+      try {
+        await api.updateTodo(todo.id, { text: trimmed, source: "user" });
+        onRefresh();
+      } catch {
+        onOptimisticUpdate((todos) =>
+          todos.map((t) => t.id === todo.id ? { ...t, text: prevText } : t)
+        );
+        addToast(`Failed to update "${prevText}"`, "error");
+      }
     }
     setEditing(false);
   };
@@ -104,19 +169,34 @@ export function TodoItem({ todo, onRefresh }: Props) {
   const isRunning = todo.run_status === "running";
 
   return (
-    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}`}>
+    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}`}>
       <div className="todo-content">
-        <select
-          className="status-select"
-          value={todo.status}
-          onChange={(e) => changeStatus(e.target.value as TodoStatus)}
-        >
-          {STATUS_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.icon} {opt.label}
-            </option>
-          ))}
-        </select>
+        <div className={`status-pills${pillsExpanded ? " expanded" : ""}`} ref={pillBarRef}>
+          {STATUS_OPTIONS.map((opt) => {
+            const isActive = opt.value === todo.status;
+            if (!pillsExpanded && !isActive) return null;
+            return (
+              <button
+                key={opt.value}
+                className={`status-pill pill-${opt.value}${isActive ? " active" : ""}`}
+                onClick={() => {
+                  if (!pillsExpanded) {
+                    setPillsExpanded(true);
+                  } else if (!isActive) {
+                    changeStatus(opt.value);
+                    setPillsExpanded(false);
+                  } else {
+                    setPillsExpanded(false);
+                  }
+                }}
+                title={opt.label}
+              >
+                <span className="pill-icon">{opt.icon}</span>
+                <span className="pill-label">{opt.label}</span>
+              </button>
+            );
+          })}
+        </div>
         {editing ? (
           <input
             ref={inputRef}
@@ -140,16 +220,19 @@ export function TodoItem({ todo, onRefresh }: Props) {
             ✓ {formatTime(todo.completed_at)}
           </span>
         )}
-        {(todo.source === "claude" || todo.source === "claude_run") && (
+        {todo.source === "claude" && (
           <span
             className={`badge badge-claude${todo.session_id ? " clickable" : ""}`}
-            title={todo.session_id ? `Click to copy session ID: ${todo.session_id}` : todo.source === "claude_run" ? "Run by Claude" : "Added by Claude"}
+            title={todo.session_id ? `Click to copy session ID: ${todo.session_id}` : "Added by Claude"}
             onClick={() => {
               if (todo.session_id) {
                 navigator.clipboard.writeText(todo.session_id);
               }
             }}
-          >{todo.source === "claude_run" ? "🚀" : "🤖"}</span>
+          >🤖</span>
+        )}
+        {todo.run_trigger === "autopilot" && (
+          <span className="badge badge-claude" title="Run by autopilot">🚀</span>
         )}
         {todo.run_output && (
           <button
@@ -159,12 +242,19 @@ export function TodoItem({ todo, onRefresh }: Props) {
           >{showOutput ? "▾" : "▸"}</button>
         )}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        <button
-          className="btn-icon btn-run"
-          onClick={runWithClaude}
-          disabled={isRunning}
-          title="Run with Claude"
-        >▶</button>
+        {isRunning ? (
+          <button
+            className="btn-icon btn-stop"
+            onClick={stopRun}
+            title="Stop running"
+          >■</button>
+        ) : (
+          <button
+            className="btn-icon btn-run"
+            onClick={runWithClaude}
+            title="Run with Claude"
+          >▶</button>
+        )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>
       {showOutput && todo.run_output && (

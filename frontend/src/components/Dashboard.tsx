@@ -267,7 +267,7 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
                   <span>{projTotal} total</span>
                 </div>
                 {proj.auto_run_quota > 0 && (
-                  <span className="dash-autopilot-badge">Autopilot: {proj.auto_run_quota}/cycle</span>
+                  <span className="dash-autopilot-badge">Autopilot: {proj.auto_run_quota} remaining</span>
                 )}
               </div>
             );

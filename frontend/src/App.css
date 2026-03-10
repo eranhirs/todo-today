@@ -178,6 +178,46 @@ body {
 .btn-icon:hover { color: var(--text); background: var(--border); }
 .btn-delete:hover { color: var(--red) !important; }
 
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.confirm-dialog {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  max-width: 360px;
+  width: 90%;
+  text-align: center;
+}
+.confirm-dialog p { margin-bottom: 8px; color: var(--text); }
+.confirm-warning { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 20px !important; }
+.confirm-actions { display: flex; gap: 12px; justify-content: center; }
+.confirm-actions button {
+  padding: 8px 20px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+.btn-cancel {
+  background: var(--border);
+  color: var(--text);
+}
+.btn-cancel:hover { background: #3a3d4e; }
+.btn-danger {
+  background: var(--red);
+  color: white;
+}
+.btn-danger:hover { background: #c0392b; }
+
 .btn-link {
   background: none;
   border: none;
@@ -276,19 +316,62 @@ body {
   flex: 1;
 }
 
-.status-select {
-  padding: 2px 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  cursor: pointer;
-  outline: none;
+/* Status pill bar */
+.status-pills {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
 }
-.status-select:hover { border-color: var(--accent); color: var(--text); }
-.status-select:focus { border-color: var(--accent); }
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+  line-height: 1.4;
+}
+
+.pill-icon { font-size: 0.7rem; }
+
+/* Collapsed: only the active pill is shown */
+.status-pills:not(.expanded) .status-pill.active {
+  border-color: transparent;
+  background: transparent;
+}
+.status-pills:not(.expanded) .status-pill.active:hover {
+  background: var(--card-bg);
+  border-color: var(--border);
+}
+
+/* Expanded: show all pills */
+.status-pills.expanded .status-pill:hover:not(.active) {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(108, 92, 231, 0.1);
+}
+
+/* Active pill styling per status */
+.status-pill.active.pill-next { color: var(--text-dim); border-color: var(--text-dim); }
+.status-pill.active.pill-in_progress { color: var(--blue); border-color: var(--blue); background: rgba(116, 185, 255, 0.1); }
+.status-pill.active.pill-completed { color: var(--green); border-color: var(--green); background: rgba(0, 184, 148, 0.1); }
+.status-pill.active.pill-consider { color: var(--text-dim); border-color: var(--text-dim); }
+.status-pill.active.pill-waiting { color: var(--amber); border-color: var(--amber); background: rgba(253, 203, 110, 0.1); }
+.status-pill.active.pill-stale { color: var(--red); border-color: var(--red); background: rgba(225, 112, 85, 0.1); }
+
+/* Expanded active pill gets stronger highlight */
+.status-pills.expanded .status-pill.active {
+  font-weight: 600;
+}
 
 .todo-text { font-size: 0.95rem; cursor: text; }
 
@@ -363,6 +446,17 @@ body {
   text-transform: uppercase;
   font-weight: 600;
 }
+.history-trigger-badge {
+  margin-left: 6px;
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.trigger-hook { background: var(--blue); color: #fff; }
+.trigger-scheduled { background: var(--text-dim); color: #fff; }
+.trigger-manual { background: var(--amber); color: #000; }
 .history-summary { font-size: 0.8rem; margin: 2px 0; }
 .history-stats { font-size: 0.7rem; color: var(--text-dim); }
 
@@ -390,6 +484,40 @@ body {
 
 .history-insights strong { color: var(--claude) !important; }
 .history-insights ul { color: var(--claude) !important; }
+
+/* Autopilot History */
+
+.autopilot-history {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.autopilot-status-badge {
+  margin-left: 6px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.autopilot-status-badge.status-done { color: var(--green); }
+.autopilot-status-badge.status-error { color: var(--red); }
+.autopilot-status-badge.status-running { color: var(--accent-light); }
+
+.autopilot-source-badge {
+  margin-left: 6px;
+  font-size: 0.6rem;
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.autopilot-source-badge.source-autopilot {
+  background: rgba(108, 92, 231, 0.15);
+  color: var(--accent-light);
+}
+.autopilot-source-badge.source-manual {
+  background: rgba(139, 143, 163, 0.15);
+  color: var(--text-dim);
+}
 
 .history-raw-json {
   margin-top: 6px;
@@ -886,6 +1014,12 @@ body {
 .btn-run:hover:not(:disabled) { color: #fff !important; background: var(--green) !important; }
 .btn-run:disabled { opacity: 0.3; cursor: not-allowed; }
 
+.btn-stop {
+  font-size: 0.75rem !important;
+  color: var(--red, #e06c75) !important;
+}
+.btn-stop:hover { color: #fff !important; background: var(--red, #e06c75) !important; }
+
 .btn-output {
   font-size: 0.8rem !important;
   color: var(--accent-light) !important;
@@ -1186,4 +1320,108 @@ body {
 
 .progress-ring {
   flex-shrink: 0;
+}
+
+/* ── Keyboard focused todo ─────────────────────────────────── */
+
+.todo-item.todo-focused {
+  background: var(--card-bg);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ── Keyboard shortcuts overlay ────────────────────────────── */
+
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fade-in 0.15s ease-out;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.shortcuts-dialog {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 28px;
+  max-width: 380px;
+  width: 90%;
+}
+
+.shortcuts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.shortcuts-header h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.shortcut-key {
+  display: inline-block;
+  min-width: 72px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--accent-light);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.75rem;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.shortcut-desc {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+
+/* Hint button */
+
+.shortcuts-hint {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  font-family: "SF Mono", "Fira Code", monospace;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  transition: border-color 0.2s, color 0.2s;
+}
+.shortcuts-hint:hover {
+  border-color: var(--accent);
+  color: var(--accent-light);
 }

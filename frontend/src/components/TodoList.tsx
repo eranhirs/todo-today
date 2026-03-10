@@ -11,9 +11,14 @@ interface Props {
   projectSummaries: Record<string, string>;
   insights: Insight[];
   onRefresh: () => void;
+  addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
+  onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
+  focusedTodoId?: string | null;
+  editingTodoId?: string | null;
+  addInputRef?: React.RefObject<HTMLInputElement | null>;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, insights, onRefresh }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, insights, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef }: Props) {
   const [showUpNext, setShowUpNext] = useState(true);
   const [showBacklog, setShowBacklog] = useState(true);
   const [showDone, setShowDone] = useState(true);
@@ -59,7 +64,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     items.map((t) => (
       <div key={t.id}>
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} onRefresh={onRefresh} />
+        <TodoItem todo={t} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} />
       </div>
     ));
 
@@ -70,7 +75,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
 
       <Insights insights={filteredInsights} onRefresh={onRefresh} />
 
-      {selectedProjectId && <AddTodo projectId={selectedProjectId} onRefresh={onRefresh} />}
+      {selectedProjectId && <AddTodo projectId={selectedProjectId} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />}
 
       {/* Up Next */}
       <button className="btn-link section-header" onClick={() => setShowUpNext(!showUpNext)}>
@@ -116,7 +121,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                 {items.map((t) => (
                   <div key={t.id}>
                     {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                    <TodoItem todo={t} onRefresh={onRefresh} />
+                    <TodoItem todo={t} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} />
                   </div>
                 ))}
               </div>

@@ -897,6 +897,7 @@ def run_analysis(
     force: bool = False,
     model: str | None = None,
     session_keys: list[str] | None = None,
+    trigger: str = "",
 ) -> AnalysisEntry | None:
     """Full analysis cycle: discover sessions, invoke Claude per-project, apply results.
 
@@ -949,6 +950,7 @@ def run_analysis(
             sessions_analyzed=0,
             summary="No active sessions found",
             model=model,
+            trigger=trigger,
         )
         _record_entry(entry)
         return entry
@@ -1060,6 +1062,7 @@ def run_analysis(
         todos_modified=counters.todos_modified,
         summary=summary,
         model=model,
+        trigger=trigger,
         error="; ".join(errors) if errors else None,
         cost_usd=total_cost,
         input_tokens=total_input,

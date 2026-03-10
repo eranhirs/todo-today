@@ -18,7 +18,8 @@ export interface Todo {
   created_at: string;
   completed_at: string | null;
   run_output: string | null;
-  run_status: "running" | "done" | "error" | null;
+  run_status: "running" | "done" | "error" | "stopped" | null;
+  run_trigger: "manual" | "autopilot" | null;
 }
 
 export interface Insight {
@@ -39,6 +40,7 @@ export interface AnalysisEntry {
   todos_modified: number;
   summary: string;
   model: string;
+  trigger: string;
   cost_usd: number;
   input_tokens: number;
   output_tokens: number;

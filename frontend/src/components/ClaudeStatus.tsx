@@ -197,12 +197,15 @@ export function ClaudeStatus({ metadata, analysisLocked, onRefresh }: Props) {
           className="model-select"
           value={selectedModel}
           onChange={(e) => setSelectedModel(e.target.value)}
-          title="Analysis model"
+          title="Model used for all analysis (scheduled + hook-triggered). Autopilot runs always use opus."
         >
           {MODEL_OPTIONS.map((m) => (
             <option key={m} value={m}>{m}</option>
           ))}
         </select>
+      </div>
+      <div className="status-detail" style={{ opacity: 0.6, fontSize: "0.7rem" }}>
+        Analysis model (scheduled + hooks). Autopilot uses opus.
       </div>
       {isOverride && (
         <div className="status-detail model-override-note">

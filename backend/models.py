@@ -25,7 +25,7 @@ class Project(BaseModel):
     id: str = Field(default_factory=lambda: _id("proj"))
     name: str
     source_path: str = ""
-    auto_run_quota: int = 0  # 0 = autopilot disabled, 1+ = max todos to auto-run per cycle
+    auto_run_quota: int = 0  # 0 = autopilot disabled, 1+ = remaining todos to auto-run (decrements)
     created_at: str = Field(default_factory=_now)
 
 
@@ -39,7 +39,10 @@ class Todo(BaseModel):
     created_at: str = Field(default_factory=_now)
     completed_at: Optional[str] = None
     run_output: Optional[str] = None
-    run_status: Optional[Literal["running", "done", "error"]] = None
+    run_status: Optional[Literal["running", "done", "error", "stopped"]] = None
+    run_trigger: Optional[Literal["manual", "autopilot"]] = None
+    run_pid: Optional[int] = None
+    run_output_file: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -78,6 +81,7 @@ class AnalysisEntry(BaseModel):
     todos_modified: int = 0
     summary: str = ""
     model: str = ""
+    trigger: str = ""  # "scheduled", "hook", "manual"
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0

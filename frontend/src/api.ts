@@ -42,6 +42,9 @@ export const api = {
   runTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/run`, { method: "POST" }),
 
+  stopTodo: (id: string) =>
+    request<{ status: string }>(`/todos/${id}/stop`, { method: "POST" }),
+
   wakeUpClaude: (model?: string, force?: boolean, sessionKeys?: string[]) =>
     request<{ status: string; message?: string }>("/claude/wake", {
       method: "POST",
