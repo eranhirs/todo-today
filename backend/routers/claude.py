@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 from pathlib import Path
@@ -6,9 +8,10 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..claude_analyzer import list_all_sessions
+from ..event_bus import EventType, bus
+from ..session_discovery import list_all_sessions
 from ..hook_state import get_actionable_sessions, load_event_log
-from ..models import AnalysisEntry, Metadata
+from ..models import AnalysisEntry, Metadata, Settings, SettingsUpdate
 from ..scheduler import queue_hook_analysis, set_interval, trigger_analysis
 from ..storage import StorageContext
 
@@ -53,6 +56,23 @@ def update_model(body: ModelUpdate) -> dict:
     with StorageContext() as ctx:
         ctx.metadata.analysis_model = body.model
     return {"model": body.model}
+
+
+@router.get("/settings")
+def get_settings() -> Settings:
+    with StorageContext(read_only=True) as ctx:
+        return ctx.metadata.get_settings()
+
+
+@router.put("/settings")
+def update_settings(body: SettingsUpdate) -> Settings:
+    """Update one or more settings fields. Only supplied fields are changed."""
+    reschedule = body.analysis_interval_minutes is not None
+    with StorageContext() as ctx:
+        new_settings = ctx.metadata.apply_settings(body)
+    if reschedule and body.analysis_interval_minutes is not None:
+        set_interval(body.analysis_interval_minutes)
+    return new_settings
 
 
 @router.get("/status")
@@ -131,11 +151,8 @@ def _is_our_hook(entry: dict) -> bool:
 def _load_settings() -> dict:
     if not _SETTINGS_PATH.exists():
         return {}
-    try:
-        with open(_SETTINGS_PATH) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
+    with open(_SETTINGS_PATH) as f:
+        return json.load(f)
 
 
 def _save_settings(settings: dict) -> None:
@@ -157,6 +174,7 @@ async def hooks_analyze(body: HookAnalyzeRequest) -> dict:
         with StorageContext(read_only=True) as ctx:
             if session_id in set(ctx.metadata.analysis_session_ids):
                 return {"status": "skipped", "message": "Analysis subprocess session"}
+    await bus.emit_event(EventType.HOOK_SESSION_UPDATE, session_key=body.session_key)
     return await queue_hook_analysis(body.session_key)
 
 

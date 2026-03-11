@@ -1,4 +1,4 @@
-export type TodoStatus = "next" | "in_progress" | "completed" | "consider" | "waiting" | "stale";
+export type TodoStatus = "next" | "in_progress" | "completed" | "consider" | "waiting" | "stale" | "rejected";
 
 export interface Project {
   id: string;
@@ -18,10 +18,13 @@ export interface Todo {
   session_id: string | null;
   created_at: string;
   completed_at: string | null;
+  rejected_at: string | null;
   run_output: string | null;
   run_status: "running" | "done" | "error" | "stopped" | "queued" | null;
   run_trigger: "manual" | "autopilot" | null;
   sort_order: number;
+  user_ordered: boolean;
+  stale_reason: string | null;
 }
 
 export interface Insight {
@@ -61,6 +64,16 @@ export interface AnalysisEntry {
   claude_reasoning: string;
 }
 
+export interface Settings {
+  analysis_interval_minutes: number;
+  analysis_model: string;
+  run_model: string;
+  heartbeat_enabled: boolean;
+  hook_analysis_enabled: boolean;
+}
+
+export type SettingsUpdate = Partial<Omit<Settings, "run_model">>;
+
 export interface Metadata {
   last_analysis: AnalysisEntry | null;
   history: AnalysisEntry[];
@@ -95,6 +108,7 @@ export interface FullState {
   projects: Project[];
   todos: Todo[];
   metadata: Metadata;
+  settings: Settings;
   analysis_locked: boolean;
   autopilot_running: boolean;
 }

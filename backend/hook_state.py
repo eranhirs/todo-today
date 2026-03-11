@@ -7,16 +7,53 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Literal, Optional, Set, TypedDict
 
 log = logging.getLogger(__name__)
+
+
+# -- Type definitions matching hook_states.json and hook_events.log --
+
+SessionState = Literal[
+    "waiting_for_tool_approval",
+    "waiting_for_user",
+    "ended",
+]
+
+HookEventName = Literal[
+    "PermissionRequest",
+    "Stop",
+    "SessionStart",
+    "SessionEnd",
+]
+
+
+class StateEntry(TypedDict, total=False):
+    """A single session entry in hook_states.json."""
+    state: SessionState
+    tool_name: str
+    detail: str
+    project_name: str
+    cwd: str
+    timestamp: str  # ISO 8601 UTC, e.g. "2026-03-07T10:30:00Z"
+    hook_event: HookEventName
+
+
+class EventLogEntry(TypedDict, total=False):
+    """A single line in hook_events.log."""
+    ts: str
+    session_key: str
+    hook_event: HookEventName
+    state: Optional[SessionState]
+    project_name: Optional[str]
+    detail: Optional[str]
 
 _DATA_DIR = Path(os.environ.get("TODO_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 _STATE_FILE = _DATA_DIR / "hook_states.json"
 _CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
 
 
-def load_hook_states() -> dict:
+def load_hook_states() -> Dict[str, StateEntry]:
     """Read and return all hook states. Returns {} on missing/corrupt file."""
     if not _STATE_FILE.exists():
         return {}
@@ -30,13 +67,13 @@ def load_hook_states() -> dict:
         return {}
 
 
-def get_hook_state(session_key: str) -> Optional[dict]:
+def get_hook_state(session_key: str) -> Optional[StateEntry]:
     """Look up a single session's hook state. Returns None if not found."""
     states = load_hook_states()
     return states.get(session_key)
 
 
-def load_event_log(limit: int = 100) -> list:
+def load_event_log(limit: int = 100) -> list[EventLogEntry]:
     """Read the last N entries from the hook event log."""
     log_file = _DATA_DIR / "hook_events.log"
     if not log_file.exists():
@@ -55,7 +92,7 @@ def load_event_log(limit: int = 100) -> list:
         return []
 
 
-def _is_waiting_state_stale(key: str, entry: dict) -> bool:
+def _is_waiting_state_stale(key: str, entry: StateEntry) -> bool:
     """Check if a waiting state is stale by comparing JSONL mtime to hook timestamp.
 
     Claude Code has no 'PermissionGranted' hook event, so waiting states linger
@@ -81,7 +118,7 @@ def _is_waiting_state_stale(key: str, entry: dict) -> bool:
         return False
 
 
-def get_actionable_sessions(exclude_session_ids: set = None) -> dict:
+def get_actionable_sessions(exclude_session_ids: Optional[Set[str]] = None) -> Dict[str, StateEntry]:
     """Return all sessions in a notifiable state (waiting or recently ended).
 
     Sessions whose session_id is in exclude_session_ids are filtered out

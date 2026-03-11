@@ -2,6 +2,19 @@
 
 Base URL: `http://localhost:5152`
 
+## Error Responses
+
+All endpoints return errors in a consistent format:
+
+```json
+{ "detail": "Human-readable error message", "error_code": null }
+```
+
+- `detail` (string): Always present. Describes the error.
+- `error_code` (string | null): Optional machine-readable code. Set for validation errors (`"VALIDATION_ERROR"`) and unhandled server errors (`"INTERNAL_ERROR"`).
+
+Common HTTP status codes: 400 (bad request), 403 (forbidden/demo mode), 404 (not found), 409 (conflict/already running), 422 (validation error), 500 (internal server error).
+
 ## State
 
 ### `GET /api/state`
@@ -47,10 +60,11 @@ Create a todo.
 Get a single todo.
 
 ### `PUT /api/todos/{todo_id}`
-Update todo fields.
+Update todo fields. Valid statuses: `next`, `in_progress`, `completed`, `consider`, `waiting`, `stale`, `rejected`.
 ```json
-{ "completed": true }
+{ "status": "rejected" }
 ```
+Setting status to `"rejected"` records `rejected_at` timestamp. Rejected todos are shown to the Claude analyzer so it avoids re-suggesting the same ideas.
 
 ### `DELETE /api/todos/{todo_id}`
 Delete a todo.
@@ -63,6 +77,31 @@ Returns `{ "status": "started" }`.
 When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. On failure, `run_status` is set to `"error"` and `run_output` contains the error message.
 
 Returns 409 if the todo is already running, 400 if the project has no `source_path`.
+
+## Settings
+
+### `GET /api/claude/settings`
+Returns the current settings object:
+```json
+{
+  "analysis_interval_minutes": 30,
+  "analysis_model": "haiku",
+  "run_model": "opus",
+  "heartbeat_enabled": true,
+  "hook_analysis_enabled": true
+}
+```
+
+### `PUT /api/claude/settings`
+Partial update — only supplied fields are changed. Returns the full updated settings object.
+```json
+{ "analysis_interval_minutes": 15, "heartbeat_enabled": false }
+```
+If `analysis_interval_minutes` is changed, the scheduler is automatically rescheduled.
+
+The `run_model` field is read-only and cannot be changed via this endpoint.
+
+The settings object is also included in the `GET /api/state` response as `state.settings`.
 
 ## Claude Analysis
 
@@ -84,6 +123,25 @@ Returns lightweight metadata for all sessions: `{key, project_dir, source_path, 
 ### `PUT /api/claude/insights/{id}/dismiss`
 Dismiss an insight so it no longer appears in the UI.
 Returns `{ "status": "ok" }` on success, 404 if insight not found.
+
+## Event Bus
+
+### `GET /api/events`
+SSE (Server-Sent Events) stream of real-time events from the event bus. Events include hook updates, analysis lifecycle, run lifecycle, queue drains, autopilot, and data mutations.
+
+Each event is sent as:
+```
+event: <event_type>
+data: {"type": "<event_type>", "data": {...}, "ts": <unix_timestamp>}
+```
+
+A keepalive comment is sent every 15 seconds. The connection auto-reconnects on the frontend side.
+
+### `GET /api/events/recent?limit=50`
+Returns the last N events from the in-memory ring buffer (for debugging).
+
+### `GET /api/events/status`
+Returns `{ "subscribers": <int>, "recent_events": <int> }` — number of active SSE connections and buffered events.
 
 ## Hooks
 

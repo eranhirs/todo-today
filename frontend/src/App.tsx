@@ -1,6 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
-import type { FullState, Todo } from "./types";
-import { api } from "./api";
+import { useEffect, useRef, useState } from "react";
 import { ProjectList } from "./components/ProjectList";
 import { TodoList } from "./components/TodoList";
 import { Dashboard } from "./components/Dashboard";
@@ -10,408 +8,64 @@ import { AutopilotHistory } from "./components/AutopilotHistory";
 import { HookDebug } from "./components/HookDebug";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay";
 import { Insights } from "./components/Insights";
+import { useNotifications, NOTIF_ICONS } from "./hooks/useNotifications";
+import { useAppState } from "./hooks/useAppState";
+import { useEventBus } from "./hooks/useEventBus";
+import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import "./App.css";
 
-const POLL_INTERVAL = 3_000;
-const TOAST_DURATION = 12_000;
-
-/* SVG data-URI icons for browser notifications, one per event type */
-const svgIcon = (emoji: string, bg: string) =>
-  `data:image/svg+xml,${encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">` +
-    `<rect width="64" height="64" rx="12" fill="${bg}"/>` +
-    `<text x="32" y="46" font-size="36" text-anchor="middle">${emoji}</text>` +
-    `</svg>`
-  )}`;
-
-const NOTIF_ICONS = {
-  todo:           svgIcon("📋", "#3b82f6"),  // blue  — new waiting todo
-  approval:       svgIcon("🔑", "#f59e0b"),  // amber — waiting for tool approval
-  user_input:     svgIcon("💬", "#f59e0b"),  // amber — waiting for user input
-  ended:          svgIcon("✅", "#22c55e"),  // green — session finished
-  run_success:    svgIcon("✅", "#22c55e"),  // green — run succeeded
-  run_error:      svgIcon("❌", "#ef4444"),  // red   — run failed
-} as const;
-
-type ToastType = "info" | "warning" | "success" | "error";
-
-interface Toast {
-  id: string;
-  text: string;
-  type: ToastType;
-}
-
-interface NotificationLogEntry {
-  id: string;
-  text: string;
-  type: ToastType;
-  timestamp: string;
-}
-
 function App() {
-  const [state, setState] = useState<FullState | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const [notificationLog, setNotificationLog] = useState<NotificationLogEntry[]>([]);
-  const [showNotifLog, setShowNotifLog] = useState(false);
-  const [selectedProject, setSelectedProject] = useState<string | null>(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("project");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const {
+    toasts,
+    notificationLog,
+    showNotifLog,
+    setShowNotifLog,
+    addToast,
+    dismissToast,
+    notify,
+    notifyNewWaitingTodos,
+    notifyHookEvents,
+    notifyRunCompletions,
+  } = useNotifications();
+
+  const {
+    state,
+    setState,
+    selectedProject,
+    selectProject,
+    view,
+    switchView,
+    refresh,
+    optimisticUpdate,
+  } = useAppState({
+    notifyNewWaitingTodos,
+    notifyRunCompletions,
+    notifyHookEvents,
   });
-  const [view, setView] = useState<"list" | "dashboard">(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("view") === "dashboard" ? "dashboard" : "list";
+
+  const { connected: sseConnected, eventCount: sseEventCount } = useEventBus({
+    onRefreshNeeded: refresh,
   });
 
-  const selectProject = useCallback((id: string | null) => {
-    setSelectedProject(id);
-    const url = new URL(window.location.href);
-    if (id) {
-      url.searchParams.set("project", id);
-    } else {
-      url.searchParams.delete("project");
-    }
-    window.history.replaceState({}, "", url.toString());
-  }, []);
+  const {
+    showShortcuts,
+    setShowShortcuts,
+    focusedTodoId,
+    editingTodoId,
+    addInputRef,
+  } = useKeyboardShortcuts({
+    state,
+    view,
+    selectedProject,
+    setState,
+    refresh,
+    addToast,
+  });
 
-  const switchView = useCallback((v: "list" | "dashboard") => {
-    setView(v);
-    const url = new URL(window.location.href);
-    if (v === "dashboard") {
-      url.searchParams.set("view", "dashboard");
-    } else {
-      url.searchParams.delete("view");
-    }
-    window.history.replaceState({}, "", url.toString());
-  }, []);
-
-  const [showShortcuts, setShowShortcuts] = useState(false);
   const [showInsightsDropdown, setShowInsightsDropdown] = useState(false);
-  const [focusedTodoId, setFocusedTodoId] = useState<string | null>(null);
-  const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
-  const addInputRef = useRef<HTMLTextAreaElement | null>(null);
   const insightsDropdownRef = useRef<HTMLDivElement | null>(null);
-
-  const knownWaitingIds = useRef<Set<string> | null>(null);
-  const knownRunningIds = useRef<Set<string>>(new Set());
-  const knownHookStates = useRef<Map<string, string>>(new Map());
-
-  const addToast = useCallback((text: string, type: ToastType = "info") => {
-    const id = Math.random().toString(36).slice(2);
-    setToasts((prev) => [...prev, { id, text, type }]);
-    setNotificationLog((prev) => [
-      { id, text, type, timestamp: new Date().toLocaleTimeString() },
-      ...prev,
-    ].slice(0, 50));
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, TOAST_DURATION);
-  }, []);
-
-  const dismissToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
-
-  /** Send both an in-app toast and a browser notification with identical content */
-  const notify = useCallback((msg: string, type: ToastType, icon: string) => {
-    addToast(msg, type);
-    if ("Notification" in window && Notification.permission === "granted") {
-      const n = new Notification("Claude Todos", { body: msg, icon });
-      n.onclick = () => { window.focus(); n.close(); };
-    }
-  }, [addToast]);
-
-  const notifyNewWaitingTodos = useCallback((todos: Todo[]) => {
-    const currentWaitingIds = new Set(
-      todos.filter((t) => t.status === "waiting").map((t) => t.id)
-    );
-    const prev = knownWaitingIds.current;
-
-    if (prev === null) {
-      // First load — seed known set without toasting
-      knownWaitingIds.current = currentWaitingIds;
-      return;
-    }
-
-    const newWaiting = todos.filter(
-      (t) => t.status === "waiting" && !prev.has(t.id)
-    );
-
-    knownWaitingIds.current = currentWaitingIds;
-
-    if (newWaiting.length === 0) return;
-
-    for (const todo of newWaiting) {
-      notify(todo.text, "warning", NOTIF_ICONS.todo);
-    }
-  }, [notify]);
-
-  const hookSeeded = useRef(false);
-
-  const notifyHookEvents = useCallback(async () => {
-    try {
-      const events = await api.getHookEvents();
-      const prev = knownHookStates.current;
-      const next = new Map<string, string>();
-
-      const isFirstPoll = !hookSeeded.current;
-      if (isFirstPoll) hookSeeded.current = true;
-
-      for (const [key, entry] of Object.entries(events)) {
-        next.set(key, entry.state);
-        const prevState = prev.get(key);
-
-        // Skip if state unchanged
-        if (prevState === entry.state) continue;
-
-        // On first poll, only notify for active waiting states (not ended)
-        if (isFirstPoll && entry.state === "ended") continue;
-
-        const project = entry.project_name || "unknown project";
-        let msg: string;
-        let type: ToastType;
-
-        if (entry.state === "waiting_for_tool_approval") {
-          const tool = entry.tool_name || "a tool";
-          const detail = entry.detail ? `: ${entry.detail}` : "";
-          msg = `[${project}] Waiting for approval — ${tool}${detail}`;
-          type = "warning";
-        } else if (entry.state === "waiting_for_user") {
-          const detail = entry.detail ? `: ${entry.detail}` : "";
-          msg = `[${project}] Waiting for user input${detail}`;
-          type = "warning";
-        } else if (entry.state === "ended") {
-          const detail = entry.detail ? `: ${entry.detail}` : "";
-          msg = `[${project}] Session finished${detail}`;
-          type = "success";
-        } else {
-          continue;
-        }
-
-        const icon = entry.state === "waiting_for_tool_approval" ? NOTIF_ICONS.approval
-          : entry.state === "waiting_for_user" ? NOTIF_ICONS.user_input
-          : NOTIF_ICONS.ended;
-        notify(msg, type, icon);
-      }
-
-      knownHookStates.current = next;
-    } catch {
-      // hooks endpoint may not exist or hooks not installed — ignore
-    }
-  }, [notify]);
-
-  const notifyRunCompletions = useCallback((todos: Todo[]) => {
-    const prev = knownRunningIds.current;
-    const nowRunning = new Set(
-      todos.filter((t) => t.run_status === "running").map((t) => t.id)
-    );
-
-    // Check todos that were running before but aren't anymore
-    for (const id of prev) {
-      if (!nowRunning.has(id)) {
-        const todo = todos.find((t) => t.id === id);
-        if (todo) {
-          const isError = todo.run_status === "error";
-          const msg = isError ? `Run failed: ${todo.text}` : `Run completed: ${todo.text}`;
-          notify(msg, isError ? "error" : "success", isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success);
-        }
-      }
-    }
-
-    knownRunningIds.current = nowRunning;
-  }, [notify]);
-
-  // Use a ref to always call the latest callbacks without re-creating the interval
-  const refreshRef = useRef<(() => Promise<void>) | null>(null);
-  refreshRef.current = async () => {
-    try {
-      const data = await api.getState();
-      setState(data);
-      notifyNewWaitingTodos(data.todos);
-      notifyRunCompletions(data.todos);
-      notifyHookEvents();
-      const waitingCount = data.todos.filter((t) => t.status === "waiting").length;
-      document.title = waitingCount > 0 ? `(${waitingCount}) Claude Todos` : "Claude Todos";
-    } catch (err) {
-      console.error("Failed to fetch state:", err);
-    }
-  };
-
-  const refresh = useCallback(async () => {
-    await refreshRef.current?.();
-  }, []);
-
-  // Build flat ordered list of visible todos (mirrors TodoList render order)
-  const getVisibleTodos = useCallback((): Todo[] => {
-    if (!state || view !== "list") return [];
-    const filtered = selectedProject
-      ? state.todos.filter((t) => t.project_id === selectedProject)
-      : state.todos;
-
-    const sortByOrder = (a: Todo, b: Todo) => {
-      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
-      return b.created_at.localeCompare(a.created_at);
-    };
-
-    const upNextOrder = { waiting: 0, in_progress: 1, next: 2 } as const;
-    const upNext = filtered
-      .filter((t) => t.status === "waiting" || t.status === "in_progress" || t.status === "next")
-      .sort((a, b) => {
-        const oa = upNextOrder[a.status as keyof typeof upNextOrder] ?? 2;
-        const ob = upNextOrder[b.status as keyof typeof upNextOrder] ?? 2;
-        if (oa !== ob) return oa - ob;
-        return sortByOrder(a, b);
-      });
-
-    const backlog = filtered
-      .filter((t) => t.status === "consider" || t.status === "stale")
-      .sort((a, b) => {
-        if (a.status === "consider" && b.status === "stale") return -1;
-        if (a.status === "stale" && b.status === "consider") return 1;
-        return sortByOrder(a, b);
-      });
-
-    const done = filtered
-      .filter((t) => t.status === "completed")
-      .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
-
-    return [...upNext, ...backlog, ...done];
-  }, [state, view, selectedProject]);
-
-  const STATUS_KEYS: Record<string, Todo["status"]> = {
-    "1": "next",
-    "2": "in_progress",
-    "3": "completed",
-    "4": "consider",
-    "5": "waiting",
-  };
-
-  // Global keyboard shortcut handler
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      const isInput = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
-
-      // ? always toggles overlay
-      if (e.key === "?" && !e.metaKey && !e.ctrlKey) {
-        if (isInput) return;
-        e.preventDefault();
-        setShowShortcuts((v) => !v);
-        return;
-      }
-
-      // Escape: close overlay, clear focus, or blur input
-      if (e.key === "Escape") {
-        if (showShortcuts) {
-          setShowShortcuts(false);
-          return;
-        }
-        if (isInput) {
-          (e.target as HTMLElement).blur();
-          return;
-        }
-        setFocusedTodoId(null);
-        setEditingTodoId(null);
-        return;
-      }
-
-      // Skip other shortcuts when typing in an input
-      if (isInput) return;
-      // Skip when overlay is showing
-      if (showShortcuts) return;
-
-      const todos = getVisibleTodos();
-
-      if (e.key === "n") {
-        e.preventDefault();
-        addInputRef.current?.focus();
-        setFocusedTodoId(null);
-        return;
-      }
-
-      if (e.key === "j" || e.key === "ArrowDown") {
-        e.preventDefault();
-        if (todos.length === 0) return;
-        setEditingTodoId(null);
-        if (focusedTodoId === null) {
-          setFocusedTodoId(todos[0].id);
-        } else {
-          const idx = todos.findIndex((t) => t.id === focusedTodoId);
-          if (idx < todos.length - 1) {
-            setFocusedTodoId(todos[idx + 1].id);
-          }
-        }
-        return;
-      }
-
-      if (e.key === "k" || e.key === "ArrowUp") {
-        e.preventDefault();
-        if (todos.length === 0) return;
-        setEditingTodoId(null);
-        if (focusedTodoId === null) {
-          setFocusedTodoId(todos[todos.length - 1].id);
-        } else {
-          const idx = todos.findIndex((t) => t.id === focusedTodoId);
-          if (idx > 0) {
-            setFocusedTodoId(todos[idx - 1].id);
-          }
-        }
-        return;
-      }
-
-      // Status shortcuts 1-5
-      if (STATUS_KEYS[e.key] && focusedTodoId) {
-        e.preventDefault();
-        const newStatus = STATUS_KEYS[e.key];
-        // Optimistic update + API call
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            todos: prev.todos.map((t) =>
-              t.id === focusedTodoId ? { ...t, status: newStatus } : t
-            ),
-          };
-        });
-        api.updateTodo(focusedTodoId, { status: newStatus }).then(() => refresh());
-        return;
-      }
-
-      if (e.key === "e" && focusedTodoId) {
-        e.preventDefault();
-        setEditingTodoId(focusedTodoId);
-        // Reset after a tick so the TodoItem can pick it up
-        setTimeout(() => setEditingTodoId(null), 100);
-        return;
-      }
-
-      if (e.key === "x" && focusedTodoId) {
-        e.preventDefault();
-        const idToDelete = focusedTodoId;
-        // Move focus to next item
-        const idx = todos.findIndex((t) => t.id === idToDelete);
-        const nextId = idx < todos.length - 1 ? todos[idx + 1].id : (idx > 0 ? todos[idx - 1].id : null);
-        setFocusedTodoId(nextId);
-        setState((prev) => {
-          if (!prev) return prev;
-          return { ...prev, todos: prev.todos.filter((t) => t.id !== idToDelete) };
-        });
-        api.deleteTodo(idToDelete).then(() => refresh());
-        return;
-      }
-
-      if (e.key === "r" && focusedTodoId) {
-        e.preventDefault();
-        api.runTodo(focusedTodoId).then(() => {
-          addToast(`Started running todo with Claude`, "info");
-          refresh();
-        });
-        return;
-      }
-    };
-
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast]);
 
   // Close insights dropdown on outside click
   useEffect(() => {
@@ -424,18 +78,6 @@ function App() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showInsightsDropdown]);
-
-  useEffect(() => {
-    if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
-    }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, POLL_INTERVAL);
-    return () => clearInterval(id);
-  }, [refresh]);
 
   if (!state) return <div className="loading">Loading...</div>;
 
@@ -451,14 +93,18 @@ function App() {
           ))}
         </div>
       )}
-      <aside className="sidebar">
+      <button className="sidebar-toggle" onClick={() => setSidebarOpen((v) => !v)} aria-label="Toggle sidebar">
+        <span className="hamburger-icon" />
+      </button>
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
         <h1 className="app-title">Claude Todos</h1>
-        <ClaudeStatus metadata={state.metadata} analysisLocked={state.analysis_locked} autopilotRunning={state.autopilot_running} onRefresh={refresh} />
+        <ClaudeStatus metadata={state.metadata} settings={state.settings} analysisLocked={state.analysis_locked} autopilotRunning={state.autopilot_running} onRefresh={refresh} sseConnected={sseConnected} sseEventCount={sseEventCount} />
         <ProjectList
           projects={state.projects}
           todos={state.todos}
           selectedId={selectedProject}
-          onSelect={selectProject}
+          onSelect={(id) => { selectProject(id); setSidebarOpen(false); }}
           onRefresh={refresh}
         />
         <UpdateHistory history={state.metadata.history} />
@@ -487,8 +133,6 @@ function App() {
                 ["Run completed", "Deploy script succeeded", "run_success"],
                 ["Run failed", "Tests failed with 2 errors", "run_error"],
               ];
-              // Fire after 3s so user can switch tabs (Chrome suppresses
-              // notifications when the page is focused)
               addToast("Notification in 3s — switch to another tab!", "info");
               setTimeout(() => {
                 const idx = (window as any).__notifTestIdx ?? 0;
@@ -583,7 +227,7 @@ function App() {
             projectSummaries={state.metadata.project_summaries}
             onRefresh={refresh}
             addToast={addToast}
-            onOptimisticUpdate={(fn) => setState((prev) => prev ? { ...prev, todos: fn(prev.todos) } : prev)}
+            onOptimisticUpdate={optimisticUpdate}
             focusedTodoId={focusedTodoId}
             editingTodoId={editingTodoId}
             addInputRef={addInputRef}

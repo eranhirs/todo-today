@@ -6,19 +6,30 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import StreamingResponse
 
-from .models import FullState, _now
+from .event_bus import bus
+from .models import ErrorResponse, FullState, _now
 from .routers import claude, projects, todos
-from .routers.todos import (
-    _cleanup_output_file,
-    _pid_alive,
+from .run_manager import (
+    autopilot_continue,
     parse_output_file_result,
+    process_manager,
     reconnect_todo_run,
 )
-from .scheduler import is_analysis_locked, is_autopilot_running, start_scheduler, stop_scheduler
+from .scheduler import (
+    get_missed_hook_sessions,
+    is_analysis_locked,
+    is_autopilot_running,
+    queue_hook_analysis,
+    start_scheduler,
+    stop_scheduler,
+)
 from .storage import StorageContext
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -35,7 +46,7 @@ def _cleanup_stale_runs() -> None:
                 stale.append((t.id, t.run_pid, t.run_output_file))
 
     for todo_id, run_pid, run_output_file in stale:
-        if run_pid and _pid_alive(run_pid):
+        if run_pid and process_manager.pid_alive(run_pid):
             # Process survived the restart — reconnect
             log.info("Reconnecting to surviving claude process for todo %s (pid %d)", todo_id, run_pid)
             reconnect_todo_run(todo_id, run_pid, run_output_file or "")
@@ -73,8 +84,9 @@ def _cleanup_stale_runs() -> None:
                             t.run_status = "done"
                             t.status = "completed"
                             t.completed_at = _now()
+                            t.source = "claude_run"
                         break
-            _cleanup_output_file(Path(run_output_file))
+            process_manager.cleanup_output_file(Path(run_output_file))
         else:
             # Legacy: no PID info — mark as error
             log.info("Reset stale running todo %s (no PID info)", todo_id)
@@ -89,11 +101,23 @@ def _cleanup_stale_runs() -> None:
                             t.status = "next"
                         break
 
+    # After cleanup, try autopilot continuation for all projects with quota
+    with StorageContext(read_only=True) as ctx:
+        project_ids = [p.id for p in ctx.store.projects if p.auto_run_quota > 0]
+    for pid in project_ids:
+        autopilot_continue(pid)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _cleanup_stale_runs()
     start_scheduler()
+    # Catch up on hook events that fired while the server was down
+    missed = get_missed_hook_sessions()
+    if missed:
+        log.info("Catching up %d missed hook sessions from server downtime", len(missed))
+        for key in missed:
+            await queue_hook_analysis(key)
     yield
     stop_scheduler()
 
@@ -107,6 +131,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    log.warning("HTTP %d on %s %s: %s", exc.status_code, request.method, request.url.path, exc.detail)
+    body = ErrorResponse(detail=str(exc.detail))
+    return JSONResponse(status_code=exc.status_code, content=body.model_dump())
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    detail = "; ".join(
+        f"{'.'.join(str(loc) for loc in e['loc'])}: {e['msg']}" for e in exc.errors()
+    )
+    log.warning("Validation error on %s %s: %s", request.method, request.url.path, detail)
+    body = ErrorResponse(detail=detail, error_code="VALIDATION_ERROR")
+    return JSONResponse(status_code=422, content=body.model_dump())
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    log.exception("Unhandled error on %s %s", request.method, request.url.path)
+    body = ErrorResponse(detail="Internal server error", error_code="INTERNAL_ERROR")
+    return JSONResponse(status_code=500, content=body.model_dump())
+
+
 app.include_router(projects.router)
 app.include_router(todos.router)
 app.include_router(claude.router)
@@ -119,9 +167,39 @@ def full_state() -> FullState:
             projects=ctx.store.projects,
             todos=ctx.store.todos,
             metadata=ctx.metadata,
+            settings=ctx.metadata.get_settings(),
             analysis_locked=is_analysis_locked(),
             autopilot_running=is_autopilot_running(),
         )
+
+
+@app.get("/api/events")
+async def event_stream() -> StreamingResponse:
+    """SSE endpoint — streams real-time events from the event bus."""
+    return StreamingResponse(
+        bus.sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/events/recent")
+def recent_events(limit: int = 50) -> list[dict]:
+    """Return recent events from the bus ring buffer (for debugging)."""
+    return bus.recent_events(limit=min(limit, 200))
+
+
+@app.get("/api/events/status")
+def event_bus_status() -> dict:
+    """Return event bus status (subscriber count, recent event count)."""
+    return {
+        "subscribers": bus.subscriber_count,
+        "recent_events": len(bus._recent),
+    }
 
 
 # Serve frontend static files (built Vite output)

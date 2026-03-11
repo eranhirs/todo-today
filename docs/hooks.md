@@ -27,7 +27,7 @@ Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hook
 | `hooks/claude-todos-hook.py` | Hook script — reads event JSON from stdin, writes state + appends to event log |
 | `backend/hook_state.py` | Backend reader — states, event log, staleness detection |
 | `backend/routers/claude.py` | API endpoints — install, uninstall, status, events, log |
-| `backend/claude_analyzer.py` | `_detect_session_state()` — checks hook state (with staleness) before JSONL fallback |
+| `backend/session_state.py` | `_detect_session_state()` — checks hook state (with staleness) before JSONL fallback |
 | `frontend/src/components/HookDebug.tsx` | Debug panel — event log viewer and current states |
 | `data/hook_states.json` | Current state per session (auto-generated, gitignored) |
 | `data/hook_events.log` | Append-only event log for debugging (auto-generated, gitignored) |
@@ -47,7 +47,7 @@ Entries older than 24 hours are expired on each write.
 
 ### State Resolution: Hooks vs JSONL
 
-Session state is determined by `_detect_session_state()` in `claude_analyzer.py`, which uses a two-tier approach:
+Session state is determined by `_detect_session_state()` in `session_state.py`, which uses a two-tier approach:
 
 ```
 For a given session:

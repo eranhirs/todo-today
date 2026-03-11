@@ -1,12 +1,15 @@
-import { useState } from "react";
-import type { Metadata, SessionInfo } from "../types";
+import { useState, useEffect } from "react";
+import type { Metadata, SessionInfo, Settings } from "../types";
 import { api } from "../api";
 
 interface Props {
   metadata: Metadata;
+  settings: Settings;
   analysisLocked: boolean;
   autopilotRunning: boolean;
   onRefresh: () => void;
+  sseConnected?: boolean;
+  sseEventCount?: number;
 }
 
 function timeAgo(iso: string): string {
@@ -30,11 +33,11 @@ function formatTime(epoch: number): string {
   return `${Math.floor(diffH / 24)}d ago`;
 }
 
-export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRefresh }: Props) {
+export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunning, onRefresh, sseConnected, sseEventCount }: Props) {
   const [waking, setWaking] = useState(false);
 
   const busy = waking || analysisLocked;
-  const [selectedModel, setSelectedModel] = useState(metadata.analysis_model);
+  const [selectedModel, setSelectedModel] = useState(settings.analysis_model);
   const [wakeMessage, setWakeMessage] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
@@ -44,7 +47,7 @@ export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRef
   const [hooksInstalled, setHooksInstalled] = useState<boolean | null>(null);
   const [hooksLoading, setHooksLoading] = useState(false);
 
-  const isOverride = selectedModel !== metadata.analysis_model;
+  const isOverride = selectedModel !== settings.analysis_model;
 
   const handleWake = async (force = false, sessionKeys?: string[]) => {
     setWaking(true);
@@ -140,12 +143,12 @@ export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRef
       );
       if (!ok) return;
     }
-    await api.setAnalysisInterval(mins);
+    await api.updateSettings({ analysis_interval_minutes: mins });
     onRefresh();
   };
 
   const handleMakePermanent = async () => {
-    await api.setAnalysisModel(selectedModel);
+    await api.updateSettings({ analysis_model: selectedModel });
     onRefresh();
   };
 
@@ -180,6 +183,29 @@ export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRef
   const isRecent = metadata.heartbeat &&
     (Date.now() - new Date(metadata.heartbeat).getTime()) < 10 * 60 * 1000;
 
+  // Countdown to next heartbeat
+  const [countdown, setCountdown] = useState("");
+  useEffect(() => {
+    if (!settings.heartbeat_enabled || !metadata.heartbeat) {
+      setCountdown("");
+      return;
+    }
+    const tick = () => {
+      const nextBeat = new Date(metadata.heartbeat!).getTime() + settings.analysis_interval_minutes * 60 * 1000;
+      const remaining = Math.max(0, Math.floor((nextBeat - Date.now()) / 1000));
+      if (remaining <= 0) {
+        setCountdown("due now");
+        return;
+      }
+      const m = Math.floor(remaining / 60);
+      const s = remaining % 60;
+      setCountdown(`${m}:${s.toString().padStart(2, "0")}`);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [metadata.heartbeat, settings.heartbeat_enabled, settings.analysis_interval_minutes]);
+
   return (
     <div className="claude-status">
       <div className="status-row">
@@ -189,7 +215,7 @@ export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRef
         </span>
         <select
           className="interval-select"
-          value={metadata.analysis_interval_minutes}
+          value={settings.analysis_interval_minutes}
           onChange={handleIntervalChange}
           title="Analysis interval"
         >
@@ -226,7 +252,12 @@ export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRef
         </div>
       )}
       {metadata.heartbeat && (
-        <div className="status-detail">Last heartbeat: {timeAgo(metadata.heartbeat)}</div>
+        <div className="status-detail">
+          Last heartbeat: {timeAgo(metadata.heartbeat)}
+          {countdown && (
+            <span className="heartbeat-countdown"> · next in {countdown}</span>
+          )}
+        </div>
       )}
       {metadata.last_analysis && (
         <div className="status-detail">
@@ -344,13 +375,24 @@ export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRef
           title="Adds lifecycle hooks to ~/.claude/settings.json that fire on session start/end and permission requests. This lets Claude Todos detect session state in real time instead of polling JSONL files."
         >?</span>
       </div>
+      {sseConnected !== undefined && (
+        <div className="sse-status">
+          <span className={`status-dot ${sseConnected ? "active" : "inactive"}`} />
+          <span className="sse-label">
+            Event stream: {sseConnected ? "connected" : "disconnected"}
+            {sseEventCount !== undefined && sseEventCount > 0 && (
+              <span className="sse-count"> ({sseEventCount} events)</span>
+            )}
+          </span>
+        </div>
+      )}
       <div className="analysis-toggles">
         <label className="toggle-row" title="Periodic heartbeat analysis on a timer">
           <input
             type="checkbox"
-            checked={metadata.heartbeat_enabled}
+            checked={settings.heartbeat_enabled}
             onChange={async (e) => {
-              await api.setHeartbeatEnabled(e.target.checked);
+              await api.updateSettings({ heartbeat_enabled: e.target.checked });
               onRefresh();
             }}
           />
@@ -359,9 +401,9 @@ export function ClaudeStatus({ metadata, analysisLocked, autopilotRunning, onRef
         <label className="toggle-row" title="Auto-analyze when a hook event fires (session end, etc.)">
           <input
             type="checkbox"
-            checked={metadata.hook_analysis_enabled}
+            checked={settings.hook_analysis_enabled}
             onChange={async (e) => {
-              await api.setHookAnalysisEnabled(e.target.checked);
+              await api.updateSettings({ hook_analysis_enabled: e.target.checked });
               onRefresh();
             }}
           />

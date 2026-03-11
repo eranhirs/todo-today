@@ -25,7 +25,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
   const countsByProject = useMemo(() => {
     const counts: Record<string, ProjectCounts> = {};
     for (const t of todos) {
-      if (t.status === "completed") continue;
+      if (t.status === "completed" || t.status === "rejected") continue;
       if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0 };
       const c = counts[t.project_id];
       c.total++;
@@ -36,7 +36,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     return counts;
   }, [todos]);
 
-  const totalActive = useMemo(() => todos.filter((t) => t.status !== "completed").length, [todos]);
+  const totalActive = useMemo(() => todos.filter((t) => t.status !== "completed" && t.status !== "rejected").length, [todos]);
 
   const handleAdd = async () => {
     if (!name.trim()) return;
@@ -84,6 +84,11 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
         <span className="project-name">All Projects</span>
         {totalActive > 0 && <span className="project-count-badge">{totalActive}</span>}
       </div>
+      {projects.length === 0 && !adding && (
+        <div className="empty-state empty-state-compact">
+          <p className="empty-state-hint">No projects yet. Click + to create one.</p>
+        </div>
+      )}
       {projects.map((p) => {
         const c = countsByProject[p.id];
         return (
@@ -112,7 +117,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
             >
               <option value={0}>off</option>
               {(() => {
-                const presets = [1, 2, 3, 5, 10];
+                const presets = [1, 2, 3, 5, 10, 20];
                 const current = p.auto_run_quota;
                 const all = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
                 return all.map((n) => (

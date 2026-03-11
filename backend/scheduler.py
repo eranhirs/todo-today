@@ -16,8 +16,9 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .claude_analyzer import run_analysis
+from .event_bus import EventType, bus
 from .models import _now
-from .routers.todos import is_todo_running, start_todo_run
+from .run_manager import is_todo_running, start_todo_run
 from .storage import StorageContext
 
 log = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ _pending_hook_sessions: set[str] = set()
 # Guard against concurrent autopilot runs; queued flag ensures at most one pending cycle
 _autopilot_running = False
 _autopilot_queued = False
+# Event loop reference for thread-safe scheduling from background threads
+_event_loop: asyncio.AbstractEventLoop | None = None
 
 
 async def _run_with_lock(coro, timeout: float = _ANALYSIS_TIMEOUT):
@@ -65,6 +68,7 @@ async def _auto_run_todos() -> bool:
         return False
     _autopilot_running = True
     started_any = False
+    await bus.emit_event(EventType.AUTOPILOT_STARTED)
     try:
         started_any = await _auto_run_todos_inner()
         # Drain the queue: if another cycle was requested while we ran, run once more
@@ -76,17 +80,18 @@ async def _auto_run_todos() -> bool:
     finally:
         _autopilot_running = False
         _autopilot_queued = False
+        await bus.emit_event(EventType.AUTOPILOT_COMPLETED, started_any=started_any)
     return started_any
 
 
 async def _auto_run_todos_inner() -> bool:
     """Inner implementation of autopilot — always called via _auto_run_todos guard.
 
-    Queues eligible todos via start_todo_run, which either starts them immediately
-    or adds them to the per-project queue. The queue drains automatically as each
-    run finishes.
+    Starts at most one todo per project per cycle. Does NOT queue — if the project
+    is busy, it skips. When a run finishes, autopilot_continue() picks up the next
+    eligible todo automatically.
 
-    Returns True if any todos were started or queued.
+    Returns True if any todos were started.
     """
     started_any = False
     with StorageContext(read_only=True) as ctx:
@@ -96,7 +101,7 @@ async def _auto_run_todos_inner() -> bool:
     # Group eligible todos by project
     by_project: dict[str, list] = {}
     for t in todos:
-        if t.status == "next" and t.run_status != "queued":
+        if t.status == "next" and t.run_status not in ("queued", "running"):
             by_project.setdefault(t.project_id, []).append(t)
 
     for project_id, candidates in by_project.items():
@@ -118,24 +123,25 @@ async def _auto_run_todos_inner() -> bool:
         # sort_order ascending, then created_at descending as tiebreaker
         candidates.sort(key=lambda t: t.created_at, reverse=True)
         candidates.sort(key=lambda t: t.sort_order)
-        to_run = candidates[:remaining_quota]
 
-        for todo in to_run:
-            log.info("Autopilot: queueing todo %s (%s) [quota remaining: %d]", todo.id, todo.text[:60], remaining_quota)
-            err = start_todo_run(todo.id, autopilot=True)
-            if err and err != "queued":
-                log.warning("Autopilot: failed to start todo %s: %s", todo.id, err)
-                continue
-            started_any = True
-            # Decrement quota immediately (whether started or queued)
-            with StorageContext() as ctx:
-                for p in ctx.store.projects:
-                    if p.id == project_id:
-                        p.auto_run_quota = max(0, p.auto_run_quota - 1)
-                        remaining_quota = p.auto_run_quota
-                        status = "queued" if err == "queued" else "started"
-                        log.info("Autopilot: %s todo, decremented quota for %s, remaining: %d", status, project_id, remaining_quota)
-                        break
+        # Start only the top candidate — skip if project is busy
+        todo = candidates[0]
+        log.info("Autopilot: starting todo %s (%s) [quota remaining: %d]", todo.id, todo.text[:60], remaining_quota)
+        err = start_todo_run(todo.id, autopilot=True)
+        if err == "busy":
+            log.info("Autopilot: project %s busy, will continue when run finishes", project_id)
+            continue
+        if err:
+            log.warning("Autopilot: failed to start todo %s: %s", todo.id, err)
+            continue
+        started_any = True
+        # Decrement quota now that the run actually started
+        with StorageContext() as ctx:
+            for p in ctx.store.projects:
+                if p.id == project_id:
+                    p.auto_run_quota = max(0, p.auto_run_quota - 1)
+                    log.info("Autopilot: started todo, decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
+                    break
     return started_any
 
 
@@ -154,14 +160,23 @@ async def _analysis_job() -> None:
     with StorageContext() as ctx:
         ctx.metadata.heartbeat = _now()
     log.info("Starting scheduled analysis")
+    await bus.emit_event(EventType.ANALYSIS_STARTED, trigger="scheduled")
     try:
         entry = await _run_with_lock(asyncio.to_thread(run_analysis, trigger="scheduled"))
     except asyncio.TimeoutError:
         return
     if entry is None:
         log.info("Analysis skipped — no session changes")
+        await bus.emit_event(EventType.ANALYSIS_SKIPPED, trigger="scheduled")
     else:
         log.info("Analysis complete: %s", entry.summary)
+        await bus.emit_event(
+            EventType.ANALYSIS_COMPLETED,
+            trigger="scheduled",
+            summary=entry.summary,
+            todos_added=entry.todos_added,
+            todos_completed=entry.todos_completed,
+        )
 
     # Auto-run eligible todos after analysis (outside the lock)
     try:
@@ -193,6 +208,7 @@ async def trigger_analysis(
         if model is not None and model != persisted_model:
             force = True
 
+    await bus.emit_event(EventType.ANALYSIS_STARTED, trigger="manual")
     try:
         entry = await _run_with_lock(
             asyncio.to_thread(
@@ -209,9 +225,17 @@ async def trigger_analysis(
         log.exception("Autopilot failed after manual wake-up")
 
     if entry is None:
+        await bus.emit_event(EventType.ANALYSIS_SKIPPED, trigger="manual")
         if autopilot_ran:
             return {"status": "ok", "message": "No session changes, but autopilot tasks started"}
         return {"status": "skipped", "message": "No session changes since last analysis"}
+    await bus.emit_event(
+        EventType.ANALYSIS_COMPLETED,
+        trigger="manual",
+        summary=entry.summary,
+        todos_added=entry.todos_added,
+        todos_completed=entry.todos_completed,
+    )
     return {"status": "ok", "entry": entry.model_dump()}
 
 
@@ -229,6 +253,7 @@ async def queue_hook_analysis(session_key: str) -> dict:
 
     _pending_hook_sessions.add(session_key)
     log.info("Hook analysis queued for session: %s", session_key)
+    await bus.emit_event(EventType.ANALYSIS_QUEUED, trigger="hook", session_key=session_key)
 
     if _analysis_lock.locked():
         return {"status": "queued", "message": "Analysis busy — session queued for next run"}
@@ -242,25 +267,90 @@ async def _drain_hook_queue() -> None:
     """Run analysis for all pending hook sessions."""
     if _analysis_lock.locked():
         return
+    await bus.emit_event(EventType.QUEUE_DRAIN_STARTED, queue_type="hook_analysis")
     while _pending_hook_sessions:
         keys = list(_pending_hook_sessions)
         _pending_hook_sessions.clear()
         log.info("Draining hook analysis queue: %d sessions", len(keys))
+        await bus.emit_event(EventType.ANALYSIS_STARTED, trigger="hook", session_count=len(keys))
         try:
             entry = await _run_with_lock(
                 asyncio.to_thread(run_analysis, session_keys=keys, trigger="hook"),
             )
             if entry:
                 log.info("Hook analysis complete: %s", entry.summary)
+                await bus.emit_event(
+                    EventType.ANALYSIS_COMPLETED,
+                    trigger="hook",
+                    summary=entry.summary,
+                    todos_added=entry.todos_added,
+                    todos_completed=entry.todos_completed,
+                )
             else:
                 log.info("Hook analysis: no changes for queued sessions")
+                await bus.emit_event(EventType.ANALYSIS_SKIPPED, trigger="hook")
         except asyncio.TimeoutError:
+            await bus.emit_event(EventType.QUEUE_DRAIN_COMPLETED, queue_type="hook_analysis")
             return
 
+    await bus.emit_event(EventType.QUEUE_DRAIN_COMPLETED, queue_type="hook_analysis")
     # Autopilot only runs after scheduled (heartbeat) analysis, not hooks
 
 
+def get_missed_hook_sessions() -> list[str]:
+    """Return hook session keys that fired Stop/SessionEnd but were never analyzed.
+
+    Scans the event log (not just current hook_states.json) because a session's
+    state gets cleared from hook_states when it's resumed (SessionStart). This
+    catches sessions whose hook curl failed because the server was down.
+    """
+    from .hook_state import load_event_log
+
+    with StorageContext(read_only=True) as ctx:
+        analyzed = set(ctx.metadata.session_mtimes.keys())
+        analysis_ids = set(ctx.metadata.analysis_session_ids)
+
+    # Scan event log for Stop/SessionEnd events with unanalyzed session keys
+    events = load_event_log(limit=500)
+    missed_keys: set[str] = set()
+    for entry in events:
+        hook_event = entry.get("hook_event")
+        if hook_event not in ("Stop", "SessionEnd"):
+            continue
+        key = entry.get("session_key", "")
+        if not key:
+            continue
+        # Skip analysis subprocess sessions
+        session_id = key.split("/", 1)[-1] if "/" in key else key
+        if session_id in analysis_ids:
+            continue
+        # Only catch up sessions not yet analyzed
+        if key not in analyzed:
+            missed_keys.add(key)
+    return list(missed_keys)
+
+
+def queue_run_session_analysis(session_key: str) -> None:
+    """Thread-safe: queue a completed Run with Claude session for analysis.
+
+    Called from background threads (todo run workers) after a claude -p
+    subprocess finishes. Adds the session to the pending queue and schedules
+    drain on the main event loop.
+    """
+    if DEMO_MODE:
+        return
+    _pending_hook_sessions.add(session_key)
+    log.info("Run session analysis queued (direct): %s", session_key)
+    if _event_loop is not None and _event_loop.is_running():
+        _event_loop.call_soon_threadsafe(
+            lambda: asyncio.ensure_future(_drain_hook_queue())
+        )
+
+
 def start_scheduler() -> None:
+    global _event_loop
+    _event_loop = asyncio.get_event_loop()
+    bus.set_event_loop(_event_loop)
     with StorageContext() as ctx:
         minutes = ctx.metadata.analysis_interval_minutes
     scheduler.add_job(

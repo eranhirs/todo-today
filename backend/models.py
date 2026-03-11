@@ -15,7 +15,7 @@ def _now() -> str:
     return datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
 
-TodoStatus = Literal["next", "in_progress", "completed", "consider", "waiting", "stale"]
+TodoStatus = Literal["next", "in_progress", "completed", "consider", "waiting", "stale", "rejected"]
 
 
 # ── Stored models ──────────────────────────────────────────────
@@ -45,7 +45,11 @@ class Todo(BaseModel):
     run_pid: Optional[int] = None
     run_output_file: Optional[str] = None
     queued_at: Optional[str] = None
+    pending_followup: Optional[str] = None
     sort_order: int = 0
+    user_ordered: bool = False
+    stale_reason: Optional[str] = None
+    rejected_at: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -103,6 +107,23 @@ class AnalysisEntry(BaseModel):
     claude_reasoning: str = ""
 
 
+class Settings(BaseModel):
+    """Centralized config: analysis interval, model selection, heartbeat & hook toggles."""
+    analysis_interval_minutes: int = Field(default=30, ge=1, le=60)
+    analysis_model: str = "haiku"
+    run_model: str = "opus"
+    heartbeat_enabled: bool = True
+    hook_analysis_enabled: bool = True
+
+
+class SettingsUpdate(BaseModel):
+    """Partial update — only supplied fields are changed."""
+    analysis_interval_minutes: Optional[int] = Field(default=None, ge=1, le=60)
+    analysis_model: Optional[str] = None
+    heartbeat_enabled: Optional[bool] = None
+    hook_analysis_enabled: Optional[bool] = None
+
+
 class Metadata(BaseModel):
     last_analysis: Optional[AnalysisEntry] = None
     history: List[AnalysisEntry] = []
@@ -123,8 +144,36 @@ class Metadata(BaseModel):
     heartbeat_enabled: bool = True
     hook_analysis_enabled: bool = True
 
+    def get_settings(self) -> Settings:
+        """Extract the settings subset from metadata."""
+        return Settings(
+            analysis_interval_minutes=self.analysis_interval_minutes,
+            analysis_model=self.analysis_model,
+            run_model=self.run_model,
+            heartbeat_enabled=self.heartbeat_enabled,
+            hook_analysis_enabled=self.hook_analysis_enabled,
+        )
+
+    def apply_settings(self, update: SettingsUpdate) -> Settings:
+        """Apply a partial settings update and return the new settings."""
+        if update.analysis_interval_minutes is not None:
+            self.analysis_interval_minutes = update.analysis_interval_minutes
+        if update.analysis_model is not None:
+            self.analysis_model = update.analysis_model
+        if update.heartbeat_enabled is not None:
+            self.heartbeat_enabled = update.heartbeat_enabled
+        if update.hook_analysis_enabled is not None:
+            self.hook_analysis_enabled = update.hook_analysis_enabled
+        return self.get_settings()
+
 
 # ── API request/response helpers ───────────────────────────────
+
+
+class ErrorResponse(BaseModel):
+    """Consistent error response format used by all endpoints."""
+    detail: str
+    error_code: Optional[str] = None
 
 
 class ProjectCreate(BaseModel):
@@ -149,16 +198,20 @@ class TodoUpdate(BaseModel):
     status: Optional[TodoStatus] = None
     project_id: Optional[str] = None
     source: Optional[Literal["claude", "user", "claude_run"]] = None
+    stale_reason: Optional[str] = None
+    user_ordered: Optional[bool] = None
 
 
 class TodoReorder(BaseModel):
     todo_ids: List[str]
+    moved_id: Optional[str] = None
 
 
 class FullState(BaseModel):
     projects: List[Project]
     todos: List[Todo]
     metadata: Metadata
+    settings: Settings = Settings()
     analysis_locked: bool = False
     autopilot_running: bool = False
 
@@ -197,6 +250,7 @@ class ClaudeInsight(BaseModel):
 class ClaudeTodoStatusUpdate(BaseModel):
     id: str
     status: TodoStatus
+    reason: Optional[str] = None
 
 
 class ClaudeTodoUpdate(BaseModel):

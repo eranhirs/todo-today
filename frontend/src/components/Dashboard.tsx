@@ -1,3 +1,4 @@
+import React from "react";
 import type { AnalysisEntry, Project, Todo } from "../types";
 
 interface Props {
@@ -15,6 +16,7 @@ const STATUS_COLORS: Record<string, string> = {
   consider: "#636e88",
   waiting: "var(--amber)",
   stale: "var(--red)",
+  rejected: "#8b5cf6",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -24,6 +26,7 @@ const STATUS_LABELS: Record<string, string> = {
   consider: "Consider",
   waiting: "Waiting",
   stale: "Stale",
+  rejected: "Rejected",
 };
 
 function statusCounts(todos: Todo[]): Record<string, number> {
@@ -81,7 +84,7 @@ function ProgressRing({ completed, total, size = 56 }: { completed: number; tota
 
 function StatusBar({ counts, total }: { counts: Record<string, number>; total: number }) {
   if (total === 0) return <div className="dash-status-bar empty-bar" />;
-  const order = ["waiting", "in_progress", "next", "consider", "stale", "completed"];
+  const order = ["waiting", "in_progress", "next", "consider", "stale", "rejected", "completed"];
   return (
     <div className="dash-status-bar">
       {order.map((s) => {
@@ -124,6 +127,126 @@ function buildActivityData(todos: Todo[], days: number) {
   return buckets;
 }
 
+type WorkloadPeriod = "all" | "30d" | "7d";
+
+function ProjectWorkload({ todos, projects }: { todos: Todo[]; projects: Project[] }) {
+  const [period, setPeriod] = React.useState<WorkloadPeriod>("all");
+
+  const now = Date.now();
+  const cutoff =
+    period === "7d" ? now - 7 * 86400_000 :
+    period === "30d" ? now - 30 * 86400_000 :
+    0;
+
+  const projectStats = projects.map((proj) => {
+    const projTodos = todos.filter((t) => t.project_id === proj.id);
+
+    // Filter by period: count todos created OR completed within the window
+    const periodTodos = cutoff === 0
+      ? projTodos
+      : projTodos.filter((t) => {
+          const created = new Date(t.created_at).getTime();
+          const completed = t.completed_at ? new Date(t.completed_at).getTime() : 0;
+          return created >= cutoff || completed >= cutoff;
+        });
+
+    const total = periodTodos.length;
+    const completed = periodTodos.filter((t) => t.status === "completed").length;
+    const active = total - completed;
+
+    // Average completion time (for todos completed in the period)
+    const completedTodos = periodTodos.filter((t) => t.status === "completed" && t.completed_at);
+    let avgCompletionHrs: number | null = null;
+    if (completedTodos.length > 0) {
+      const totalMs = completedTodos.reduce((sum, t) => {
+        const created = new Date(t.created_at).getTime();
+        const done = new Date(t.completed_at!).getTime();
+        return sum + Math.max(0, done - created);
+      }, 0);
+      avgCompletionHrs = totalMs / completedTodos.length / 3600_000;
+    }
+
+    return { proj, total, completed, active, avgCompletionHrs };
+  });
+
+  // Sort by total descending
+  const sorted = [...projectStats].sort((a, b) => b.total - a.total);
+  const maxTotal = Math.max(1, ...sorted.map((s) => s.total));
+
+  // Only show projects with activity
+  const withActivity = sorted.filter((s) => s.total > 0);
+  if (withActivity.length === 0) return null;
+
+  return (
+    <div className="dash-section">
+      <div className="dash-workload-header">
+        <h3 className="dash-section-title">Project Workload</h3>
+        <div className="dash-period-toggle">
+          {(["all", "30d", "7d"] as WorkloadPeriod[]).map((p) => (
+            <button
+              key={p}
+              className={`dash-period-btn ${period === p ? "active" : ""}`}
+              onClick={() => setPeriod(p)}
+            >
+              {p === "all" ? "All Time" : p === "30d" ? "30 Days" : "7 Days"}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="dash-workload-list">
+        {withActivity.map(({ proj, total, completed, active, avgCompletionHrs }) => {
+          const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
+          return (
+            <div key={proj.id} className="dash-workload-row">
+              <span className="dash-workload-name" title={proj.name}>{proj.name}</span>
+              <div className="dash-workload-bar-wrap">
+                <div className="dash-workload-bar-track">
+                  <div
+                    className="dash-workload-bar-fill completed"
+                    style={{ width: `${(completed / maxTotal) * 100}%` }}
+                    title={`${completed} completed`}
+                  />
+                  <div
+                    className="dash-workload-bar-fill active-fill"
+                    style={{ width: `${(active / maxTotal) * 100}%` }}
+                    title={`${active} active`}
+                  />
+                </div>
+              </div>
+              <div className="dash-workload-stats">
+                <span className="dash-workload-total">{total}</span>
+                <span className="dash-workload-pct">{pct}%</span>
+                {avgCompletionHrs !== null && (
+                  <span className="dash-workload-avg" title="Avg completion time">
+                    {avgCompletionHrs < 1
+                      ? `${Math.round(avgCompletionHrs * 60)}m`
+                      : avgCompletionHrs < 24
+                        ? `${avgCompletionHrs.toFixed(1)}h`
+                        : `${(avgCompletionHrs / 24).toFixed(1)}d`}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="dash-workload-legend">
+        <span className="dash-legend-item">
+          <span className="dash-legend-dot" style={{ background: "var(--green)" }} />
+          Completed
+        </span>
+        <span className="dash-legend-item">
+          <span className="dash-legend-dot" style={{ background: "var(--accent)" }} />
+          Active
+        </span>
+        <span className="dash-workload-legend-hint">
+          % = completion rate &middot; time = avg to complete
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function Dashboard({ todos, projects, projectSummaries, history, onSelectProject }: Props) {
   const allCounts = statusCounts(todos);
   const totalTodos = todos.length;
@@ -143,6 +266,21 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
       return now.getTime() - d.getTime() < 7 * 86400 * 1000;
     })
     .reduce((sum, h) => sum + h.cost_usd, 0);
+
+  if (totalTodos === 0 && projects.length === 0) {
+    return (
+      <div className="dashboard">
+        <h2>Dashboard</h2>
+        <div className="empty-state empty-state-large">
+          <div className="empty-state-icon">📊</div>
+          <p className="empty-state-title">Nothing here yet</p>
+          <p className="empty-state-hint">
+            Create a project and add some todos to see your dashboard come to life with charts, metrics, and progress tracking.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="dashboard">
@@ -177,7 +315,7 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
         <h3 className="dash-section-title">Status Distribution</h3>
         <StatusBar counts={allCounts} total={totalTodos} />
         <div className="dash-status-legend">
-          {["waiting", "in_progress", "next", "consider", "stale", "completed"].map((s) => {
+          {["waiting", "in_progress", "next", "consider", "stale", "rejected", "completed"].map((s) => {
             const n = allCounts[s] || 0;
             if (n === 0) return null;
             return (
@@ -224,9 +362,19 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
         </div>
       </div>
 
+      {/* Project workload ranking */}
+      {projects.length > 1 && (
+        <ProjectWorkload todos={todos} projects={projects} />
+      )}
+
       {/* Project cards */}
       <div className="dash-section">
         <h3 className="dash-section-title">Projects</h3>
+        {projects.length === 0 ? (
+          <div className="empty-state empty-state-compact">
+            <p className="empty-state-hint">No projects yet. Create one from the sidebar to track your work.</p>
+          </div>
+        ) : (
         <div className="dash-project-grid">
           {projects.map((proj) => {
             const projTodos = todos.filter((t) => t.project_id === proj.id);
@@ -273,6 +421,7 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
             );
           })}
         </div>
+        )}
       </div>
     </div>
   );

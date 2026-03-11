@@ -2,6 +2,10 @@
 
 A self-managing todo app powered by Claude. It watches your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions and automatically discovers what you're working on — marking tasks complete, suggesting next steps, and tracking new projects. With **Autopilot**, it goes further: Claude automatically picks up todos and works on them, creating a closed loop where analysis discovers work → Autopilot executes it → the cycle repeats.
 
+A built-in **Dashboard** gives you a bird's-eye view of everything: active vs. completed counts, completion rate, analysis cost, status distribution, a 14-day activity chart, and per-project workload with average completion times.
+
+![Dashboard](docs/images/dashboard.png)
+
 ![Claude Todos screenshot](docs/images/screenshot.jpeg)
 
 ## How It Works
@@ -86,6 +90,46 @@ Open http://localhost:5173.
 - **Cost tracking** — per-run and cumulative cost in USD, token counts, and duration
 - **Notifications** — in-app toasts and browser notifications for completed tasks, session events, and new waiting todos
 - **Notification log** — scrollable history of recent notifications in the sidebar
+
+## Sample Use Case: The Self-Improving Loop
+
+Here's a concrete example showing how Claude Todos creates a closed feedback loop where Claude discovers its own work, executes it, and keeps going.
+
+### Step 1: You add a seed todo
+
+In the UI, you manually add a single todo to your project:
+
+> "Analyze this codebase and suggest 3–5 concrete improvements (performance, code quality, missing tests, etc.)"
+
+Set its status to **next** so Autopilot picks it up.
+
+### Step 2: Autopilot runs the todo
+
+Autopilot sees the "next" todo, spawns a Claude Code session in your project directory, and Claude gets to work. It reads through the codebase, identifies improvements, and — because the hook is installed — the session transcript is captured automatically.
+
+### Step 3: Analysis creates new todos
+
+When the session ends, the analysis pipeline kicks in. Claude reads the transcript and discovers that the session produced several actionable suggestions. It creates new todos on your behalf, for example:
+
+- 📦 "Add unit tests for the payment module"
+- ⚡ "Replace N+1 queries in the dashboard endpoint with a single join"
+- 🧹 "Extract duplicated validation logic into a shared utility"
+
+Each new todo is added with status **next**, ready for the next Autopilot cycle.
+
+### Step 4: Autopilot executes the new todos
+
+Autopilot picks up the first "next" todo — say, "Add unit tests for the payment module" — and runs it. Claude writes the tests, the session ends, and analysis fires again. This time it might notice:
+
+- ✅ Mark "Add unit tests for the payment module" as **completed**
+- 💡 Add a new insight: "Test coverage revealed an unhandled edge case in refund calculations"
+- 📝 Create a new todo: "Fix refund calculation when discount exceeds subtotal"
+
+### Step 5: The cycle repeats
+
+The loop continues: Autopilot runs todos → analysis discovers what was done and what's next → new todos appear → Autopilot picks them up. Each cycle makes the codebase a little better, and each analysis surfaces the next round of work.
+
+You can monitor all of this from the Dashboard — watching completion rates climb, reviewing analysis history, and adjusting Autopilot quotas per project to control the pace.
 
 ## Tech Stack
 

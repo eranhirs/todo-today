@@ -1,32 +1,38 @@
 from __future__ import annotations
 
-import json
 import logging
 import os
-import threading
-import subprocess
-import time
-import uuid
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ..event_bus import EventType, bus
 from ..models import Todo, TodoCreate, TodoReorder, TodoUpdate, _now
-from ..storage import DATA_DIR, StorageContext
+from ..tags import collect_all_tags
+from ..run_manager import (
+    _followup_claude_for_todo,
+    _process_queue,
+    dequeue_todo_run,
+    is_project_busy,
+    is_todo_running,
+    process_manager,
+    start_todo_run,
+)
+from ..storage import StorageContext
 
 _DEMO_MODE = os.environ.get("TODO_DEMO", "").lower() in ("1", "true", "yes")
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/todos", tags=["todos"])
 
-# Track running background processes
-_running_tasks: dict[str, threading.Thread] = {}
 
-# Directory for run output files
-_RUNS_DIR = DATA_DIR / "runs"
-_RUNS_DIR.mkdir(parents=True, exist_ok=True)
+@router.get("/tags")
+def list_tags() -> list[str]:
+    """Return all unique tags found across all todo texts."""
+    with StorageContext(read_only=True) as ctx:
+        return collect_all_tags([t.text for t in ctx.store.todos])
 
 
 @router.get("")
@@ -45,11 +51,12 @@ def create_todo(body: TodoCreate) -> Todo:
         todo.completed_at = _now()
     with StorageContext() as ctx:
         if not any(p.id == body.project_id for p in ctx.store.projects):
-            raise HTTPException(404, "Project not found")
-        # Auto-assign sort_order: max existing + 1
-        max_order = max((t.sort_order for t in ctx.store.todos if t.project_id == body.project_id), default=0)
-        todo.sort_order = max_order + 1
+            raise HTTPException(status_code=404, detail="Project not found")
+        # Auto-assign sort_order: min existing - 1 so new todos appear at top
+        min_order = min((t.sort_order for t in ctx.store.todos if t.project_id == body.project_id), default=1)
+        todo.sort_order = min_order - 1
         ctx.store.todos.append(todo)
+    bus.emit_event_sync(EventType.TODO_CREATED, todo_id=todo.id, project_id=todo.project_id, text=todo.text)
     return todo
 
 
@@ -61,6 +68,9 @@ def reorder_todos(body: TodoReorder) -> dict:
         for idx, todo_id in enumerate(body.todo_ids):
             if todo_id in id_to_todo:
                 id_to_todo[todo_id].sort_order = idx
+        # Only mark the actually-moved item as user_ordered
+        if body.moved_id and body.moved_id in id_to_todo:
+            id_to_todo[body.moved_id].user_ordered = True
     return {"status": "ok"}
 
 
@@ -70,7 +80,7 @@ def get_todo(todo_id: str) -> Todo:
         for t in ctx.store.todos:
             if t.id == todo_id:
                 return t
-    raise HTTPException(404, "Todo not found")
+    raise HTTPException(status_code=404, detail="Todo not found")
 
 
 @router.put("/{todo_id}")
@@ -84,15 +94,51 @@ def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                     t.project_id = body.project_id
                 if body.status is not None:
                     was_completed = t.status == "completed"
+                    was_rejected = t.status == "rejected"
                     t.status = body.status
                     if body.status == "completed" and not was_completed:
                         t.completed_at = _now()
                     elif body.status != "completed" and was_completed:
                         t.completed_at = None
+                    if body.status == "rejected" and not was_rejected:
+                        t.rejected_at = _now()
+                    elif body.status != "rejected" and was_rejected:
+                        t.rejected_at = None
                 if body.source is not None:
                     t.source = body.source
+                if body.stale_reason is not None:
+                    t.stale_reason = body.stale_reason
+                if body.user_ordered is not None:
+                    t.user_ordered = body.user_ordered
+                    # When unpinning, recalculate sort_order for unpinned siblings by created_at
+                    if not body.user_ordered:
+                        siblings = [
+                            s for s in ctx.store.todos
+                            if s.project_id == t.project_id
+                        ]
+                        # Pinned items keep their sort_order; unpinned get re-slotted by created_at
+                        pinned = sorted(
+                            [s for s in siblings if s.user_ordered],
+                            key=lambda s: s.sort_order,
+                        )
+                        unpinned = sorted(
+                            [s for s in siblings if not s.user_ordered],
+                            key=lambda s: s.created_at,
+                        )
+                        # Merge: pinned occupy their slots, unpinned fill remaining slots
+                        pinned_slots = {s.sort_order for s in pinned}
+                        slot = 0
+                        for s in unpinned:
+                            while slot in pinned_slots:
+                                slot += 1
+                            s.sort_order = slot
+                            slot += 1
+                # Clear stale_reason when moving away from stale
+                if body.status is not None and body.status != "stale":
+                    t.stale_reason = None
+                bus.emit_event_sync(EventType.TODO_UPDATED, todo_id=t.id, status=t.status)
                 return t
-    raise HTTPException(404, "Todo not found")
+    raise HTTPException(status_code=404, detail="Todo not found")
 
 
 @router.delete("/{todo_id}", status_code=204)
@@ -101,602 +147,15 @@ def delete_todo(todo_id: str) -> None:
         before = len(ctx.store.todos)
         ctx.store.todos = [t for t in ctx.store.todos if t.id != todo_id]
         if len(ctx.store.todos) == before:
-            raise HTTPException(404, "Todo not found")
-
-
-_FLUSH_INTERVAL = 3  # seconds between progress flushes
-
-
-def _flush_progress(todo_id: str, output: str) -> None:
-    """Write current accumulated output to the store."""
-    with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                t.run_output = output[:50000]
-                break
-
-
-def _extract_assistant_text(line_json: dict) -> Optional[str]:
-    """Extract text content from a stream-json assistant message."""
-    if line_json.get("type") != "assistant":
-        return None
-    msg = line_json.get("message", {})
-    content = msg.get("content", [])
-    parts = []
-    for block in content:
-        if isinstance(block, dict):
-            if block.get("type") == "text":
-                parts.append(block["text"])
-            elif block.get("type") == "tool_use":
-                name = block.get("name", "tool")
-                inp = block.get("input", {})
-                # Show tool calls concisely
-                if name == "Bash":
-                    parts.append(f"$ {inp.get('command', '')}")
-                elif name in ("Edit", "Write"):
-                    parts.append(f"[{name}: {inp.get('file_path', '')}]")
-                elif name == "Read":
-                    parts.append(f"[Read: {inp.get('file_path', '')}]")
-                else:
-                    parts.append(f"[{name}]")
-    return "\n".join(parts) if parts else None
-
-
-_MAX_PLAN_RETRIES = 3  # max times we'll auto-accept a plan and continue
-
-
-def _detect_exit_plan_mode(stream_lines: list[dict]) -> bool:
-    """Check if the session ended by calling ExitPlanMode."""
-    for obj in reversed(stream_lines):
-        if obj.get("type") != "assistant":
-            continue
-        for block in obj.get("message", {}).get("content", []):
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                if block.get("name") == "ExitPlanMode":
-                    return True
-        # Only check the last assistant message
-        break
-    return False
-
-
-def _invoke_claude(
-    todo_id: str,
-    prompt: str,
-    session_id: str,
-    source_path: str,
-    model: str,
-    env: dict,
-    accumulated: list[str],
-    session_header: str,
-    output_file: Path,
-    resume: bool = False,
-) -> tuple[Optional[dict], list[dict], int]:
-    """Run a single claude -p invocation with a detached subprocess writing to output_file.
-
-    Returns (final_result, stream_objects, returncode).
-    """
-    cmd = [
-        "claude", "-p", "--output-format", "stream-json", "--verbose",
-        "--dangerously-skip-permissions",
-        "--disallowedTools", "AskUserQuestion",
-        "--model", model,
-    ]
-    if resume:
-        cmd.extend(["--resume", session_id])
-    else:
-        cmd.extend(["--session-id", session_id])
-
-    # Open file in append mode so multiple invocations accumulate output
-    fout = open(output_file, "a")
-
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=fout,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=source_path,
-        env=env,
-        start_new_session=True,  # detach from server's process group
-    )
-    proc.stdin.write(prompt)
-    proc.stdin.close()
-    fout.close()  # subprocess owns the fd now
-
-    # Store PID on the todo so we can reconnect after restart
-    with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                t.run_pid = proc.pid
-                t.run_output_file = str(output_file)
-                break
-
-    # Tail the output file while the process runs
-    final_result, stream_objects = _tail_output_file(
-        todo_id, proc.pid, output_file, accumulated, session_header,
-    )
-
-    proc.wait(timeout=60)
-    if proc.returncode != 0:
-        stderr_out = proc.stderr.read() if proc.stderr else ""
-        if stderr_out:
-            log.error("Claude stderr for todo %s: %s", todo_id, stderr_out[:2000])
-            accumulated.append(f"\nstderr: {stderr_out[:2000]}")
-    return final_result, stream_objects, proc.returncode
-
-
-def _tail_output_file(
-    todo_id: str,
-    pid: int,
-    output_file: Path,
-    accumulated: list[str],
-    session_header: str,
-    start_pos: int = 0,
-) -> tuple[Optional[dict], list[dict]]:
-    """Tail a stream-json output file while the process is alive.
-
-    Returns (final_result, stream_objects).
-    """
-    last_flush = time.monotonic()
-    final_result = None
-    stream_objects: list[dict] = []
-    file_pos = start_pos
-
-    while True:
-        # Check if process is still alive
-        alive = _pid_alive(pid)
-
-        # Read any new data from the file
-        try:
-            with open(output_file, "r") as f:
-                f.seek(file_pos)
-                new_data = f.read()
-                file_pos = f.tell()
-        except FileNotFoundError:
-            new_data = ""
-
-        for line in new_data.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            stream_objects.append(obj)
-
-            if obj.get("type") == "result":
-                final_result = obj
-                continue
-
-            text = _extract_assistant_text(obj)
-            if text:
-                accumulated.append(text)
-
-        now = time.monotonic()
-        if now - last_flush >= _FLUSH_INTERVAL and accumulated:
-            _flush_progress(todo_id, session_header + "\n".join(accumulated))
-            last_flush = now
-
-        if not alive:
-            break
-
-        time.sleep(0.5)
-
-    # Final flush
-    if accumulated:
-        _flush_progress(todo_id, session_header + "\n".join(accumulated))
-
-    return final_result, stream_objects
-
-
-def _pid_alive(pid: int) -> bool:
-    """Check if a process with the given PID is alive (not a zombie)."""
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    # Check for zombie on Linux — zombies respond to kill(0) but are defunct
-    try:
-        with open(f"/proc/{pid}/status") as f:
-            for line in f:
-                if line.startswith("State:"):
-                    return "Z" not in line  # Z = zombie
-    except (FileNotFoundError, PermissionError):
-        pass
-    return True
-
-
-def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "") -> None:
-    """Background thread: run claude -p, auto-accepting plan mode if needed."""
-    output_file = _RUNS_DIR / f"{todo_id}.jsonl"
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        session_id = str(uuid.uuid4())
-        prompt = (
-            f"Implement this task fully — write all the code, make all the changes, "
-            f"do not stop to ask for feedback or approval: {todo_text}"
-        )
-        session_header = f"Session: {session_id}\n\n"
-        accumulated: list[str] = []
-
-        # Store output file path and session_id on todo
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_output_file = str(output_file)
-                    t.session_id = session_id
-                    break
-
-        # Ensure clean output file
-        output_file.write_text("")
-
-        final_result = None
-        returncode = 0
-
-        for attempt in range(_MAX_PLAN_RETRIES + 1):
-            is_resume = attempt > 0
-            if is_resume:
-                prompt = "Plan accepted. Now implement it fully."
-                log.info("Auto-accepting plan for todo %s (attempt %d)", todo_id, attempt + 1)
-                accumulated.append("\n--- Plan accepted, continuing ---\n")
-
-            final_result, stream_objects, returncode = _invoke_claude(
-                todo_id, prompt, session_id, source_path, model, env,
-                accumulated, session_header, output_file, resume=is_resume,
-            )
-
-            if returncode != 0:
-                break
-
-            # If Claude exited plan mode, auto-accept and continue
-            if _detect_exit_plan_mode(stream_objects) and attempt < _MAX_PLAN_RETRIES:
-                continue
-
-            # Otherwise we're done
-            break
-
-        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
-
-    except Exception as e:
-        log.exception("Claude run error for todo %s", todo_id)
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_status = "error"
-                    t.run_output = str(e)
-                    t.run_pid = None
-                    t.run_output_file = None
-                    break
-        _cleanup_output_file(output_file)
-    finally:
-        _running_tasks.pop(todo_id, None)
-        if project_id:
-            _process_queue(project_id)
-
-
-def _finalize_run(
-    todo_id: str,
-    final_result: Optional[dict],
-    returncode: int,
-    accumulated: list[str],
-    session_header: str,
-    output_file: Path,
-) -> None:
-    """Apply the final result of a claude run to the todo and clean up."""
-    if returncode != 0:
-        stderr_msg = f"Exit code {returncode}"
-        log.error("Claude run failed for todo %s: %s", todo_id, stderr_msg)
-        output_so_far = "\n".join(accumulated)
-        if output_so_far:
-            stderr_msg = output_so_far + "\n\n--- ERROR ---\n" + stderr_msg
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_status = "error"
-                    t.run_output = (session_header + stderr_msg)[:50000]
-                    t.run_pid = None
-                    t.run_output_file = None
-                    break
-        _cleanup_output_file(output_file)
-        return
-
-    output_text = "\n".join(accumulated)
-    had_errors = False
-    if final_result:
-        result_text = final_result.get("result")
-        if result_text:
-            output_text = result_text
-        if final_result.get("is_error"):
-            had_errors = True
-        if final_result.get("permission_denials"):
-            had_errors = True
-
-    with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                t.run_output = (session_header + output_text)[:50000]
-                t.run_pid = None
-                t.run_output_file = None
-                if had_errors:
-                    t.run_status = "error"
-                else:
-                    t.run_status = "done"
-                    t.status = "completed"
-                    t.completed_at = _now()
-                break
-
-    _cleanup_output_file(output_file)
-
-
-def _cleanup_output_file(output_file: Path) -> None:
-    """Remove output file if it exists."""
-    try:
-        output_file.unlink(missing_ok=True)
-    except Exception:
-        log.debug("Could not remove output file %s", output_file)
-
-
-def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
-    """Reconnect to a still-running detached claude subprocess after server restart.
-
-    Spawns a watcher thread that tails the output file and waits for the process to finish.
-    No plan-mode retry on reconnect — the current invocation just completes.
-    """
-    if todo_id in _running_tasks and _running_tasks[todo_id].is_alive():
-        return  # already being watched
-
-    output_file = Path(output_file_str)
-
-    # Capture existing output and file position BEFORE starting watcher thread
-    existing_output = ""
-    proj_id = ""
-    with StorageContext(read_only=True) as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                existing_output = t.run_output or ""
-                proj_id = t.project_id
-                break
-
-    # Get current file size so we only tail NEW content
-    try:
-        file_start_pos = output_file.stat().st_size
-    except (OSError, FileNotFoundError):
-        file_start_pos = 0
-
-    def _watcher():
-        try:
-            log.info("Reconnecting to claude run for todo %s (pid %d)", todo_id, pid)
-            accumulated: list[str] = []
-            # Preserve existing output, then append reconnect marker
-            session_header = existing_output + "\n\n[Reconnected after server restart]\n\n" if existing_output else "[Reconnected after server restart]\n\n"
-
-            final_result, stream_objects = _tail_output_file(
-                todo_id, pid, output_file, accumulated, session_header,
-                start_pos=file_start_pos,
-            )
-
-            # Wait for the process to fully exit and get return code
-            try:
-                _, returncode_raw = os.waitpid(pid, 0)
-                returncode = os.WEXITSTATUS(returncode_raw) if os.WIFEXITED(returncode_raw) else 1
-            except ChildProcessError:
-                # Not our child process (detached), infer from result
-                returncode = 0 if final_result and not final_result.get("is_error") else 0
-
-            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
-
-        except Exception as e:
-            log.exception("Reconnect error for todo %s", todo_id)
-            with StorageContext() as ctx:
-                for t in ctx.store.todos:
-                    if t.id == todo_id:
-                        t.run_status = "error"
-                        t.run_output = f"[Reconnect failed: {e}]"
-                        t.run_pid = None
-                        t.run_output_file = None
-                        break
-            _cleanup_output_file(output_file)
-        finally:
-            _running_tasks.pop(todo_id, None)
-            if proj_id:
-                _process_queue(proj_id)
-
-    thread = threading.Thread(target=_watcher, daemon=True)
-    thread.start()
-    _running_tasks[todo_id] = thread
-
-
-def parse_output_file_result(output_file_str: str) -> tuple[Optional[dict], list[str]]:
-    """Parse a completed output file to extract final result and accumulated text.
-
-    Used when the subprocess finished while the server was down.
-    Returns (final_result, accumulated_texts).
-    """
-    output_file = Path(output_file_str)
-    final_result = None
-    accumulated: list[str] = []
-
-    if not output_file.exists():
-        return None, []
-
-    try:
-        with open(output_file, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                if obj.get("type") == "result":
-                    final_result = obj
-                    continue
-
-                text = _extract_assistant_text(obj)
-                if text:
-                    accumulated.append(text)
-    except Exception:
-        log.debug("Could not parse output file %s", output_file)
-
-    return final_result, accumulated
-
-
-def is_project_busy(project_id: str) -> bool:
-    """Check if any todo in the project has an active background thread."""
-    with StorageContext(read_only=True) as ctx:
-        for t in ctx.store.todos:
-            if t.project_id == project_id and is_todo_running(t.id):
-                return True
-    return False
-
-
-def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
-    """Start or queue a Claude run for a todo. Returns None on success, or an error string.
-
-    Used by the /run endpoint and by the scheduler for auto-run.
-    When autopilot=True, sets run_trigger to 'autopilot' so the UI can distinguish.
-    If another todo in the same project is already running, the todo is queued
-    and will auto-start when the project becomes free. Returns "queued" in that case.
-    """
-    if todo_id in _running_tasks and _running_tasks[todo_id].is_alive():
-        return "already running"
-
-    with StorageContext() as ctx:
-        todo = None
-        source_path = None
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                todo = t
-                break
-        if todo is None:
-            return "todo not found"
-
-        if todo.run_status == "queued":
-            return "already queued"
-
-        for p in ctx.store.projects:
-            if p.id == todo.project_id:
-                source_path = p.source_path
-                break
-        if not source_path:
-            return "no source_path"
-
-        # Check if another todo in the same project is running
-        project_busy = False
-        for t in ctx.store.todos:
-            if t.project_id == todo.project_id and t.id != todo_id and is_todo_running(t.id):
-                project_busy = True
-                break
-
-        trigger = "autopilot" if autopilot else "manual"
-
-        if project_busy:
-            # Queue instead of rejecting
-            todo.run_status = "queued"
-            todo.run_trigger = trigger
-            todo.queued_at = _now()
-            return "queued"
-
-        todo.status = "in_progress"
-        todo.run_status = "running"
-        todo.run_output = None
-        todo.run_trigger = trigger
-        todo.queued_at = None
-        todo_text = todo.text
-        proj_id = todo.project_id
-        run_model = ctx.metadata.run_model
-
-    thread = threading.Thread(
-        target=_run_claude_for_todo,
-        args=(todo_id, todo_text, source_path, run_model, proj_id),
-        daemon=True,
-    )
-    thread.start()
-    _running_tasks[todo_id] = thread
-    return None
-
-
-def _process_queue(project_id: str) -> None:
-    """Start the next queued todo for a project, if any.
-
-    Called after a run finishes or is stopped to drain the queue.
-    """
-    with StorageContext() as ctx:
-        # Find queued todos for this project, ordered by queued_at
-        queued = [
-            t for t in ctx.store.todos
-            if t.project_id == project_id and t.run_status == "queued"
-        ]
-        if not queued:
-            return
-        queued.sort(key=lambda t: t.queued_at or "")
-
-        # Check project is actually free now
-        for t in ctx.store.todos:
-            if t.project_id == project_id and is_todo_running(t.id):
-                return  # still busy
-
-        # Pick next candidate and transition to running
-        candidate = queued[0]
-        source_path = None
-        for p in ctx.store.projects:
-            if p.id == project_id:
-                source_path = p.source_path
-                break
-        if not source_path:
-            # Can't run — clear all queued items for this project
-            for t in queued:
-                t.run_status = None
-                t.run_trigger = None
-                t.queued_at = None
-            return
-
-        candidate.status = "in_progress"
-        candidate.run_status = "running"
-        candidate.run_output = None
-        candidate.queued_at = None
-        todo_id = candidate.id
-        todo_text = candidate.text
-        run_model = ctx.metadata.run_model
-
-    thread = threading.Thread(
-        target=_run_claude_for_todo,
-        args=(todo_id, todo_text, source_path, run_model, project_id),
-        daemon=True,
-    )
-    thread.start()
-    _running_tasks[todo_id] = thread
-    log.info("Queue: auto-started todo %s for project %s", todo_id, project_id)
-
-
-def dequeue_todo_run(todo_id: str) -> str | None:
-    """Remove a todo from the run queue. Returns None on success, or an error string."""
-    with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                if t.run_status != "queued":
-                    return "not queued"
-                t.run_status = None
-                t.run_trigger = None
-                t.queued_at = None
-                return None
-    return "todo not found"
-
-
-def is_todo_running(todo_id: str) -> bool:
-    """Check if a todo has an active background thread."""
-    return todo_id in _running_tasks and _running_tasks[todo_id].is_alive()
+            raise HTTPException(status_code=404, detail="Todo not found")
+    bus.emit_event_sync(EventType.TODO_DELETED, todo_id=todo_id)
 
 
 @router.post("/{todo_id}/stop")
 def stop_todo(todo_id: str) -> dict:
     """Stop a running Claude Code session for a todo."""
     if _DEMO_MODE:
-        raise HTTPException(403, "Disabled in demo mode")
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
 
     with StorageContext() as ctx:
         todo = None
@@ -705,41 +164,36 @@ def stop_todo(todo_id: str) -> dict:
                 todo = t
                 break
         if todo is None:
-            raise HTTPException(404, "Todo not found")
+            raise HTTPException(status_code=404, detail="Todo not found")
         if todo.run_status != "running":
-            raise HTTPException(409, "Todo is not running")
+            raise HTTPException(status_code=409, detail="Todo is not running")
 
         pid = todo.run_pid
         output_file_str = todo.run_output_file
         proj_id = todo.project_id
 
-        # Update todo state — treat stop as an interrupt/pause,
+        # Update todo state — treat stop as a pause,
         # preserving session_id and run_output so follow-up can continue.
         todo.run_status = "stopped"
+        todo.status = "waiting"
         todo.run_pid = None
         todo.run_output_file = None
         # Append interruption marker to output
         if todo.run_output:
-            todo.run_output = (todo.run_output + "\n\n--- Interrupted ---")[:50000]
+            todo.run_output = (todo.run_output + "\n\n--- Paused ---")[:50000]
 
     # Kill the subprocess (and its process group) outside the lock
     if pid:
-        try:
-            os.killpg(os.getpgid(pid), 9)
-        except (OSError, ProcessLookupError):
-            # Process already exited
-            try:
-                os.kill(pid, 9)
-            except (OSError, ProcessLookupError):
-                pass
+        process_manager.kill_process(pid)
 
     # Clean up the thread tracker
-    _running_tasks.pop(todo_id, None)
+    process_manager.unregister_thread(todo_id)
 
     # Clean up output file
     if output_file_str:
-        _cleanup_output_file(Path(output_file_str))
+        process_manager.cleanup_output_file(Path(output_file_str))
 
+    bus.emit_event_sync(EventType.RUN_STOPPED, todo_id=todo_id)
     log.info("Stopped (interrupted) claude run for todo %s (pid %s)", todo_id, pid)
 
     # Process queue — start next queued todo for this project
@@ -752,21 +206,21 @@ def stop_todo(todo_id: str) -> dict:
 def run_todo(todo_id: str) -> dict:
     """Kick off a Claude Code session to complete a todo, or queue it if the project is busy."""
     if _DEMO_MODE:
-        raise HTTPException(403, "Disabled in demo mode")
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
 
     err = start_todo_run(todo_id)
     if err == "already running":
-        raise HTTPException(409, "This todo is already running")
+        raise HTTPException(status_code=409, detail="This todo is already running")
     if err == "already queued":
-        raise HTTPException(409, "This todo is already queued — it will run when the current task finishes")
+        raise HTTPException(status_code=409, detail="This todo is already queued — it will run when the current task finishes")
     if err == "queued":
         return {"status": "queued"}
     if err == "todo not found":
-        raise HTTPException(404, "Todo not found")
+        raise HTTPException(status_code=404, detail="Todo not found")
     if err == "no source_path":
-        raise HTTPException(400, "Project has no source_path configured")
+        raise HTTPException(status_code=400, detail="Project has no source_path configured")
     if err:
-        raise HTTPException(500, err)
+        raise HTTPException(status_code=500, detail=err)
 
     return {"status": "started"}
 
@@ -775,15 +229,15 @@ def run_todo(todo_id: str) -> dict:
 def dequeue_todo(todo_id: str) -> dict:
     """Remove a todo from the run queue."""
     if _DEMO_MODE:
-        raise HTTPException(403, "Disabled in demo mode")
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
 
     err = dequeue_todo_run(todo_id)
     if err == "not queued":
-        raise HTTPException(409, "This todo is not queued")
+        raise HTTPException(status_code=409, detail="This todo is not queued")
     if err == "todo not found":
-        raise HTTPException(404, "Todo not found")
+        raise HTTPException(status_code=404, detail="Todo not found")
     if err:
-        raise HTTPException(500, err)
+        raise HTTPException(status_code=500, detail=err)
 
     return {"status": "dequeued"}
 
@@ -792,59 +246,18 @@ class FollowupRequest(BaseModel):
     message: str
 
 
-def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "") -> None:
-    """Background thread: send a follow-up message to an existing Claude session."""
-    output_file = _RUNS_DIR / f"{todo_id}.jsonl"
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
-        # Use the already-updated output (includes user message) as the header
-        with StorageContext(read_only=True) as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    existing_output = t.run_output or ""
-                    break
-            else:
-                existing_output = ""
-
-        session_header = existing_output
-        accumulated: list[str] = []
-
-        # Ensure clean output file
-        output_file.write_text("")
-
-        final_result, stream_objects, returncode = _invoke_claude(
-            todo_id, message, session_id, source_path, model, env,
-            accumulated, session_header, output_file, resume=True,
-        )
-
-        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
-
-    except Exception as e:
-        log.exception("Claude follow-up error for todo %s", todo_id)
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_status = "error"
-                    t.run_output = (t.run_output or "") + f"\n\n--- Follow-up Error ---\n{e}"
-                    t.run_pid = None
-                    t.run_output_file = None
-                    break
-        _cleanup_output_file(output_file)
-    finally:
-        _running_tasks.pop(todo_id, None)
-        if project_id:
-            _process_queue(project_id)
-
-
 @router.post("/{todo_id}/followup")
 def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
-    """Send a follow-up message to a completed Claude session."""
-    if _DEMO_MODE:
-        raise HTTPException(403, "Disabled in demo mode")
+    """Send a follow-up message to a completed Claude session.
 
-    if todo_id in _running_tasks and _running_tasks[todo_id].is_alive():
-        raise HTTPException(409, "This todo is already running")
+    If another todo in the same project is currently running, the follow-up
+    is queued and will auto-start when the project becomes free.
+    """
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    if process_manager.is_todo_running(todo_id):
+        raise HTTPException(status_code=409, detail="This todo is already running")
 
     with StorageContext() as ctx:
         todo = None
@@ -854,11 +267,11 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 todo = t
                 break
         if todo is None:
-            raise HTTPException(404, "Todo not found")
+            raise HTTPException(status_code=404, detail="Todo not found")
         if not todo.session_id:
-            raise HTTPException(400, "No session to follow up on — run the todo first")
+            raise HTTPException(status_code=400, detail="No session to follow up on — run the todo first")
         if todo.run_status == "running":
-            raise HTTPException(409, "Todo is currently running")
+            raise HTTPException(status_code=409, detail="Todo is currently running")
 
         session_id = todo.session_id
 
@@ -867,19 +280,37 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 source_path = p.source_path
                 break
         if not source_path:
-            raise HTTPException(400, "Project has no source_path configured")
+            raise HTTPException(status_code=400, detail="Project has no source_path configured")
+
+        # Check if another todo in the same project is running
+        project_busy = False
+        for t in ctx.store.todos:
+            if t.project_id == todo.project_id and t.id != todo_id and (is_todo_running(t.id) or t.run_status == "running"):
+                project_busy = True
+                break
+
+        # Follow-up always moves the todo back to an active state
+        todo.completed_at = None
+
+        if project_busy:
+            # Queue the follow-up; store the pending message so _process_queue can use it
+            todo.status = "next"
+            todo.run_status = "queued"
+            todo.queued_at = _now()
+            todo.pending_followup = body.message
+            # Immediately show the user's follow-up message in the output
+            todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}\n"
+            return {"status": "queued"}
 
         todo.run_status = "running"
+        todo.status = "in_progress"
         # Immediately show the user's follow-up message in the output
         todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}\n"
         proj_id = todo.project_id
         run_model = ctx.metadata.run_model
 
-    thread = threading.Thread(
-        target=_followup_claude_for_todo,
-        args=(todo_id, body.message, session_id, source_path, run_model, proj_id),
-        daemon=True,
+    process_manager.spawn_thread(
+        todo_id, _followup_claude_for_todo,
+        (todo_id, body.message, session_id, source_path, run_model, proj_id),
     )
-    thread.start()
-    _running_tasks[todo_id] = thread
     return {"status": "started"}

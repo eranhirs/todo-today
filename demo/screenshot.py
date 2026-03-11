@@ -75,6 +75,19 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
             paths.append(autopilot_path)
             print(f"  Saved {autopilot_path}")
 
+        # Dashboard view screenshot
+        dashboard_url = f"{url}?view=dashboard"
+        print(f"Loading dashboard: {dashboard_url} ...")
+        page.goto(dashboard_url, wait_until="networkidle")
+        time.sleep(SETTLE_SECONDS)
+
+        dashboard_el = page.locator(".dashboard").first
+        if dashboard_el.count() > 0:
+            dashboard_path = output_dir / "dashboard.png"
+            dashboard_el.screenshot(path=str(dashboard_path))
+            paths.append(dashboard_path)
+            print(f"  Saved {dashboard_path}")
+
         browser.close()
 
     return paths

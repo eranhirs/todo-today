@@ -51,6 +51,10 @@ Each project gets its own Claude call. The prompt tells Claude the fixed `projec
 
 Leftover "Next:"/"Consider:" prefixes in todo text are stripped defensively.
 
+### Duplicate Prevention for Completed Todos
+
+When the analyzer creates a new completed todo, `_apply_result` checks for existing active todos in the same project with significant word overlap (≥30% overlap ratio and ≥2 shared significant words). If a match is found, the existing todo is marked completed instead of creating a duplicate. This prevents the analyzer from creating rephrased versions of existing todos (e.g., turning "Add reject as a status" into "Removed reject button — now uses status pills"). The prompt also instructs Claude to prefer marking existing todos completed over creating new ones.
+
 ## Analysis Entry Fields
 
 Each analysis records:

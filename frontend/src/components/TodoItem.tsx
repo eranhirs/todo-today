@@ -3,9 +3,13 @@ import type { Todo, TodoStatus } from "../types";
 import { api } from "../api";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { TodoRunControls } from "./TodoRunControls";
+import { TodoOutput } from "./TodoOutput";
+import { parseTags, stripTagsFromText } from "../utils/tags";
 
 interface Props {
   todo: Todo;
+  allTags?: string[];
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
@@ -21,6 +25,7 @@ const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
   { value: "consider", label: "Maybe", icon: "?" },
   { value: "waiting", label: "Wait", icon: "⏸" },
   { value: "stale", label: "Stale", icon: "✗" },
+  { value: "rejected", label: "Rejected", icon: "⊘" },
 ];
 
 function formatTime(iso: string): string {
@@ -33,16 +38,38 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false }: Props) {
+function timeAgo(iso: string): string {
+  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  return `${weeks}w ago`;
+}
+
+export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
   const [pillsExpanded, setPillsExpanded] = useState(false);
-  const [followupText, setFollowupText] = useState("");
+  const [editTagSuggestions, setEditTagSuggestions] = useState<string[]>([]);
+  const [editSelectedSuggestion, setEditSelectedSuggestion] = useState(0);
   const pillBarRef = useRef<HTMLDivElement>(null);
-  const outputRef = useRef<HTMLPreElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const followupRef = useRef<HTMLInputElement>(null);
+  const [, setTick] = useState(0);
+
+  const isActive = !["completed", "rejected", "stale"].includes(todo.status);
+
+  // Tick every 60s to keep relative timestamps fresh
+  useEffect(() => {
+    if (!isActive) return;
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, [isActive]);
 
   // Auto-show output while running or when interrupted (so follow-up bar is visible)
   useEffect(() => {
@@ -50,20 +77,6 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
       setShowOutput(true);
     }
   }, [todo.run_status, todo.run_output]);
-
-  // Auto-scroll output to bottom as it streams
-  useEffect(() => {
-    if (showOutput && outputRef.current) {
-      outputRef.current.scrollTop = outputRef.current.scrollHeight;
-    }
-  }, [showOutput, todo.run_output]);
-
-  // Auto-focus follow-up input when interrupted
-  useEffect(() => {
-    if (todo.run_status === "stopped" && showOutput && followupRef.current) {
-      followupRef.current.focus();
-    }
-  }, [todo.run_status, showOutput]);
 
   useEffect(() => {
     if (editing && inputRef.current) {
@@ -94,15 +107,16 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
 
   const changeStatus = async (newStatus: TodoStatus) => {
     const prevStatus = todo.status;
+    const prevReason = todo.stale_reason;
     onOptimisticUpdate((todos) =>
-      todos.map((t) => t.id === todo.id ? { ...t, status: newStatus } : t)
+      todos.map((t) => t.id === todo.id ? { ...t, status: newStatus, stale_reason: newStatus === "stale" ? t.stale_reason : null } : t)
     );
     try {
       await api.updateTodo(todo.id, { status: newStatus });
       onRefresh();
     } catch {
       onOptimisticUpdate((todos) =>
-        todos.map((t) => t.id === todo.id ? { ...t, status: prevStatus } : t)
+        todos.map((t) => t.id === todo.id ? { ...t, status: prevStatus, stale_reason: prevReason } : t)
       );
       addToast(`Failed to update status for "${todo.text}"`, "error");
     }
@@ -119,52 +133,18 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
     }
   };
 
-  const runWithClaude = async () => {
+  const unpinOrder = async () => {
+    onOptimisticUpdate((todos) =>
+      todos.map((t) => t.id === todo.id ? { ...t, user_ordered: false } : t)
+    );
     try {
-      const result = await api.runTodo(todo.id);
-      if (result.status === "queued") {
-        addToast(`Queued "${todo.text}" — will run when the current task finishes`, "info");
-      } else {
-        addToast(`Started running "${todo.text}" with Claude`, "info");
-      }
-      onRefresh();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      addToast(msg, "error");
-    }
-  };
-
-  const dequeue = async () => {
-    try {
-      await api.dequeueTodo(todo.id);
-      addToast(`Removed "${todo.text}" from queue`, "info");
-      onRefresh();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      addToast(msg, "error");
-    }
-  };
-
-  const stopRun = async () => {
-    try {
-      await api.stopTodo(todo.id);
-      addToast(`Paused "${todo.text}" — use follow-up to continue`, "info");
+      await api.updateTodo(todo.id, { user_ordered: false });
       onRefresh();
     } catch {
-      addToast(`Failed to stop "${todo.text}"`, "error");
-    }
-  };
-
-  const sendFollowup = async () => {
-    const msg = followupText.trim();
-    if (!msg) return;
-    try {
-      await api.followupTodo(todo.id, msg);
-      setFollowupText("");
-      addToast("Follow-up sent", "info");
-      onRefresh();
-    } catch {
-      addToast("Failed to send follow-up", "error");
+      onOptimisticUpdate((todos) =>
+        todos.map((t) => t.id === todo.id ? { ...t, user_ordered: true } : t)
+      );
+      addToast(`Failed to unpin order for "${todo.text}"`, "error");
     }
   };
 
@@ -198,7 +178,64 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
     setEditing(false);
   };
 
+  // Compute tag suggestions for edit mode
+  const computeEditTagSuggestions = (value: string) => {
+    const el = inputRef.current;
+    if (!el || allTags.length === 0) { setEditTagSuggestions([]); return; }
+    const cursorPos = el.selectionStart ?? value.length;
+    const beforeCursor = value.slice(0, cursorPos);
+    const match = beforeCursor.match(/(?:^|\s)#([A-Za-z][A-Za-z0-9_-]*)$/);
+    const hashMatch = beforeCursor.match(/(?:^|\s)#$/);
+    const fragment = match ? match[1].toLowerCase() : hashMatch ? "" : null;
+    if (fragment === null) { setEditTagSuggestions([]); return; }
+    setEditTagSuggestions(allTags.filter((t) => fragment === "" || t.startsWith(fragment)));
+    setEditSelectedSuggestion(0);
+  };
+
+  const applyEditSuggestion = (tag: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const cursorPos = el.selectionStart ?? editText.length;
+    const beforeCursor = editText.slice(0, cursorPos);
+    const afterCursor = editText.slice(cursorPos);
+    const hashIdx = beforeCursor.lastIndexOf("#");
+    if (hashIdx === -1) return;
+    const newText = beforeCursor.slice(0, hashIdx) + "#" + tag + " " + afterCursor;
+    setEditText(newText);
+    setEditTagSuggestions([]);
+    setTimeout(() => {
+      el.focus();
+      const newPos = hashIdx + 1 + tag.length + 1;
+      el.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Handle tag suggestion navigation in edit mode
+    if (editTagSuggestions.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setEditSelectedSuggestion((s) => Math.min(s + 1, editTagSuggestions.length - 1));
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setEditSelectedSuggestion((s) => Math.max(s - 1, 0));
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        if (editTagSuggestions[editSelectedSuggestion]) {
+          e.preventDefault();
+          applyEditSuggestion(editTagSuggestions[editSelectedSuggestion]);
+          return;
+        }
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setEditTagSuggestions([]);
+        return;
+      }
+    }
     if (e.key === "Enter" && e.shiftKey) {
       return; // Allow newline
     }
@@ -210,8 +247,11 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
     }
   };
 
+  const tags = useMemo(() => parseTags(todo.text), [todo.text]);
+
   const renderedText = useMemo(() => {
-    const raw = marked.parseInline(todo.text) as string;
+    const displayText = stripTagsFromText(todo.text);
+    const raw = marked.parseInline(displayText) as string;
     return DOMPurify.sanitize(raw);
   }, [todo.text]);
 
@@ -248,43 +288,76 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
           })}
         </div>
         {editing ? (
-          <textarea
-            ref={inputRef}
-            className="todo-text-input"
-            value={editText}
-            rows={Math.min(editText.split("\n").length, 6)}
-            onChange={(e) => setEditText(e.target.value)}
-            onBlur={saveEdit}
-            onKeyDown={handleKeyDown}
-          />
+          <div className="todo-edit-wrapper">
+            <textarea
+              ref={inputRef}
+              className="todo-text-input"
+              value={editText}
+              rows={Math.min(editText.split("\n").length, 6)}
+              onChange={(e) => { setEditText(e.target.value); computeEditTagSuggestions(e.target.value); }}
+              onBlur={() => { if (editTagSuggestions.length === 0) saveEdit(); }}
+              onKeyDown={handleKeyDown}
+            />
+            {editTagSuggestions.length > 0 && (
+              <div className="tag-suggestions">
+                {editTagSuggestions.map((tag, i) => (
+                  <button
+                    key={tag}
+                    className={`tag-suggestion-item${i === editSelectedSuggestion ? " selected" : ""}`}
+                    onMouseDown={(e) => { e.preventDefault(); applyEditSuggestion(tag); }}
+                  >
+                    #{tag}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         ) : (
           <span className="todo-text" onDoubleClick={startEdit}>
             {todo.emoji && <span className="todo-emoji">{todo.emoji}</span>}
             <span dangerouslySetInnerHTML={{ __html: renderedText }} />
           </span>
         )}
+        {tags.length > 0 && (
+          <span className="todo-tags">
+            {tags.map((tag) => (
+              <span key={tag} className="tag-pill">#{tag}</span>
+            ))}
+          </span>
+        )}
+        {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <span className="run-spinner" title="Claude is working on this...">⟳</span>}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
       </div>
       <div className="todo-meta">
         <span className="todo-timestamp" title={todo.created_at}>
-          {formatDate(todo.created_at)} {formatTime(todo.created_at)}
+          {isActive ? (
+            <span className="time-ago">{timeAgo(todo.created_at)}</span>
+          ) : (
+            <>{formatDate(todo.created_at)} {formatTime(todo.created_at)}</>
+          )}
         </span>
         {todo.status === "completed" && todo.completed_at && (
           <span className="todo-timestamp todo-completed-at" title={`Completed: ${todo.completed_at}`}>
             ✓ {formatTime(todo.completed_at)}
           </span>
         )}
-        {todo.source === "claude" && (
+        {(todo.source === "claude" || todo.source === "claude_run") && (
           <span
             className={`badge badge-claude${todo.session_id ? " clickable" : ""}`}
-            title={todo.session_id ? `Click to copy session ID: ${todo.session_id}` : "Added by Claude"}
+            title={
+              todo.source === "claude_run"
+                ? "Completed by Claude run"
+                : todo.session_id
+                  ? `Click to copy session ID: ${todo.session_id}`
+                  : "Added by Claude"
+            }
             onClick={() => {
               if (todo.session_id) {
                 navigator.clipboard.writeText(todo.session_id);
               }
             }}
-          >🤖</span>
+          >{todo.source === "claude_run" ? "⚡" : "🤖"}</span>
         )}
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-claude" title="Run by autopilot">🚀</span>
@@ -297,50 +370,16 @@ export function TodoItem({ todo, onRefresh, addToast, onOptimisticUpdate, isFocu
           >{showOutput ? "▾" : "▸"}</button>
         )}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        {isRunning ? (
-          <button
-            className="btn-icon btn-stop"
-            onClick={stopRun}
-            title="Pause — interrupt and continue via follow-up"
-          >■</button>
-        ) : isQueued ? (
-          <button
-            className="btn-icon btn-dequeue"
-            onClick={dequeue}
-            title="Remove from queue"
-          >✗</button>
-        ) : (
-          <button
-            className="btn-icon btn-run"
-            onClick={runWithClaude}
-            title={projectBusy ? "Will be queued — another task is running" : "Run with Claude"}
-          >▶</button>
+        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} />
+        {todo.user_ordered && (
+          <button className="btn-icon btn-unpin" onClick={unpinOrder} title="Unpin order — let the system reorder this item">📌</button>
         )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>
-      {showOutput && todo.run_output && (
-        <div className="run-output">
-          <pre ref={outputRef}>{todo.run_output}</pre>
-        </div>
+      {todo.status === "stale" && todo.stale_reason && (
+        <span className="stale-reason">{todo.stale_reason}</span>
       )}
-      {showOutput && todo.session_id && !isRunning && (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped") && (
-        <div className="followup-bar">
-          <input
-            ref={followupRef}
-            className="followup-input"
-            placeholder={todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
-            value={followupText}
-            onChange={(e) => setFollowupText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                sendFollowup();
-              }
-            }}
-          />
-          <button className="btn-icon btn-run" onClick={sendFollowup} title="Send follow-up">↵</button>
-        </div>
-      )}
+      <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} />
     </div>
   );
 }

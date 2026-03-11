@@ -98,14 +98,17 @@ export function UpdateHistory({ history }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
 
-  if (history.length === 0) return null;
-
   return (
     <div className="update-history">
       <button className="btn-link" onClick={() => setExpanded(!expanded)}>
         {expanded ? "▾" : "▸"} Analysis History ({history.length})
       </button>
-      {expanded && (
+      {expanded && history.length === 0 && (
+        <div className="empty-state empty-state-compact">
+          <p className="empty-state-hint">No analyses yet. Use "Wake Up Claude" to trigger the first one.</p>
+        </div>
+      )}
+      {expanded && history.length > 0 && (
         <div className="history-list">
           {history.map((entry, i) => {
             const activeCount = entry.added_todos_active?.length ?? 0;

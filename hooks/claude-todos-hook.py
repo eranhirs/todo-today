@@ -15,7 +15,80 @@ import sys
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Dict, Literal, Optional, TypedDict, Union
+
+
+# -- Type definitions for hook events and state entries --
+
+class HookEventBase(TypedDict, total=False):
+    """Common fields present in all hook events from Claude Code."""
+    session_id: str
+    transcript_path: str
+    cwd: str
+    permission_mode: str
+    hook_event_name: str
+
+
+class PermissionRequestEvent(HookEventBase, total=False):
+    """PermissionRequest hook event payload."""
+    tool_name: str
+    tool_input: Dict[str, Any]
+    permission_suggestions: list
+
+
+class StopEvent(HookEventBase, total=False):
+    """Stop hook event payload."""
+    stop_hook_active: bool
+    last_assistant_message: str
+
+
+class SessionStartEvent(HookEventBase, total=False):
+    """SessionStart hook event payload."""
+    source: str
+    model: str
+
+
+class SessionEndEvent(HookEventBase, total=False):
+    """SessionEnd hook event payload."""
+    reason: str
+
+
+HookEvent = Union[PermissionRequestEvent, StopEvent, SessionStartEvent, SessionEndEvent]
+
+SessionState = Literal[
+    "waiting_for_tool_approval",
+    "waiting_for_user",
+    "ended",
+]
+
+HookEventName = Literal[
+    "PermissionRequest",
+    "Stop",
+    "SessionStart",
+    "SessionEnd",
+]
+
+
+class StateEntry(TypedDict, total=False):
+    """A single entry in hook_states.json."""
+    state: SessionState
+    tool_name: str
+    detail: str
+    project_name: str
+    cwd: str
+    timestamp: str  # ISO 8601 UTC, e.g. "2026-03-07T10:30:00Z"
+    hook_event: HookEventName
+
+
+class EventLogEntry(TypedDict, total=False):
+    """A single line in hook_events.log."""
+    ts: str
+    session_key: str
+    hook_event: HookEventName
+    state: Optional[SessionState]
+    project_name: Optional[str]
+    detail: Optional[str]
+
 
 # data/ is a sibling of hooks/
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +120,7 @@ def _session_key_from_transcript(transcript_path: str) -> Optional[str]:
     return f"{project_dir}/{session_id}"
 
 
-def _map_event_to_state(event: dict) -> Optional[dict]:
+def _map_event_to_state(event: HookEvent) -> Optional[StateEntry]:
     """Map a hook event to a state entry."""
     hook_event = event.get("hook_event_name", "")
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -108,7 +181,7 @@ def _map_event_to_state(event: dict) -> Optional[dict]:
     return None
 
 
-def _expire_old_entries(states: dict) -> dict:
+def _expire_old_entries(states: Dict[str, StateEntry]) -> Dict[str, StateEntry]:
     """Remove entries older than EXPIRY_SECONDS."""
     now = time.time()
     to_remove = []
@@ -126,7 +199,7 @@ def _expire_old_entries(states: dict) -> dict:
     return states
 
 
-def _append_event_log(session_key: str, hook_event: str, state_entry: Optional[dict]) -> None:
+def _append_event_log(session_key: str, hook_event: str, state_entry: Optional[StateEntry]) -> None:
     """Append a line to the event log for debugging."""
     try:
         now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")

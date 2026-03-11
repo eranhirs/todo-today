@@ -3,6 +3,7 @@ import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { AddTodo } from "./AddTodo";
 import { TodoItem } from "./TodoItem";
+import { parseTags } from "../utils/tags";
 
 interface Props {
   todos: Todo[];
@@ -21,6 +22,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const [showUpNext, setShowUpNext] = useState(true);
   const [showBacklog, setShowBacklog] = useState(true);
   const [showDone, setShowDone] = useState(true);
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
 
   // Drag-and-drop state
   const dragItemId = useRef<string | null>(null);
@@ -37,9 +39,38 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     return set;
   }, [todos]);
 
-  const filtered = selectedProjectId
+  const projectFiltered = selectedProjectId
     ? todos.filter((t) => t.project_id === selectedProjectId)
     : todos;
+
+  // Collect all tags from visible todos for the filter bar
+  const allTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    for (const t of projectFiltered) {
+      for (const tag of parseTags(t.text)) tagSet.add(tag);
+    }
+    return Array.from(tagSet).sort();
+  }, [projectFiltered]);
+
+  const toggleTag = useCallback((tag: string) => {
+    setSelectedTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
+  }, []);
+
+  const clearTags = useCallback(() => setSelectedTags(new Set()), []);
+
+  // Apply tag filter
+  const filtered = useMemo(() => {
+    if (selectedTags.size === 0) return projectFiltered;
+    return projectFiltered.filter((t) => {
+      const todoTags = parseTags(t.text);
+      return Array.from(selectedTags).every((st) => todoTags.includes(st));
+    });
+  }, [projectFiltered, selectedTags]);
 
   // Sort helper: sort_order ascending, then created_at descending as tiebreaker
   const sortByOrder = (a: Todo, b: Todo) => {
@@ -58,12 +89,14 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       return sortByOrder(a, b);
     });
 
-  // Backlog: consider, then stale
+  // Backlog: consider, then stale, then rejected
+  const backlogOrder = { consider: 0, stale: 1, rejected: 2 } as const;
   const backlog = filtered
-    .filter((t) => t.status === "consider" || t.status === "stale")
+    .filter((t) => t.status === "consider" || t.status === "stale" || t.status === "rejected")
     .sort((a, b) => {
-      if (a.status === "consider" && b.status === "stale") return -1;
-      if (a.status === "stale" && b.status === "consider") return 1;
+      const oa = backlogOrder[a.status as keyof typeof backlogOrder] ?? 1;
+      const ob = backlogOrder[b.status as keyof typeof backlogOrder] ?? 1;
+      if (oa !== ob) return oa - ob;
       return sortByOrder(a, b);
     });
 
@@ -125,19 +158,19 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     // Insert at new position
     ids.splice(toIdx, 0, dragId);
 
-    // Optimistic update: assign new sort_order values
+    // Optimistic update: assign new sort_order values, pin only the moved item
     onOptimisticUpdate((allTodos) =>
       allTodos.map((t) => {
         const newIdx = ids.indexOf(t.id);
         if (newIdx !== -1) {
-          return { ...t, sort_order: newIdx };
+          return { ...t, sort_order: newIdx, ...(t.id === dragId ? { user_ordered: true } : {}) };
         }
         return t;
       })
     );
 
     // Persist to backend
-    api.reorderTodos(ids).then(() => onRefresh()).catch(() => {
+    api.reorderTodos(ids, dragId).then(() => onRefresh()).catch(() => {
       addToast("Failed to reorder todos", "error");
       onRefresh();
     });
@@ -167,7 +200,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       >
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} />
+        <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} />
       </div>
     ));
 
@@ -177,9 +210,26 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       {summary && <p className="project-summary">{summary}</p>}
 
       {selectedProjectId ? (
-        <AddTodo projectId={selectedProjectId} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />
+        <AddTodo projectId={selectedProjectId} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />
       ) : (
-        <AddTodo projects={projects} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />
+        <AddTodo projects={projects} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />
+      )}
+
+      {allTags.length > 0 && (
+        <div className="tag-filter-bar">
+          {allTags.map((tag) => (
+            <button
+              key={tag}
+              className={`tag-filter-pill${selectedTags.has(tag) ? " active" : ""}`}
+              onClick={() => toggleTag(tag)}
+            >
+              #{tag}
+            </button>
+          ))}
+          {selectedTags.size > 0 && (
+            <button className="tag-filter-clear" onClick={clearTags}>Clear</button>
+          )}
+        </div>
       )}
 
       {/* Up Next */}
@@ -189,7 +239,17 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       {showUpNext && (
         <>
           {upNext.length === 0 && backlog.length === 0 && done.length === 0 && (
-            <p className="empty">No todos yet. Add one above!</p>
+            <div className="empty-state">
+              <div className="empty-state-icon">📋</div>
+              <p className="empty-state-title">No todos yet</p>
+              <p className="empty-state-hint">
+                {selectedProjectId
+                  ? "Type a task above and press Enter to get started."
+                  : projects.length === 0
+                    ? "Create a project first, then add todos to it."
+                    : "Select a project or type a task above to get started."}
+              </p>
+            </div>
           )}
           {renderTodoList(upNext, "upnext")}
         </>
@@ -226,7 +286,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                 {items.map((t) => (
                   <div key={t.id}>
                     {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                    <TodoItem todo={t} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} />
+                    <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} />
                   </div>
                 ))}
               </div>

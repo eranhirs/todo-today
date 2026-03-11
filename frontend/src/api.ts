@@ -1,4 +1,4 @@
-import type { FullState, Project, SessionInfo, Todo, TodoStatus } from "./types";
+import type { FullState, Project, SessionInfo, Settings, SettingsUpdate, Todo, TodoStatus } from "./types";
 
 const BASE = "/api";
 
@@ -32,13 +32,15 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/projects/${id}`, { method: "DELETE" }),
 
+  getTags: () => request<string[]>("/todos/tags"),
+
   createTodo: (project_id: string, text: string) =>
     request<Todo>("/todos", {
       method: "POST",
       body: JSON.stringify({ project_id, text }),
     }),
 
-  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user" }) =>
+  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean }) =>
     request<Todo>(`/todos/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
@@ -47,10 +49,10 @@ export const api = {
   deleteTodo: (id: string) =>
     request<void>(`/todos/${id}`, { method: "DELETE" }),
 
-  reorderTodos: (todoIds: string[]) =>
+  reorderTodos: (todoIds: string[], movedId?: string) =>
     request<{ status: string }>("/todos/reorder", {
       method: "PUT",
-      body: JSON.stringify({ todo_ids: todoIds }),
+      body: JSON.stringify({ todo_ids: todoIds, moved_id: movedId }),
     }),
 
   runTodo: (id: string) =>
@@ -79,6 +81,14 @@ export const api = {
     }),
 
   getSessions: () => request<SessionInfo[]>("/claude/sessions"),
+
+  getSettings: () => request<Settings>("/claude/settings"),
+
+  updateSettings: (update: SettingsUpdate) =>
+    request<Settings>("/claude/settings", {
+      method: "PUT",
+      body: JSON.stringify(update),
+    }),
 
   setAnalysisInterval: (minutes: number) =>
     request<{ minutes: number }>("/claude/interval", {
@@ -133,4 +143,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(data),
     }),
+
+  getRecentEvents: (limit = 50) =>
+    request<{ type: string; data: Record<string, unknown>; ts: number }[]>(`/events/recent?limit=${limit}`),
+
+  getEventBusStatus: () =>
+    request<{ subscribers: number; recent_events: number }>("/events/status"),
 };
