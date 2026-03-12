@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FullState, Todo } from "../types";
 import { api } from "../api";
+import { ApiError } from "../errors";
 
 const POLL_INTERVAL = 3_000;
 
@@ -16,6 +17,7 @@ export function useAppState({
   notifyHookEvents,
 }: UseAppStateOptions) {
   const [state, setState] = useState<FullState | null>(null);
+  const [isOffline, setIsOffline] = useState(false);
 
   const [selectedProject, setSelectedProject] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -54,6 +56,7 @@ export function useAppState({
   refreshRef.current = async () => {
     try {
       const data = await api.getState();
+      setIsOffline(false);
       setState(data);
       notifyNewWaitingTodos(data.todos);
       notifyRunCompletions(data.todos);
@@ -61,7 +64,12 @@ export function useAppState({
       const waitingCount = data.todos.filter((t) => t.status === "waiting").length;
       document.title = waitingCount > 0 ? `(${waitingCount}) Claude Todos` : "Claude Todos";
     } catch (err) {
-      console.error("Failed to fetch state:", err);
+      if (err instanceof ApiError && err.isNetwork) {
+        setIsOffline(true);
+        console.warn("Failed to fetch state: server unreachable");
+      } else {
+        console.error("Failed to fetch state:", err);
+      }
     }
   };
 
@@ -98,5 +106,6 @@ export function useAppState({
     switchView,
     refresh,
     optimisticUpdate,
+    isOffline,
   };
 }

@@ -546,9 +546,6 @@ def _finalize_run(
     output_text = "\n".join(accumulated)
     had_errors = False
     if final_result:
-        result_text = final_result.get("result")
-        if result_text:
-            output_text = result_text
         if final_result.get("is_error"):
             had_errors = True
         if final_result.get("permission_denials"):
@@ -567,7 +564,7 @@ def _finalize_run(
                     t.run_status = "done"
                     t.status = "completed"
                     t.completed_at = _now()
-                    t.source = "claude_run"
+                    t.completed_by_run = True
                     bus.emit_event_sync(EventType.RUN_COMPLETED, todo_id=todo_id)
                 break
 

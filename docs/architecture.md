@@ -108,6 +108,15 @@ Background threads (run workers) emit events via `bus.emit_sync()` / `bus.emit_e
 - `GET /api/events/recent?limit=50` — ring buffer of recent events
 - `GET /api/events/status` — subscriber count and event buffer size
 
+## Offline Behavior
+
+When the backend is unreachable (polling fails with a network error), the frontend enters offline mode:
+
+- **Adding todos**: Still allowed — items are created as optimistic placeholders with `temp-` IDs. They appear greyed out with a "not sent" badge so the user can copy the text if needed. These are not persisted and will be lost on page reload.
+- **Mutations blocked**: Status changes, deletions, edits, run controls, and follow-ups show a warning toast explaining the action isn't available while offline.
+- **Banner**: A red banner at the top indicates the server is unreachable.
+- **Recovery**: When polling succeeds again, the offline flag clears and all controls re-enable. Pending items remain visible but won't be synced — the user should re-add them.
+
 ## Hooks Integration
 
 Optional real-time session state detection via Claude Code hooks. See [hooks.md](hooks.md) for full details, event payloads, and testing instructions.

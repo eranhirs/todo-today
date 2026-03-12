@@ -16,6 +16,7 @@ interface Props {
   isFocused?: boolean;
   triggerEdit?: boolean;
   projectBusy?: boolean;
+  disabled?: boolean;
 }
 
 const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
@@ -51,7 +52,7 @@ function timeAgo(iso: string): string {
   return `${weeks}w ago`;
 }
 
-export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false }: Props) {
+export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, disabled = false }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
@@ -105,7 +106,13 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triggerEdit]);
 
+  const isPending = todo.id.startsWith("temp-");
+
   const changeStatus = async (newStatus: TodoStatus) => {
+    if (disabled) {
+      addToast("You're offline — status changes aren't available right now", "warning");
+      return;
+    }
     const prevStatus = todo.status;
     const prevReason = todo.stale_reason;
     onOptimisticUpdate((todos) =>
@@ -123,6 +130,10 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   };
 
   const remove = async () => {
+    if (disabled) {
+      addToast("You're offline — deleting items isn't available right now", "warning");
+      return;
+    }
     onOptimisticUpdate((todos) => todos.filter((t) => t.id !== todo.id));
     try {
       await api.deleteTodo(todo.id);
@@ -134,6 +145,10 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   };
 
   const unpinOrder = async () => {
+    if (disabled) {
+      addToast("You're offline — changes aren't available right now", "warning");
+      return;
+    }
     onOptimisticUpdate((todos) =>
       todos.map((t) => t.id === todo.id ? { ...t, user_ordered: false } : t)
     );
@@ -149,6 +164,10 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   };
 
   const startEdit = () => {
+    if (disabled) {
+      addToast("You're offline — editing isn't available right now", "warning");
+      return;
+    }
     setEditText(todo.text);
     setEditing(true);
   };
@@ -259,7 +278,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   const isQueued = todo.run_status === "queued";
 
   return (
-    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${isQueued ? " todo-queued" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}`}>
+    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${isQueued ? " todo-queued" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}${isPending ? " todo-pending" : ""}`}>
       <div className="todo-content">
         <div className={`status-pills${pillsExpanded ? " expanded" : ""}`} ref={pillBarRef}>
           {STATUS_OPTIONS.map((opt) => {
@@ -325,6 +344,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
             ))}
           </span>
         )}
+        {isPending && <span className="pending-badge" title="Not sent — added while offline">not sent</span>}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <span className="run-spinner" title="Claude is working on this...">⟳</span>}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
@@ -342,22 +362,23 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
             ✓ {formatTime(todo.completed_at)}
           </span>
         )}
-        {(todo.source === "claude" || todo.source === "claude_run") && (
+        {todo.source === "claude" && (
           <span
             className={`badge badge-claude${todo.session_id ? " clickable" : ""}`}
             title={
-              todo.source === "claude_run"
-                ? "Completed by Claude run"
-                : todo.session_id
-                  ? `Click to copy session ID: ${todo.session_id}`
-                  : "Added by Claude"
+              todo.session_id
+                ? `Added by Claude — click to copy session ID: ${todo.session_id}`
+                : "Added by Claude"
             }
             onClick={() => {
               if (todo.session_id) {
                 navigator.clipboard.writeText(todo.session_id);
               }
             }}
-          >{todo.source === "claude_run" ? "⚡" : "🤖"}</span>
+          >🤖</span>
+        )}
+        {todo.completed_by_run && (
+          <span className="badge badge-claude" title="Completed by Claude run">⚡</span>
         )}
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-claude" title="Run by autopilot">🚀</span>
@@ -370,7 +391,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
           >{showOutput ? "▾" : "▸"}</button>
         )}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} />
+        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} disabled={disabled} />
         {todo.user_ordered && (
           <button className="btn-icon btn-unpin" onClick={unpinOrder} title="Unpin order — let the system reorder this item">📌</button>
         )}
@@ -379,7 +400,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
       {todo.status === "stale" && todo.stale_reason && (
         <span className="stale-reason">{todo.stale_reason}</span>
       )}
-      <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} />
+      <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} />
     </div>
   );
 }

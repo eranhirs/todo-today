@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
+import { apiErrorMessage } from "../errors";
 
 const ADD_MODE_KEY = "addTodoMode";
 type AddMode = "add" | "add-run";
@@ -18,9 +19,11 @@ interface Props {
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  disabled?: boolean;
+  isOffline?: boolean;
 }
 
-export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast, onOptimisticUpdate, inputRef }: Props) {
+export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false }: Props) {
   const [text, setText] = useState("");
   const [selectedProject, setSelectedProject] = useState(projectId ?? "");
   const [mode, setMode] = useState<AddMode>(getStoredMode);
@@ -140,6 +143,12 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     onOptimisticUpdate((todos) => [placeholder, ...todos]);
     setText("");
 
+    // If offline, keep the placeholder visible but don't try the API
+    if (isOffline) {
+      addToast("You're offline — item saved locally but not sent to server", "warning");
+      return;
+    }
+
     try {
       const created = await api.createTodo(pid, trimmed);
       if (shouldRun) {
@@ -151,8 +160,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
             addToast(`Added & running "${trimmed}"`, "info");
           }
         } catch (err) {
-          const msg = err instanceof Error ? err.message : "Unknown error";
-          addToast(`Added todo but failed to run: ${msg}`, "error");
+          addToast(`Added todo but failed to run: ${apiErrorMessage(err)}`, "error");
         }
       }
       onRefresh();
@@ -176,6 +184,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
           className="add-todo-project-select"
           value={selectedProject}
           onChange={(e) => setSelectedProject(e.target.value)}
+          disabled={disabled}
         >
           <option value="">Project...</option>
           {projects.map((p) => (
@@ -185,9 +194,10 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       )}
       <div className="add-todo-input-wrapper">
         <textarea
-          placeholder="Add a todo... (Shift+Enter for new line, # for tags)"
+          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Shift+Enter for new line, # for tags)"}
           value={text}
           rows={1}
+          disabled={disabled && !isOffline}
           onChange={(e) => setText(e.target.value)}
           ref={textareaRef}
           onKeyDown={(e) => {
@@ -243,10 +253,11 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
         )}
       </div>
       <div className="add-todo-split-btn" ref={dropdownRef}>
-        <button className="add-todo-main-btn" onClick={handleAdd}>{label}</button>
+        <button className="add-todo-main-btn" onClick={handleAdd} disabled={disabled && !isOffline}>{label}</button>
         <button
           className="add-todo-drop-toggle"
           onClick={() => setDropdownOpen((o) => !o)}
+          disabled={disabled && !isOffline}
           aria-label="Switch add mode"
         >
           ▾

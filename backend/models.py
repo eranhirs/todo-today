@@ -34,7 +34,8 @@ class Todo(BaseModel):
     project_id: str
     text: str
     status: TodoStatus = "next"
-    source: Literal["claude", "user", "claude_run"] = "user"
+    source: Literal["claude", "user"] = "user"
+    completed_by_run: bool = False
     emoji: Optional[str] = None
     session_id: Optional[str] = None
     created_at: str = Field(default_factory=_now)
@@ -59,6 +60,10 @@ class Todo(BaseModel):
             data["status"] = "completed" if completed else "next"
         elif isinstance(data, dict) and "completed" in data:
             data.pop("completed", None)
+        # Migrate legacy source="claude_run" to completed_by_run flag
+        if isinstance(data, dict) and data.get("source") == "claude_run":
+            data["source"] = "claude"
+            data.setdefault("completed_by_run", True)
         return data
 
 
@@ -197,7 +202,7 @@ class TodoUpdate(BaseModel):
     text: Optional[str] = None
     status: Optional[TodoStatus] = None
     project_id: Optional[str] = None
-    source: Optional[Literal["claude", "user", "claude_run"]] = None
+    source: Optional[Literal["claude", "user"]] = None
     stale_reason: Optional[str] = None
     user_ordered: Optional[bool] = None
 

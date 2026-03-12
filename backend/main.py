@@ -84,7 +84,7 @@ def _cleanup_stale_runs() -> None:
                             t.run_status = "done"
                             t.status = "completed"
                             t.completed_at = _now()
-                            t.source = "claude_run"
+                            t.completed_by_run = True
                         break
             process_manager.cleanup_output_file(Path(run_output_file))
         else:

@@ -19,6 +19,7 @@ interface UseKeyboardShortcutsOptions {
   setState: React.Dispatch<React.SetStateAction<FullState | null>>;
   refresh: () => Promise<void>;
   addToast: (text: string, type?: ToastType) => void;
+  isOffline?: boolean;
 }
 
 export function useKeyboardShortcuts({
@@ -28,6 +29,7 @@ export function useKeyboardShortcuts({
   setState,
   refresh,
   addToast,
+  isOffline = false,
 }: UseKeyboardShortcutsOptions) {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [focusedTodoId, setFocusedTodoId] = useState<string | null>(null);
@@ -146,6 +148,13 @@ export function useKeyboardShortcuts({
         return;
       }
 
+      // Block mutation shortcuts when offline
+      if (isOffline && focusedTodoId && (STATUS_KEYS[e.key] || e.key === "e" || e.key === "x" || e.key === "r")) {
+        e.preventDefault();
+        addToast("You're offline — changes aren't available right now", "warning");
+        return;
+      }
+
       // Status shortcuts 1-6
       if (STATUS_KEYS[e.key] && focusedTodoId) {
         e.preventDefault();
@@ -196,7 +205,7 @@ export function useKeyboardShortcuts({
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast, setState]);
+  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast, setState, isOffline]);
 
   return {
     showShortcuts,

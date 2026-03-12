@@ -1,18 +1,24 @@
 import type { Todo } from "../types";
 import { api } from "../api";
+import { apiErrorMessage } from "../errors";
 
 interface Props {
   todo: Todo;
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   projectBusy?: boolean;
+  disabled?: boolean;
 }
 
-export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false }: Props) {
+export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, disabled = false }: Props) {
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
 
   const runWithClaude = async () => {
+    if (disabled) {
+      addToast("You're offline — running tasks isn't available right now", "warning");
+      return;
+    }
     try {
       const result = await api.runTodo(todo.id);
       if (result.status === "queued") {
@@ -22,23 +28,29 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
       }
       onRefresh();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      addToast(msg, "error");
+      addToast(apiErrorMessage(err), "error");
     }
   };
 
   const dequeue = async () => {
+    if (disabled) {
+      addToast("You're offline — dequeuing isn't available right now", "warning");
+      return;
+    }
     try {
       await api.dequeueTodo(todo.id);
       addToast(`Removed "${todo.text}" from queue`, "info");
       onRefresh();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
-      addToast(msg, "error");
+      addToast(apiErrorMessage(err), "error");
     }
   };
 
   const stopRun = async () => {
+    if (disabled) {
+      addToast("You're offline — stopping tasks isn't available right now", "warning");
+      return;
+    }
     try {
       await api.stopTodo(todo.id);
       addToast(`Paused "${todo.text}" — use follow-up to continue`, "info");
@@ -72,7 +84,7 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
     <button
       className="btn-icon btn-run"
       onClick={runWithClaude}
-      title={projectBusy ? "Will be queued — another task is running" : "Run with Claude"}
+      title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Run with Claude"}
     >▶</button>
   );
 }

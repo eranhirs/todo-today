@@ -2,11 +2,7 @@
 
 A self-managing todo app powered by Claude. It watches your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions and automatically discovers what you're working on — marking tasks complete, suggesting next steps, and tracking new projects. With **Autopilot**, it goes further: Claude automatically picks up todos and works on them, creating a closed loop where analysis discovers work → Autopilot executes it → the cycle repeats.
 
-A built-in **Dashboard** gives you a bird's-eye view of everything: active vs. completed counts, completion rate, analysis cost, status distribution, a 14-day activity chart, and per-project workload with average completion times.
-
-![Dashboard](docs/images/dashboard.png)
-
-![Claude Todos screenshot](docs/images/screenshot.jpeg)
+![Claude Todos screenshot](docs/images/screenshot.png)
 
 ## How It Works
 
@@ -86,10 +82,13 @@ Open http://localhost:5173.
 - **Multi-project** — organize and filter todos across all your projects
 
 ### Monitoring & History
+- **Dashboard** — bird's-eye view: active vs. completed counts, completion rate, analysis cost, status distribution, 14-day activity chart, and per-project workload
 - **Analysis history** — expandable entries showing what changed each run, with full prompt/reasoning/response
 - **Cost tracking** — per-run and cumulative cost in USD, token counts, and duration
 - **Notifications** — in-app toasts and browser notifications for completed tasks, session events, and new waiting todos
 - **Notification log** — scrollable history of recent notifications in the sidebar
+
+![Dashboard](docs/images/dashboard.png)
 
 ## Sample Use Case: The Self-Improving Loop
 

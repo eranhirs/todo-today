@@ -16,9 +16,10 @@ interface Props {
   focusedTodoId?: string | null;
   editingTodoId?: string | null;
   addInputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  isOffline?: boolean;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef, isOffline = false }: Props) {
   const [showUpNext, setShowUpNext] = useState(true);
   const [showBacklog, setShowBacklog] = useState(true);
   const [showDone, setShowDone] = useState(true);
@@ -187,7 +188,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     items.map((t) => (
       <div
         key={t.id}
-        draggable
+        draggable={!isOffline}
         onDragStart={(e) => {
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", t.id);
@@ -200,7 +201,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       >
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} />
+        <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} disabled={isOffline} />
       </div>
     ));
 
@@ -210,9 +211,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       {summary && <p className="project-summary">{summary}</p>}
 
       {selectedProjectId ? (
-        <AddTodo projectId={selectedProjectId} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />
+        <AddTodo projectId={selectedProjectId} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} />
       ) : (
-        <AddTodo projects={projects} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} />
+        <AddTodo projects={projects} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} />
       )}
 
       {allTags.length > 0 && (
@@ -286,7 +287,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                 {items.map((t) => (
                   <div key={t.id}>
                     {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                    <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} />
+                    <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} disabled={isOffline} />
                   </div>
                 ))}
               </div>

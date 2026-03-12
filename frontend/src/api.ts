@@ -1,20 +1,27 @@
 import type { FullState, Project, SessionInfo, Settings, SettingsUpdate, Todo, TodoStatus } from "./types";
+import { ApiError } from "./errors";
 
 const BASE = "/api";
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...opts,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      headers: { "Content-Type": "application/json" },
+      ...opts,
+    });
+  } catch (err) {
+    throw ApiError.networkError(err);
+  }
   if (!res.ok) {
-    // Try to extract detail from FastAPI error response
     let detail = `${res.status} ${res.statusText}`;
+    let errorCode: string | null = null;
     try {
       const body = await res.json();
       if (body.detail) detail = body.detail;
+      if (body.error_code) errorCode = body.error_code;
     } catch { /* ignore parse errors */ }
-    throw new Error(detail);
+    throw ApiError.fromResponse(res.status, detail, errorCode);
   }
   if (res.status === 204) return undefined as T;
   return res.json();

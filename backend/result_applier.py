@@ -33,53 +33,6 @@ def _extract_emoji(text: str) -> tuple[str | None, str]:
     return None, text
 
 
-_STOPWORDS = frozenset({
-    "a", "an", "the", "is", "was", "are", "were", "to", "for", "of", "in",
-    "on", "and", "or", "it", "its", "that", "this", "with", "as", "by",
-    "be", "do", "not", "no", "now", "via", "from", "has", "had", "have",
-})
-
-
-def _significant_words(text: str) -> set[str]:
-    """Extract significant (non-stop) words from text, lowercased."""
-    words = set(re.findall(r"[a-z]{3,}", text.lower()))
-    return words - _STOPWORDS
-
-
-def _find_similar_todo(new_text: str, existing_todos: list["Todo"]) -> "Todo | None":
-    """Find an existing non-completed, non-rejected todo that overlaps significantly.
-
-    Returns the best matching todo if word overlap >= 50%, else None.
-    Only considers active todos (not completed/rejected) to avoid false matches.
-    """
-    new_words = _significant_words(new_text)
-    if not new_words:
-        return None
-
-    best_todo = None
-    best_score = 0.0
-    best_overlap = 0
-
-    for t in existing_todos:
-        if t.status in ("completed", "rejected"):
-            continue
-        existing_words = _significant_words(t.text)
-        if not existing_words:
-            continue
-        overlap = len(new_words & existing_words)
-        # Overlap relative to the smaller set
-        smaller = min(len(new_words), len(existing_words))
-        score = overlap / smaller if smaller > 0 else 0.0
-        if score > best_score:
-            best_score = score
-            best_overlap = overlap
-            best_todo = t
-
-    # Require at least 2 overlapping significant words and 30% overlap ratio
-    if best_score >= 0.30 and best_overlap >= 2:
-        return best_todo
-    return None
-
 
 def _resolve_project_id(pid: str, projects: list) -> str | None:
     """Resolve a possibly-wrong project identifier to a valid project ID.
@@ -220,7 +173,6 @@ def _apply_result(
 
     # Add new todos — project_id is set automatically
     existing_texts = {(t.project_id, t.text.lower()) for t in ctx.store.todos}
-    project_todos = [t for t in ctx.store.todos if t.project_id == project_id]
     # Collect known tags so Claude can't introduce new ones
     known_tags = set()
     for t in ctx.store.todos:
@@ -242,28 +194,6 @@ def _apply_result(
 
         if (project_id, text.lower()) in existing_texts:
             continue
-
-        # Skip new completed todos that overlap heavily with an existing todo —
-        # the analyzer should mark the existing todo completed instead of creating
-        # a rephrased duplicate.
-        if nt.status == "completed":
-            duplicate = _find_similar_todo(text, project_todos)
-            if duplicate is not None:
-                log.info(
-                    "Skipping duplicate completed todo %r — similar to existing %s %r; "
-                    "marking existing as completed instead",
-                    text, duplicate.id, duplicate.text,
-                )
-                if duplicate.status != "completed" and duplicate.status != "rejected":
-                    duplicate.status = "completed"
-                    duplicate.completed_at = _now()
-                    counters.todos_completed += 1
-                    counters.completed_todo_ids.append(duplicate.id)
-                    counters.completed_todo_texts.append(duplicate.text)
-                # Add emoji to the existing todo if it doesn't have one
-                if emoji and not duplicate.emoji:
-                    duplicate.emoji = emoji
-                continue
 
         todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=nt.session_id, emoji=emoji)
         if nt.status == "completed":

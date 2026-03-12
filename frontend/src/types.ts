@@ -13,7 +13,8 @@ export interface Todo {
   project_id: string;
   text: string;
   status: TodoStatus;
-  source: "claude" | "user" | "claude_run";
+  source: "claude" | "user";
+  completed_by_run: boolean;
   emoji: string | null;
   session_id: string | null;
   created_at: string;

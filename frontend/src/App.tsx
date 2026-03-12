@@ -39,6 +39,7 @@ function App() {
     switchView,
     refresh,
     optimisticUpdate,
+    isOffline,
   } = useAppState({
     notifyNewWaitingTodos,
     notifyRunCompletions,
@@ -62,6 +63,7 @@ function App() {
     setState,
     refresh,
     addToast,
+    isOffline,
   });
 
   const [showInsightsDropdown, setShowInsightsDropdown] = useState(false);
@@ -83,6 +85,11 @@ function App() {
 
   return (
     <div className="app">
+      {isOffline && (
+        <div className="offline-banner">
+          Server unreachable — you can still add items, but updates are disabled until reconnected
+        </div>
+      )}
       {toasts.length > 0 && (
         <div className="toast-container">
           {toasts.map((t) => (
@@ -231,6 +238,7 @@ function App() {
             focusedTodoId={focusedTodoId}
             editingTodoId={editingTodoId}
             addInputRef={addInputRef}
+            isOffline={isOffline}
           />
         )}
       </main>

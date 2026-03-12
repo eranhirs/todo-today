@@ -621,6 +621,7 @@ body {
   align-items: center;
   gap: 10px;
   flex: 1;
+  min-width: 0;
 }
 
 /* Status pill bar */
@@ -710,7 +711,7 @@ body {
   border-radius: 4px;
   padding: 2px 6px;
   outline: none;
-  flex: 1;
+  width: 100%;
   min-width: 0;
   resize: none;
   line-height: 1.4;
@@ -1232,6 +1233,47 @@ body {
 .toggle-row input[type="checkbox"] {
   accent-color: var(--accent);
   cursor: pointer;
+}
+
+/* Offline banner */
+
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  background: #d32f2f;
+  color: #fff;
+  text-align: center;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+/* Pending (not-sent) todo items — added while offline */
+.todo-item.todo-pending {
+  opacity: 0.45;
+  border-left: 3px dashed var(--text-dim) !important;
+}
+
+.todo-item.todo-pending .todo-text {
+  font-style: italic;
+}
+
+.pending-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--amber);
+  background: rgba(253, 203, 110, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-left: 6px;
+  vertical-align: middle;
 }
 
 /* Toast notifications */
@@ -2067,6 +2109,15 @@ body {
 
 .todo-drag-wrapper:active {
   cursor: grabbing;
+}
+
+.todo-drag-wrapper .run-output,
+.todo-drag-wrapper .followup-bar {
+  cursor: auto;
+}
+
+.todo-drag-wrapper .run-output pre {
+  cursor: text;
 }
 
 .todo-drag-wrapper.drop-above::before {

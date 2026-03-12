@@ -26,11 +26,11 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent.parent
 IMAGES_DIR = ROOT / "docs" / "images"
 
-# Match the existing screenshot dimensions
-VIEWPORT = {"width": 1600, "height": 900}
+# Smaller viewport = larger text relative to image size (zoomed-in feel)
+VIEWPORT = {"width": 1100, "height": 650}
 
 # Time to let the app render and settle (polls, animations)
-SETTLE_SECONDS = 3
+SETTLE_SECONDS = 5
 
 
 def take_screenshot(port: int, output_dir: Path) -> list[Path]:
@@ -42,7 +42,7 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
 
         url = f"http://localhost:{port}"
         print(f"Loading {url} ...")
-        page.goto(url, wait_until="networkidle")
+        page.goto(url, wait_until="load", timeout=60000)
 
         # Let polling and animations settle
         time.sleep(SETTLE_SECONDS)
@@ -55,17 +55,11 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
 
         paths = []
 
-        # Full-page screenshot (PNG for quality)
+        # Full-page screenshot
         png_path = output_dir / "screenshot.png"
         page.screenshot(path=str(png_path), full_page=False)
         paths.append(png_path)
         print(f"  Saved {png_path}")
-
-        # JPEG version for README (smaller file size)
-        jpeg_path = output_dir / "screenshot.jpeg"
-        page.screenshot(path=str(jpeg_path), full_page=False, type="jpeg", quality=90)
-        paths.append(jpeg_path)
-        print(f"  Saved {jpeg_path}")
 
         # Autopilot detail — crop to the project list area
         project_list = page.locator(".project-list").first
@@ -75,18 +69,19 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
             paths.append(autopilot_path)
             print(f"  Saved {autopilot_path}")
 
-        # Dashboard view screenshot
+        # Dashboard view screenshot — wider viewport so content is readable
+        DASHBOARD_VIEWPORT = {"width": 1400, "height": 750}
+        dash_page = browser.new_page(viewport=DASHBOARD_VIEWPORT, device_scale_factor=2)
         dashboard_url = f"{url}?view=dashboard"
         print(f"Loading dashboard: {dashboard_url} ...")
-        page.goto(dashboard_url, wait_until="networkidle")
+        dash_page.goto(dashboard_url, wait_until="load", timeout=60000)
         time.sleep(SETTLE_SECONDS)
 
-        dashboard_el = page.locator(".dashboard").first
-        if dashboard_el.count() > 0:
-            dashboard_path = output_dir / "dashboard.png"
-            dashboard_el.screenshot(path=str(dashboard_path))
-            paths.append(dashboard_path)
-            print(f"  Saved {dashboard_path}")
+        dashboard_path = output_dir / "dashboard.png"
+        dash_page.screenshot(path=str(dashboard_path), full_page=False)
+        paths.append(dashboard_path)
+        print(f"  Saved {dashboard_path}")
+        dash_page.close()
 
         browser.close()
 

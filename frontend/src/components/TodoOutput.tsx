@@ -7,9 +7,10 @@ interface Props {
   showOutput: boolean;
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
+  disabled?: boolean;
 }
 
-export function TodoOutput({ todo, showOutput, onRefresh, addToast }: Props) {
+export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = false }: Props) {
   const [followupText, setFollowupText] = useState("");
   const outputRef = useRef<HTMLPreElement>(null);
   const followupRef = useRef<HTMLInputElement>(null);
@@ -33,6 +34,10 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast }: Props) {
   }, [todo.run_status, showOutput]);
 
   const sendFollowup = async () => {
+    if (disabled) {
+      addToast("You're offline — follow-ups aren't available right now", "warning");
+      return;
+    }
     const msg = followupText.trim();
     if (!msg) return;
     try {
@@ -56,6 +61,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast }: Props) {
       {todo.run_output && (
         <div
           className="run-output"
+          draggable={false}
           onMouseDown={(e) => e.stopPropagation()}
           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
@@ -63,12 +69,13 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast }: Props) {
         </div>
       )}
       {showFollowup && (
-        <div className="followup-bar" onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+        <div className="followup-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
           <input
             ref={followupRef}
             className="followup-input"
-            placeholder={todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
+            placeholder={disabled ? "Server offline — changes disabled" : todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
             value={followupText}
+            disabled={disabled}
             onChange={(e) => setFollowupText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
@@ -77,7 +84,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast }: Props) {
               }
             }}
           />
-          <button className="btn-icon btn-run" onClick={sendFollowup} title="Send follow-up">↵</button>
+          <button className="btn-icon btn-run" onClick={sendFollowup} disabled={disabled} title="Send follow-up">↵</button>
         </div>
       )}
     </>
