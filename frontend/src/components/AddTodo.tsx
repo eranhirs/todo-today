@@ -128,6 +128,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       text: trimmed,
       status: "next",
       source: "user",
+      completed_by_run: false,
       emoji: null,
       session_id: null,
       created_at: new Date().toISOString(),

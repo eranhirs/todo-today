@@ -364,7 +364,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         )}
         {todo.source === "claude" && (
           <span
-            className={`badge badge-claude${todo.session_id ? " clickable" : ""}`}
+            className={`badge badge-source${todo.session_id ? " clickable" : ""}`}
             title={
               todo.session_id
                 ? `Added by Claude — click to copy session ID: ${todo.session_id}`
@@ -378,10 +378,14 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
           >🤖</span>
         )}
         {todo.completed_by_run && (
-          <span className="badge badge-claude" title="Completed by Claude run">⚡</span>
+          <span className="badge badge-run" title={
+            todo.run_trigger === "autopilot"
+              ? "Completed by autopilot run"
+              : "Completed by manual Claude run"
+          }>⚡</span>
         )}
         {todo.run_trigger === "autopilot" && (
-          <span className="badge badge-claude" title="Run by autopilot">🚀</span>
+          <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
         )}
         {todo.run_output && (
           <button
