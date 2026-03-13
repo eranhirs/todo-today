@@ -39,18 +39,7 @@ cd claude-todos
 
 Open http://localhost:5151.
 
-### Option 3: Development mode (with hot reload)
-
-```bash
-# Terminal 1
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m uvicorn backend.main:app --port 5151
-
-# Terminal 2
-cd frontend && npm install && npm run dev
-```
-
-Open http://localhost:5173.
+For development with hot reload, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Features
 
