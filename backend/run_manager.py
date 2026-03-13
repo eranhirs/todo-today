@@ -257,15 +257,19 @@ def _invoke_claude(
     session_header: str,
     output_file: Path,
     resume: bool = False,
+    plan_only: bool = False,
 ) -> tuple[Optional[dict], list[dict], int]:
     """Run a single claude -p invocation with a detached subprocess writing to output_file.
 
     Returns (final_result, stream_objects, returncode).
     """
+    disallowed = ["AskUserQuestion"]
+    if plan_only:
+        disallowed.extend(["Edit", "Write", "Bash", "NotebookEdit"])
     cmd = [
         "claude", "-p", "--output-format", "stream-json", "--verbose",
         "--dangerously-skip-permissions",
-        "--disallowedTools", "AskUserQuestion",
+        "--disallowedTools", ",".join(disallowed),
         "--model", model,
     ]
     if resume:
@@ -381,16 +385,23 @@ def _tail_output_file(
 # ── Run orchestration ────────────────────────────────────────────
 
 
-def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "") -> None:
+def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "", plan_only: bool = False) -> None:
     """Background thread: run claude -p, auto-accepting plan mode if needed."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         session_id = str(uuid.uuid4())
-        prompt = (
-            f"Implement this task fully — write all the code, make all the changes, "
-            f"do not stop to ask for feedback or approval: {todo_text}"
-        )
+        if plan_only:
+            prompt = (
+                f"Plan this task — explore the codebase, understand the requirements, "
+                f"and create a detailed step-by-step implementation plan. "
+                f"Do NOT write any code or make any changes. Only plan: {todo_text}"
+            )
+        else:
+            prompt = (
+                f"Implement this task fully — write all the code, make all the changes, "
+                f"do not stop to ask for feedback or approval: {todo_text}"
+            )
         session_header = f"Session: {session_id}\n\n"
         accumulated: list[str] = []
 
@@ -410,7 +421,8 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         final_result = None
         returncode = 0
 
-        for attempt in range(_MAX_PLAN_RETRIES + 1):
+        max_retries = 0 if plan_only else _MAX_PLAN_RETRIES
+        for attempt in range(max_retries + 1):
             is_resume = attempt > 0
             if is_resume:
                 prompt = "Plan accepted. Now implement it fully."
@@ -420,13 +432,14 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             final_result, stream_objects, returncode = _invoke_claude(
                 todo_id, prompt, session_id, source_path, model, env,
                 accumulated, session_header, output_file, resume=is_resume,
+                plan_only=plan_only,
             )
 
             if returncode != 0:
                 break
 
-            # If Claude exited plan mode, auto-accept and continue
-            if _detect_exit_plan_mode(stream_objects) and attempt < _MAX_PLAN_RETRIES:
+            # If Claude exited plan mode, auto-accept and continue (unless plan_only)
+            if not plan_only and _detect_exit_plan_mode(stream_objects) and attempt < max_retries:
                 continue
 
             # Otherwise we're done
@@ -437,7 +450,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         if returncode != 0 and _is_quota_error(all_output):
             _handle_quota_error(todo_id, all_output, output_file)
         else:
-            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
+            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only)
 
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
@@ -452,6 +465,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                         t.run_output = err_str
                         t.run_pid = None
                         t.run_output_file = None
+                        t.is_read = False
                         break
             process_manager.cleanup_output_file(output_file)
     finally:
@@ -523,6 +537,7 @@ def _finalize_run(
     accumulated: list[str],
     session_header: str,
     output_file: Path,
+    plan_only: bool = False,
 ) -> None:
     """Apply the final result of a claude run to the todo and clean up."""
     if returncode != 0:
@@ -557,9 +572,15 @@ def _finalize_run(
                 t.run_output = (session_header + output_text)[:50000]
                 t.run_pid = None
                 t.run_output_file = None
+                t.is_read = False
                 if had_errors:
                     t.run_status = "error"
                     bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)
+                elif plan_only:
+                    # Plan-only runs produce a plan but don't complete the todo
+                    t.run_status = "done"
+                    t.status = "next"
+                    bus.emit_event_sync(EventType.RUN_COMPLETED, todo_id=todo_id)
                 else:
                     t.run_status = "done"
                     t.status = "completed"
@@ -740,8 +761,9 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         todo_text = todo.text
         proj_id = todo.project_id
         run_model = ctx.metadata.run_model
+        is_plan_only = todo.plan_only
 
-    process_manager.spawn_thread(todo_id, _run_claude_for_todo, (todo_id, todo_text, source_path, run_model, proj_id))
+    process_manager.spawn_thread(todo_id, _run_claude_for_todo, (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only))
     return None
 
 
@@ -786,6 +808,7 @@ def _process_queue(project_id: str) -> None:
         todo_id = candidate.id
         todo_text = candidate.text
         run_model = ctx.metadata.run_model
+        is_plan_only = candidate.plan_only
 
         # Check if this is a queued follow-up (has pending_followup and session_id)
         followup_msg = candidate.pending_followup
@@ -804,7 +827,7 @@ def _process_queue(project_id: str) -> None:
     else:
         process_manager.spawn_thread(
             todo_id, _run_claude_for_todo,
-            (todo_id, todo_text, source_path, run_model, project_id),
+            (todo_id, todo_text, source_path, run_model, project_id, is_plan_only),
         )
     log.info("Queue: auto-started todo %s for project %s", todo_id, project_id)
 

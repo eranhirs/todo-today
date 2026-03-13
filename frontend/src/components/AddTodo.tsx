@@ -3,13 +3,7 @@ import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
 
-const ADD_MODE_KEY = "addTodoMode";
-type AddMode = "add" | "add-run";
-
-function getStoredMode(): AddMode {
-  const v = localStorage.getItem(ADD_MODE_KEY);
-  return v === "add-run" ? "add-run" : "add";
-}
+type AddMode = "add" | "add-run" | "add-plan";
 
 interface Props {
   projectId?: string;
@@ -26,7 +20,7 @@ interface Props {
 export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false }: Props) {
   const [text, setText] = useState("");
   const [selectedProject, setSelectedProject] = useState(projectId ?? "");
-  const [mode, setMode] = useState<AddMode>(getStoredMode);
+  const [mode, setMode] = useState<AddMode>("add");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
@@ -34,6 +28,26 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
   const textareaRef = inputRef ?? localRef;
   const dropdownRef = useRef<HTMLDivElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
+  const [modifierHeld, setModifierHeld] = useState(false);
+
+  // Track Cmd/Ctrl held state for button label
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.key === "Meta" || e.key === "Control") setModifierHeld(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === "Meta" || e.key === "Control") setModifierHeld(false);
+    };
+    const blur = () => setModifierHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
 
   // Auto-resize textarea to fit content
   useEffect(() => {
@@ -106,11 +120,10 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
 
   const switchMode = (m: AddMode) => {
     setMode(m);
-    localStorage.setItem(ADD_MODE_KEY, m);
     setDropdownOpen(false);
   };
 
-  const handleAdd = async () => {
+  const handleAdd = async (overrideMode?: AddMode) => {
     const trimmed = text.trim();
     const pid = projectId ?? selectedProject;
     if (!trimmed || !pid) {
@@ -118,7 +131,9 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       return;
     }
 
-    const shouldRun = mode === "add-run";
+    const activeMode = overrideMode ?? mode;
+    const shouldRun = activeMode === "add-run" || activeMode === "add-plan";
+    const planOnly = activeMode === "add-plan";
 
     // Optimistic placeholder
     const tempId = `temp-${Date.now()}`;
@@ -136,6 +151,8 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       run_output: null,
       run_status: shouldRun ? "queued" : null,
       run_trigger: shouldRun ? "manual" : null,
+      is_read: true,
+      plan_only: planOnly,
       sort_order: -Infinity,
       user_ordered: false,
       stale_reason: null,
@@ -151,14 +168,14 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     }
 
     try {
-      const created = await api.createTodo(pid, trimmed);
+      const created = await api.createTodo(pid, trimmed, planOnly);
       if (shouldRun) {
         try {
           const result = await api.runTodo(created.id);
           if (result.status === "queued") {
-            addToast(`Added & queued "${trimmed}"`, "info");
+            addToast(`Added & queued "${trimmed}"${planOnly ? " (plan only)" : ""}`, "info");
           } else {
-            addToast(`Added & running "${trimmed}"`, "info");
+            addToast(`Added & ${planOnly ? "planning" : "running"} "${trimmed}"`, "info");
           }
         } catch (err) {
           addToast(`Added todo but failed to run: ${apiErrorMessage(err)}`, "error");
@@ -174,9 +191,11 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
 
   const needsProjectSelector = !projectId && projects && projects.length > 0;
 
-  const label = mode === "add-run" ? "Add & Run" : "Add";
-  const altLabel = mode === "add-run" ? "Add" : "Add & Run";
-  const altMode: AddMode = mode === "add-run" ? "add" : "add-run";
+  const effectiveMode = modifierHeld ? "add-run" : mode;
+  const modeLabels: Record<AddMode, string> = { "add": "Add", "add-run": "Add & Run", "add-plan": "Add & Plan" };
+  const label = modeLabels[effectiveMode];
+  // Show the other two modes in the dropdown
+  const altModes = (["add", "add-run", "add-plan"] as AddMode[]).filter((m) => m !== effectiveMode);
 
   return (
     <div className="add-todo">
@@ -195,7 +214,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       )}
       <div className="add-todo-input-wrapper">
         <textarea
-          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Shift+Enter for new line, # for tags)"}
+          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Ctrl+Enter to add & run, # for tags)"}
           value={text}
           rows={1}
           disabled={disabled && !isOffline}
@@ -230,6 +249,11 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
             if (e.key === "Enter" && e.shiftKey) {
               return; // Allow newline
             }
+            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              handleAdd("add-run");
+              return;
+            }
             if (e.key === "Enter") {
               e.preventDefault();
               handleAdd();
@@ -254,7 +278,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
         )}
       </div>
       <div className="add-todo-split-btn" ref={dropdownRef}>
-        <button className="add-todo-main-btn" onClick={handleAdd} disabled={disabled && !isOffline}>{label}</button>
+        <button className="add-todo-main-btn" onClick={() => handleAdd(effectiveMode)} disabled={disabled && !isOffline}>{label}</button>
         <button
           className="add-todo-drop-toggle"
           onClick={() => setDropdownOpen((o) => !o)}
@@ -265,7 +289,9 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
         </button>
         {dropdownOpen && (
           <div className="add-todo-dropdown">
-            <button onClick={() => switchMode(altMode)}>{altLabel}</button>
+            {altModes.map((m) => (
+              <button key={m} onClick={() => switchMode(m)}>{modeLabels[m]}</button>
+            ))}
           </div>
         )}
       </div>

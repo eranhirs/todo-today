@@ -13,7 +13,7 @@ from .models import (
     _now,
 )
 from .storage import StorageContext
-from .tags import filter_unknown_tags, parse_tags
+from .tags import parse_tags, strip_tags_from_text
 
 log = logging.getLogger(__name__)
 
@@ -173,10 +173,6 @@ def _apply_result(
 
     # Add new todos — project_id is set automatically
     existing_texts = {(t.project_id, t.text.lower()) for t in ctx.store.todos}
-    # Collect known tags so Claude can't introduce new ones
-    known_tags = set()
-    for t in ctx.store.todos:
-        known_tags.update(parse_tags(t.text))
     for nt in result.new_todos:
         # Strip leftover "Next:"/"Consider:" prefixes defensively
         text = re.sub(r"^(Next|Consider|Waiting|Stale):\s*", "", nt.text, flags=re.IGNORECASE)
@@ -184,8 +180,8 @@ def _apply_result(
         # Extract leading emoji from text
         emoji, text = _extract_emoji(text)
 
-        # Strip tags that don't already exist — Claude can use existing tags but not create new ones
-        text = filter_unknown_tags(text, known_tags)
+        # Strip all hashtags — the analyzer must not introduce any tags
+        text = strip_tags_from_text(text)
 
         # Drop waiting todos for sessions that don't need user action
         if nt.status == "waiting" and nt.session_id and nt.session_id not in _actionable_sessions:
@@ -224,6 +220,12 @@ def _apply_result(
         changed = False
         if mod.text is not None and mod.text != t.text:
             emoji, clean_text = _extract_emoji(mod.text)
+            # Strip all hashtags from analyzer output, then re-append the
+            # original todo's tags so user-assigned hashtags are preserved.
+            original_tags = parse_tags(t.text)
+            clean_text = strip_tags_from_text(clean_text)
+            if original_tags:
+                clean_text = clean_text + " " + " ".join(f"#{tag}" for tag in original_tags)
             t.text = clean_text
             if emoji:
                 t.emoji = emoji

@@ -736,7 +736,17 @@ body {
 .badge-source { font-size: 0.8rem; }
 .badge-source.clickable { cursor: pointer; }
 .badge-source.clickable:hover { opacity: 0.7; }
-.badge-run { font-size: 0.8rem; }
+.badge-run {
+  font-size: 0.8rem;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: opacity 0.2s, filter 0.2s;
+}
+.badge-read-toggle { opacity: 1; filter: saturate(1.5) brightness(1.2); }
+.badge-read-toggle.is-read { opacity: 0.3; filter: saturate(0) brightness(0.8); }
+.badge-read-toggle:hover { opacity: 0.7; }
 .badge-autopilot { font-size: 0.8rem; }
 
 .todo-project-label {
@@ -1200,21 +1210,6 @@ body {
   flex-shrink: 0;
 }
 
-.sse-status {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-  font-size: 0.75rem;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.sse-label {
-  color: var(--text-dim);
-}
-.sse-count {
-  opacity: 0.6;
-}
 
 .analysis-toggles {
   margin-top: 8px;
@@ -1502,6 +1497,15 @@ body {
   text-transform: uppercase;
   font-weight: 600;
   color: var(--yellow, #e5c07b);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.plan-only-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--blue);
   letter-spacing: 0.03em;
   flex-shrink: 0;
 }

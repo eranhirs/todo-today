@@ -12,8 +12,6 @@ import uuid as _uuid
 from .models import ClaudeAnalysisResult, Project
 from .session_state import _format_session_state_line
 from .storage import StorageContext
-from .tags import parse_tags
-
 log = logging.getLogger(__name__)
 
 
@@ -54,20 +52,6 @@ def _build_project_prompt(
         parts.append(json.dumps([{"id": t["id"], "text": t["text"]} for t in rejected_todos], indent=2))
         parts.append("")
 
-    # Collect all existing hashtags from all todos (including rejected) so Claude
-    # knows which tags are available.  Claude-generated todos have unknown tags
-    # stripped by result_applier, so this list defines what it may use.
-    all_tags: set[str] = set()
-    for t in todos:
-        all_tags.update(parse_tags(t.get("text", "")))
-    if all_tags:
-        sorted_tags = sorted(all_tags)
-        parts.append("## Existing Hashtags\n")
-        parts.append("These hashtags are already in use. Reuse them on new and modified todos when relevant. "
-                      "Do NOT invent new hashtags — only use tags from this list.\n")
-        parts.append(" ".join(f"#{tag}" for tag in sorted_tags))
-        parts.append("")
-
     if insights:
         parts.append("## Active Insights\n")
         parts.append(json.dumps(insights, indent=2))
@@ -103,11 +87,11 @@ Based on the session activity above, return a JSON object with:
 Important:
 - **NEVER create a new todo that covers the same work as an existing todo — regardless of status.** If an existing todo already describes the work (even approximately), use `completed_todo_ids`, `status_updates`, or `modified_todos` to update it. Do NOT create a rephrased version. This applies to ALL statuses — completed, next, in_progress, consider, etc. For example: if an existing todo says "Put the reject option as a status", do NOT create "Removed reject button — now uses status pills" or "Implement reject as a status option". Just update the existing todo.
 - **Do NOT rename todos to past tense.** When marking a todo as completed, leave its text as-is. The status field already indicates completion — rewriting "Add dark mode" to "Added dark mode" is unnecessary.
-- **Adding emoji and hashtags is always welcome.** Use `modified_todos` to add an emoji or relevant hashtags to any existing todo that lacks them, regardless of its status. This is purely cosmetic and does not count as a status change.
+- **Adding emoji is always welcome.** Use `modified_todos` to add an emoji to any existing todo that lacks one, regardless of its status. This is purely cosmetic and does not count as a status change. Do NOT add hashtags — only users may create or assign hashtags.
 - Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
 - Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
 - **Prefix every todo `text` with a single relevant emoji** that represents the nature of the work (e.g. 🐛 for bug fixes, ✨ for new features, ♻️ for refactoring, 🧪 for tests, 📝 for docs, 🔧 for config, 🎨 for styling, 🚀 for deployment, etc.). The emoji will be parsed out automatically.
-- **Use hashtags for categorization.** Append relevant hashtags from the "Existing Hashtags" section to todo text (e.g. "✨ Add dark mode toggle #frontend #ui"). Apply this to both new todos AND when editing existing todos via `modified_todos` — if an existing todo has no hashtags but a relevant one exists, add it. Only use hashtags that already exist — unknown tags will be stripped automatically. If no existing hashtag fits, omit hashtags rather than inventing new ones. When modifying an existing todo's text, preserve any hashtags it already has.
+- **Do NOT use hashtags.** Hashtags are reserved for users only. Do not include any #hashtags in todo text — they will be stripped automatically. When modifying an existing todo's text, preserve any hashtags it already has.
 - Only create a `"waiting"` todo when a session needs user action: `waiting_for_user` (Claude asked a question) or `waiting_for_tool_approval` (Claude wants to run a tool and needs approval). Use the format "Respond to Claude: <brief description of what it's asking or wants to do>". Do NOT create waiting todos for `active` sessions (a tool ran and Claude is continuing) — those don't need user action.
 - Don't duplicate existing todos or existing insights
 - **Rejected todos are off-limits.** If a todo appears in the "Rejected Todos" section, the user explicitly said no. Do NOT create new todos that cover the same idea, even with different wording. Do NOT include rejected todo IDs in any action list.

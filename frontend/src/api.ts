@@ -41,13 +41,13 @@ export const api = {
 
   getTags: () => request<string[]>("/todos/tags"),
 
-  createTodo: (project_id: string, text: string) =>
+  createTodo: (project_id: string, text: string, plan_only = false) =>
     request<Todo>("/todos", {
       method: "POST",
-      body: JSON.stringify({ project_id, text }),
+      body: JSON.stringify({ project_id, text, plan_only }),
     }),
 
-  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean }) =>
+  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean; is_read?: boolean }) =>
     request<Todo>(`/todos/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),

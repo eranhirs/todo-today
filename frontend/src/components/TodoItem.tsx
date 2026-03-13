@@ -345,8 +345,9 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
           </span>
         )}
         {isPending && <span className="pending-badge" title="Not sent — added while offline">not sent</span>}
+        {todo.plan_only && <span className="plan-only-badge" title="Plan only — agent will plan but not implement">plan</span>}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
-        {isRunning && <span className="run-spinner" title="Claude is working on this...">⟳</span>}
+        {isRunning && <span className="run-spinner" title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."}>⟳</span>}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
       </div>
       <div className="todo-meta">
@@ -378,11 +379,26 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
           >🤖</span>
         )}
         {todo.completed_by_run && (
-          <span className="badge badge-run" title={
-            todo.run_trigger === "autopilot"
-              ? "Completed by autopilot run"
-              : "Completed by manual Claude run"
-          }>⚡</span>
+          <button
+            className={`badge badge-run badge-read-toggle${todo.is_read ? " is-read" : ""}`}
+            title={todo.is_read ? "Mark as unread" : "Mark as read"}
+            onClick={async (e) => {
+              e.stopPropagation();
+              const newVal = !todo.is_read;
+              onOptimisticUpdate((todos) =>
+                todos.map((t) => t.id === todo.id ? { ...t, is_read: newVal } : t)
+              );
+              try {
+                await api.updateTodo(todo.id, { is_read: newVal });
+                onRefresh();
+              } catch {
+                onOptimisticUpdate((todos) =>
+                  todos.map((t) => t.id === todo.id ? { ...t, is_read: !newVal } : t)
+                );
+                addToast("Failed to toggle read status", "error");
+              }
+            }}
+          >⚡</button>
         )}
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
@@ -390,7 +406,19 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         {todo.run_output && (
           <button
             className="btn-icon btn-output"
-            onClick={() => setShowOutput(!showOutput)}
+            onClick={async () => {
+              const willShow = !showOutput;
+              setShowOutput(willShow);
+              if (willShow && !todo.is_read && todo.completed_by_run) {
+                onOptimisticUpdate((todos) =>
+                  todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
+                );
+                try {
+                  await api.updateTodo(todo.id, { is_read: true });
+                  onRefresh();
+                } catch { /* silent — not critical */ }
+              }
+            }}
             title="View Claude output"
           >{showOutput ? "▾" : "▸"}</button>
         )}

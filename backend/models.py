@@ -47,6 +47,8 @@ class Todo(BaseModel):
     run_output_file: Optional[str] = None
     queued_at: Optional[str] = None
     pending_followup: Optional[str] = None
+    is_read: bool = True  # Whether the user has seen the run output
+    plan_only: bool = False  # When True, agent plans but cannot implement
     sort_order: int = 0
     user_ordered: bool = False
     stale_reason: Optional[str] = None
@@ -196,6 +198,7 @@ class TodoCreate(BaseModel):
     project_id: str
     text: str
     status: TodoStatus = "next"
+    plan_only: bool = False
 
 
 class TodoUpdate(BaseModel):
@@ -205,6 +208,7 @@ class TodoUpdate(BaseModel):
     source: Optional[Literal["claude", "user"]] = None
     stale_reason: Optional[str] = None
     user_ordered: Optional[bool] = None
+    is_read: Optional[bool] = None
 
 
 class TodoReorder(BaseModel):

@@ -46,9 +46,7 @@ function App() {
     notifyHookEvents,
   });
 
-  const { connected: sseConnected, eventCount: sseEventCount } = useEventBus({
-    onRefreshNeeded: refresh,
-  });
+  useEventBus({ onRefreshNeeded: refresh });
 
   const {
     showShortcuts,
@@ -106,7 +104,7 @@ function App() {
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
       <aside className={`sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
         <h1 className="app-title">Claude Todos</h1>
-        <ClaudeStatus metadata={state.metadata} settings={state.settings} analysisLocked={state.analysis_locked} autopilotRunning={state.autopilot_running} onRefresh={refresh} sseConnected={sseConnected} sseEventCount={sseEventCount} />
+        <ClaudeStatus metadata={state.metadata} settings={state.settings} analysisLocked={state.analysis_locked} autopilotRunning={state.autopilot_running} onRefresh={refresh} />
         <ProjectList
           projects={state.projects}
           todos={state.todos}

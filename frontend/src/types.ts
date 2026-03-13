@@ -23,6 +23,8 @@ export interface Todo {
   run_output: string | null;
   run_status: "running" | "done" | "error" | "stopped" | "queued" | null;
   run_trigger: "manual" | "autopilot" | null;
+  is_read: boolean;
+  plan_only: boolean;
   sort_order: number;
   user_ordered: boolean;
   stale_reason: string | null;

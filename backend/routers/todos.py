@@ -46,7 +46,7 @@ def list_todos(project_id: Optional[str] = None) -> list[Todo]:
 
 @router.post("", status_code=201)
 def create_todo(body: TodoCreate) -> Todo:
-    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user")
+    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only)
     if todo.status == "completed":
         todo.completed_at = _now()
     with StorageContext() as ctx:
@@ -108,6 +108,8 @@ def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                     t.source = body.source
                 if body.stale_reason is not None:
                     t.stale_reason = body.stale_reason
+                if body.is_read is not None:
+                    t.is_read = body.is_read
                 if body.user_ordered is not None:
                     t.user_ordered = body.user_ordered
                     # When unpinning, recalculate sort_order for unpinned siblings by created_at

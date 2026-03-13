@@ -8,8 +8,6 @@ interface Props {
   analysisLocked: boolean;
   autopilotRunning: boolean;
   onRefresh: () => void;
-  sseConnected?: boolean;
-  sseEventCount?: number;
 }
 
 function timeAgo(iso: string): string {
@@ -33,7 +31,7 @@ function formatTime(epoch: number): string {
   return `${Math.floor(diffH / 24)}d ago`;
 }
 
-export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunning, onRefresh, sseConnected, sseEventCount }: Props) {
+export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunning, onRefresh }: Props) {
   const [waking, setWaking] = useState(false);
 
   const busy = waking || analysisLocked;
@@ -375,17 +373,6 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
           title="Adds lifecycle hooks to ~/.claude/settings.json that fire on session start/end and permission requests. This lets Claude Todos detect session state in real time instead of polling JSONL files."
         >?</span>
       </div>
-      {sseConnected !== undefined && (
-        <div className="sse-status">
-          <span className={`status-dot ${sseConnected ? "active" : "inactive"}`} />
-          <span className="sse-label">
-            Event stream: {sseConnected ? "connected" : "disconnected"}
-            {sseEventCount !== undefined && sseEventCount > 0 && (
-              <span className="sse-count"> ({sseEventCount} events)</span>
-            )}
-          </span>
-        </div>
-      )}
       <div className="analysis-toggles">
         <label className="toggle-row" title="Periodic heartbeat analysis on a timer">
           <input

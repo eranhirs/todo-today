@@ -24,6 +24,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const [showBacklog, setShowBacklog] = useState(true);
   const [showDone, setShowDone] = useState(true);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
+  const [filterUnread, setFilterUnread] = useState(false);
 
   // Drag-and-drop state
   const dragItemId = useRef<string | null>(null);
@@ -64,14 +65,26 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
 
   const clearTags = useCallback(() => setSelectedTags(new Set()), []);
 
-  // Apply tag filter
+  // Count unread todos (completed_by_run && !is_read)
+  const unreadCount = useMemo(() =>
+    projectFiltered.filter((t) => t.completed_by_run && !t.is_read).length,
+    [projectFiltered]
+  );
+
+  // Apply tag + unread filters
   const filtered = useMemo(() => {
-    if (selectedTags.size === 0) return projectFiltered;
-    return projectFiltered.filter((t) => {
-      const todoTags = parseTags(t.text);
-      return Array.from(selectedTags).every((st) => todoTags.includes(st));
-    });
-  }, [projectFiltered, selectedTags]);
+    let result = projectFiltered;
+    if (selectedTags.size > 0) {
+      result = result.filter((t) => {
+        const todoTags = parseTags(t.text);
+        return Array.from(selectedTags).every((st) => todoTags.includes(st));
+      });
+    }
+    if (filterUnread) {
+      result = result.filter((t) => t.completed_by_run && !t.is_read);
+    }
+    return result;
+  }, [projectFiltered, selectedTags, filterUnread]);
 
   // Sort helper: sort_order ascending, then created_at descending as tiebreaker
   const sortByOrder = (a: Todo, b: Todo) => {
@@ -216,8 +229,16 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         <AddTodo projects={projects} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} />
       )}
 
-      {allTags.length > 0 && (
+      {(allTags.length > 0 || unreadCount > 0) && (
         <div className="tag-filter-bar">
+          {unreadCount > 0 && (
+            <button
+              className={`tag-filter-pill unread-filter${filterUnread ? " active" : ""}`}
+              onClick={() => setFilterUnread((v) => !v)}
+            >
+              ⚡ Unread ({unreadCount})
+            </button>
+          )}
           {allTags.map((tag) => (
             <button
               key={tag}
@@ -227,8 +248,8 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               #{tag}
             </button>
           ))}
-          {selectedTags.size > 0 && (
-            <button className="tag-filter-clear" onClick={clearTags}>Clear</button>
+          {(selectedTags.size > 0 || filterUnread) && (
+            <button className="tag-filter-clear" onClick={() => { clearTags(); setFilterUnread(false); }}>Clear</button>
           )}
         </div>
       )}
