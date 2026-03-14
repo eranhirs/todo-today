@@ -86,12 +86,12 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
       <button
         className="btn-icon btn-plan"
         onClick={() => runWithClaude(true)}
-        title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Plan with Claude (no code changes)"}
+        title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Plan with Claude — analyze and outline an approach without making code changes"}
       >📋</button>
       <button
         className="btn-icon btn-run"
         onClick={() => runWithClaude(false)}
-        title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Run with Claude"}
+        title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Run with Claude — implement this task, making code changes as needed"}
       >▶</button>
     </>
   );

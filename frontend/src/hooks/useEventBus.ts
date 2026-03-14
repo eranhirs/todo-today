@@ -124,7 +124,8 @@ export function useEventBus({
     function connect() {
       if (closed) return;
 
-      eventSource = new EventSource("/api/events");
+      const apiBase = import.meta.env.VITE_API_URL || "/api";
+      eventSource = new EventSource(`${apiBase}/events`);
 
       eventSource.addEventListener("connected", () => {
         setConnected(true);
