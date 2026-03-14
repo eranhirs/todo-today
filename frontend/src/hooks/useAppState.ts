@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FullState, Todo } from "../types";
-import { api } from "../api";
+import { api, isStaticDemo } from "../api";
 import { ApiError } from "../errors";
 
 const POLL_INTERVAL = 3_000;
@@ -90,9 +90,10 @@ export function useAppState({
     }
   }, []);
 
-  // Poll for state
+  // Poll for state (disabled in static demo — single fetch is enough)
   useEffect(() => {
     refresh();
+    if (isStaticDemo) return;
     const id = setInterval(refresh, POLL_INTERVAL);
     return () => clearInterval(id);
   }, [refresh]);

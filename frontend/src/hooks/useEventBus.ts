@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isStaticDemo } from "../api";
 
 /** Event types matching backend EventType enum values */
 export type BusEventType =
@@ -117,6 +118,8 @@ export function useEventBus({
   );
 
   useEffect(() => {
+    if (isStaticDemo) return; // No SSE in static demo mode
+
     let eventSource: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
@@ -124,7 +127,7 @@ export function useEventBus({
     function connect() {
       if (closed) return;
 
-      const apiBase = import.meta.env.VITE_API_URL || "/api";
+      const apiBase = import.meta.env.VITE_API_URL || `${import.meta.env.BASE_URL}api`.replace(/\/\/+/g, "/");
       eventSource = new EventSource(`${apiBase}/events`);
 
       eventSource.addEventListener("connected", () => {

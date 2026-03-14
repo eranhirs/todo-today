@@ -81,11 +81,29 @@ Claude Todos can install Claude Code hooks for real-time session state detection
 
 To install, click **Install** in the Hooks section of the Claude Status panel, or call `POST /api/claude/hooks/install`.
 
+## Public Demo Deployment
+
+Deploy the static demo to GitHub Pages at `https://eranhirs.github.io/claude-todos/`:
+
+```bash
+bash demo/deploy-gh-pages.sh
+```
+
+This builds a **fully static demo** — no backend required. The script:
+1. Seeds demo data and starts a temporary local backend to capture state
+2. Builds the frontend in `gh-pages` mode (base path `/claude-todos/`)
+3. Injects the captured state into `index.html` as `window.__DEMO_STATE__`
+4. Force-pushes the result to the `gh-pages` branch
+
+The frontend detects `window.__DEMO_STATE__` and renders directly from the embedded data, with polling and SSE disabled.
+
+After the first deploy, enable GitHub Pages in the repo settings: **Settings → Pages → Source → Deploy from branch → `gh-pages` / `/ (root)`**.
+
 ## Ports
 
-| Service  | Port | Notes |
-|----------|------|-------|
-| Backend  | 5151 | FastAPI + scheduler |
-| Frontend | 5173 | Vite dev server (development only) |
+| Service  | Port  | Notes |
+|----------|-------|-------|
+| Backend  | 5151  | FastAPI + scheduler |
+| Frontend | 5173  | Vite dev server (development only) |
 
 In production mode, only port 5151 is used (frontend is served as static files).
