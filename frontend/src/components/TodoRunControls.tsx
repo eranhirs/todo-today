@@ -14,17 +14,18 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
 
-  const runWithClaude = async () => {
+  const runWithClaude = async (planOnly?: boolean) => {
     if (disabled) {
       addToast("You're offline — running tasks isn't available right now", "warning");
       return;
     }
     try {
-      const result = await api.runTodo(todo.id);
+      const result = await api.runTodo(todo.id, planOnly);
+      const label = planOnly ? "planning" : "running";
       if (result.status === "queued") {
-        addToast(`Queued "${todo.text}" — will run when the current task finishes`, "info");
+        addToast(`Queued "${todo.text}" — will ${planOnly ? "plan" : "run"} when the current task finishes`, "info");
       } else {
-        addToast(`Started running "${todo.text}" with Claude`, "info");
+        addToast(`Started ${label} "${todo.text}" with Claude`, "info");
       }
       onRefresh();
     } catch (err) {
@@ -81,10 +82,17 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
   }
 
   return (
-    <button
-      className="btn-icon btn-run"
-      onClick={runWithClaude}
-      title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Run with Claude"}
-    >▶</button>
+    <>
+      <button
+        className="btn-icon btn-plan"
+        onClick={() => runWithClaude(true)}
+        title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Plan with Claude (no code changes)"}
+      >📋</button>
+      <button
+        className="btn-icon btn-run"
+        onClick={() => runWithClaude(false)}
+        title={disabled ? "Server offline" : projectBusy ? "Will be queued — another task is running" : "Run with Claude"}
+      >▶</button>
+    </>
   );
 }

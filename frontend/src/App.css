@@ -585,12 +585,14 @@ body {
 
 /* Reveal action buttons on hover */
 .todo-meta .btn-run,
+.todo-meta .btn-plan,
 .todo-meta .btn-delete,
 .todo-meta .btn-unpin {
   opacity: 0;
   transition: opacity 0.15s;
 }
 .todo-item:hover .todo-meta .btn-run,
+.todo-item:hover .todo-meta .btn-plan,
 .todo-item:hover .todo-meta .btn-delete,
 .todo-item:hover .todo-meta .btn-unpin {
   opacity: 1;
@@ -1528,6 +1530,13 @@ body {
   color: var(--yellow, #e5c07b) !important;
 }
 .btn-dequeue:hover { color: #fff !important; background: var(--yellow, #e5c07b) !important; }
+
+.btn-plan {
+  font-size: 0.7rem !important;
+  color: var(--blue) !important;
+}
+.btn-plan:hover:not(:disabled) { color: #fff !important; background: var(--blue) !important; }
+.btn-plan:disabled { opacity: 0.3; cursor: not-allowed; }
 
 .btn-run {
   font-size: 0.75rem !important;

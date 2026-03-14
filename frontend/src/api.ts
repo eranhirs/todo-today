@@ -62,8 +62,11 @@ export const api = {
       body: JSON.stringify({ todo_ids: todoIds, moved_id: movedId }),
     }),
 
-  runTodo: (id: string) =>
-    request<{ status: string }>(`/todos/${id}/run`, { method: "POST" }),
+  runTodo: (id: string, planOnly?: boolean) =>
+    request<{ status: string }>(`/todos/${id}/run`, {
+      method: "POST",
+      body: planOnly !== undefined ? JSON.stringify({ plan_only: planOnly }) : undefined,
+    }),
 
   stopTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/stop`, { method: "POST" }),

@@ -204,11 +204,23 @@ def stop_todo(todo_id: str) -> dict:
     return {"status": "stopped"}
 
 
+class RunRequest(BaseModel):
+    plan_only: Optional[bool] = None
+
+
 @router.post("/{todo_id}/run")
-def run_todo(todo_id: str) -> dict:
+def run_todo(todo_id: str, body: RunRequest = RunRequest()) -> dict:
     """Kick off a Claude Code session to complete a todo, or queue it if the project is busy."""
     if _DEMO_MODE:
         raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    # If plan_only is explicitly set, update the todo before running
+    if body.plan_only is not None:
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    t.plan_only = body.plan_only
+                    break
 
     err = start_todo_run(todo_id)
     if err == "already running":
