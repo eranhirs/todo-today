@@ -1,7 +1,13 @@
 import type { FullState, Project, SessionInfo, Settings, SettingsUpdate, Todo, TodoStatus } from "./types";
 import { ApiError } from "./errors";
 
-const BASE = import.meta.env.VITE_API_URL || "/api";
+// In demo mode, BASE_URL is "/~hirsche5/claude-todos/" — derive API path from it
+// so requests stay on the same HTTPS origin and get proxied by Apache.
+const BASE = import.meta.env.VITE_API_URL || `${import.meta.env.BASE_URL}api`.replace(/\/\/+/g, "/");
+
+/** Static demo mode: state is embedded in the HTML, no backend needed */
+const _w = window as unknown as { __DEMO_STATE__?: FullState };
+export const isStaticDemo = !!_w.__DEMO_STATE__;
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   let res: Response;
@@ -28,7 +34,10 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getState: () => request<FullState>("/state"),
+  getState: (): Promise<FullState> =>
+    isStaticDemo
+      ? Promise.resolve(_w.__DEMO_STATE__!)
+      : request<FullState>("/state"),
 
   createProject: (name: string, source_path = "") =>
     request<Project>("/projects", {

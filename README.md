@@ -2,6 +2,8 @@
 
 A self-managing todo app powered by Claude. It watches your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions and automatically discovers what you're working on — marking tasks complete, suggesting next steps, and tracking new projects. With **Autopilot**, it goes further: Claude automatically picks up todos and works on them, creating a closed loop where analysis discovers work → Autopilot executes it → the cycle repeats.
 
+**[Live Static Demo](https://eranhirs.github.io/claude-todos/?project=proj_claude_todos)**
+
 ![Claude Todos screenshot](docs/images/screenshot.png)
 
 ## How It Works

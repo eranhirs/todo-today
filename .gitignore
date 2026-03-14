@@ -31,7 +31,7 @@ plans/
 
 # Demo
 demo/data/
-demo/uvicorn.log
+demo/uvicorn*.log
 
 # Logs
 uvicorn.log
