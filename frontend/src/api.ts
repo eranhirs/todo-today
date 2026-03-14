@@ -1,7 +1,7 @@
 import type { FullState, Project, SessionInfo, Settings, SettingsUpdate, Todo, TodoStatus } from "./types";
 import { ApiError } from "./errors";
 
-const BASE = "/api";
+const BASE = import.meta.env.VITE_API_URL || "/api";
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   let res: Response;
