@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { isStaticDemo } from "../api";
 
 /** Event types matching backend EventType enum values */
@@ -81,9 +81,12 @@ export function useEventBus({
   onEvent,
   refreshDebounceMs = 500,
 }: UseEventBusOptions = {}): UseEventBusResult {
-  const [connected, setConnected] = useState(false);
-  const [eventCount, setEventCount] = useState(0);
-  const [lastEvent, setLastEvent] = useState<BusEvent | null>(null);
+  // Use refs instead of state — these values are returned but never consumed
+  // for rendering, so useState would cause unnecessary re-renders on every
+  // SSE event (which freezes the UI when a backgrounded tab flushes updates).
+  const connectedRef = useRef(false);
+  const eventCountRef = useRef(0);
+  const lastEventRef = useRef<BusEvent | null>(null);
 
   // Refs for stable callback access
   const onRefreshRef = useRef(onRefreshNeeded);
@@ -96,8 +99,17 @@ export function useEventBus({
 
   // Debounce timer for refresh
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track whether a refresh was requested while the tab was hidden
+  const pendingRefreshRef = useRef(false);
 
   const triggerRefresh = useCallback(() => {
+    // While the tab is hidden, don't fire refreshes — just note that one is needed.
+    // The visibility handler in useAppState will do a single refresh on return,
+    // and we flush any SSE-deferred refresh there too.
+    if (document.hidden) {
+      pendingRefreshRef.current = true;
+      return;
+    }
     if (refreshTimerRef.current) return; // already scheduled
     refreshTimerRef.current = setTimeout(() => {
       refreshTimerRef.current = null;
@@ -117,6 +129,18 @@ export function useEventBus({
     []
   );
 
+  // Flush deferred SSE refresh when the tab becomes visible again
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (!document.hidden && pendingRefreshRef.current) {
+        pendingRefreshRef.current = false;
+        triggerRefresh();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, [triggerRefresh]);
+
   useEffect(() => {
     if (isStaticDemo) return; // No SSE in static demo mode
 
@@ -131,7 +155,7 @@ export function useEventBus({
       eventSource = new EventSource(`${apiBase}/events`);
 
       eventSource.addEventListener("connected", () => {
-        setConnected(true);
+        connectedRef.current = true;
       });
 
       // Listen for all named event types
@@ -164,8 +188,8 @@ export function useEventBus({
         eventSource.addEventListener(eventType, (e: MessageEvent) => {
           try {
             const parsed: BusEvent = JSON.parse(e.data);
-            setEventCount((c) => c + 1);
-            setLastEvent(parsed);
+            eventCountRef.current += 1;
+            lastEventRef.current = parsed;
 
             // Call global handler
             onEventRef.current?.(parsed);
@@ -193,7 +217,7 @@ export function useEventBus({
       }
 
       eventSource.onerror = () => {
-        setConnected(false);
+        connectedRef.current = false;
         eventSource?.close();
         eventSource = null;
         // Reconnect with backoff
@@ -213,5 +237,5 @@ export function useEventBus({
     };
   }, [triggerRefresh]);
 
-  return { connected, eventCount, lastEvent, subscribe };
+  return { connected: connectedRef.current, eventCount: eventCountRef.current, lastEvent: lastEventRef.current, subscribe };
 }

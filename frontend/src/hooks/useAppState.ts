@@ -90,12 +90,45 @@ export function useAppState({
     }
   }, []);
 
-  // Poll for state (disabled in static demo — single fetch is enough)
+  // Poll for state (disabled in static demo — single fetch is enough).
+  // Pause polling when the tab is hidden to prevent accumulated callbacks
+  // from firing all at once when the user returns, which freezes the UI.
   useEffect(() => {
     refresh();
     if (isStaticDemo) return;
-    const id = setInterval(refresh, POLL_INTERVAL);
-    return () => clearInterval(id);
+
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    const startPolling = () => {
+      if (!intervalId) {
+        intervalId = setInterval(refresh, POLL_INTERVAL);
+      }
+    };
+
+    const stopPolling = () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        // Single immediate refresh, then resume normal polling
+        refresh();
+        startPolling();
+      }
+    };
+
+    startPolling();
+    document.addEventListener("visibilitychange", handleVisibility);
+
+    return () => {
+      stopPolling();
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
   }, [refresh]);
 
   return {
