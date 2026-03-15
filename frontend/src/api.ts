@@ -50,11 +50,45 @@ export const api = {
 
   getTags: () => request<string[]>("/todos/tags"),
 
-  createTodo: (project_id: string, text: string, plan_only = false) =>
+  renameTag: (oldTag: string, newTag: string) =>
+    request<{ status: string; updated: number }>("/todos/tags/rename", {
+      method: "PUT",
+      body: JSON.stringify({ old_tag: oldTag, new_tag: newTag }),
+    }),
+
+  createTodo: (project_id: string, text: string, plan_only = false, images: string[] = []) =>
     request<Todo>("/todos", {
       method: "POST",
-      body: JSON.stringify({ project_id, text, plan_only }),
+      body: JSON.stringify({ project_id, text, plan_only, images }),
     }),
+
+  uploadImage: async (file: File): Promise<{ filename: string }> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/todos/images`, {
+        method: "POST",
+        body: formData,
+      });
+    } catch (err) {
+      throw ApiError.networkError(err);
+    }
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      try {
+        const body = await res.json();
+        if (body.detail) detail = body.detail;
+      } catch { /* ignore */ }
+      throw ApiError.fromResponse(res.status, detail, null);
+    }
+    return res.json();
+  },
+
+  imageUrl: (filename: string): string => `${BASE}/todos/images/${filename}`,
+
+  deleteImage: (filename: string) =>
+    request<void>(`/todos/images/${filename}`, { method: "DELETE" }),
 
   updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean; is_read?: boolean }) =>
     request<Todo>(`/todos/${id}`, {
