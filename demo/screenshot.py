@@ -76,7 +76,7 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
             print(f"  Saved {autopilot_path}")
 
         # Dashboard view screenshot — wider viewport so content is readable
-        DASHBOARD_VIEWPORT = {"width": 1400, "height": 750}
+        DASHBOARD_VIEWPORT = {"width": 1400, "height": 900}
         dash_page = browser.new_page(viewport=DASHBOARD_VIEWPORT, device_scale_factor=2)
         dashboard_url = f"{url}&view=dashboard"
         print(f"Loading dashboard: {dashboard_url} ...")
@@ -89,8 +89,10 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
             dash_collapse_btn.click()
             time.sleep(0.5)
 
+        # Crop to the dashboard element to avoid empty space
+        dashboard_el = dash_page.locator(".dashboard").first
         dashboard_path = output_dir / "dashboard.png"
-        dash_page.screenshot(path=str(dashboard_path), full_page=False)
+        dashboard_el.screenshot(path=str(dashboard_path))
         paths.append(dashboard_path)
         print(f"  Saved {dashboard_path}")
         dash_page.close()
