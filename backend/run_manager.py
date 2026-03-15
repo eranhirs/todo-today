@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -161,6 +162,18 @@ is_todo_running = process_manager.is_todo_running
 is_project_busy = process_manager.is_project_busy
 
 
+# ── Run quota helpers ─────────────────────────────────────────────
+
+
+def _runs_in_window(project_id: str, todos: list, hours: int = 24) -> int:
+    """Count distinct todos with run_started_at within the last *hours* hours."""
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat(timespec="seconds") + "Z"
+    return sum(
+        1 for t in todos
+        if t.project_id == project_id and t.run_started_at and t.run_started_at >= cutoff
+    )
+
+
 # ── Helpers ──────────────────────────────────────────────────────
 
 
@@ -241,6 +254,201 @@ def _detect_exit_plan_mode(stream_lines: list[dict]) -> bool:
         # Only check the last assistant message
         break
     return False
+
+
+# ── Concurrent BTW runner ────────────────────────────────────────
+
+
+def _flush_btw_progress(todo_id: str, output: str) -> None:
+    """Write current accumulated btw output to the store."""
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            if t.id == todo_id:
+                t.btw_output = output[:50000]
+                break
+    bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
+
+
+def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", todo_text: str = "") -> None:
+    """Background thread: run a concurrent /btw Claude session alongside the main run.
+
+    Spawns an independent Claude -p call in the same project directory with a fresh
+    session ID. The btw output is stored separately in btw_output/btw_status fields.
+    """
+    output_file = _RUNS_DIR / f"{todo_id}_btw.jsonl"
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        session_id = str(uuid.uuid4())
+        prompt = (
+            f"A task is currently being worked on in this project: \"{todo_text}\"\n\n"
+            f"Meanwhile, the user has a side request (do NOT interfere with the main task's "
+            f"in-progress work — treat this as an independent, quick side-channel request):\n\n"
+            f"{message}"
+        )
+        session_header = ""
+        accumulated: list[str] = []
+
+        # Store btw metadata on todo
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    t.btw_output_file = str(output_file)
+                    t.btw_status = "running"
+                    t.btw_output = f"**You:** {message}\n"
+                    t.pending_btw = None
+                    break
+
+        # Ensure clean output file
+        output_file.write_text("")
+
+        cmd = [
+            "claude", "-p", "--output-format", "stream-json", "--verbose",
+            "--dangerously-skip-permissions",
+            "--model", model,
+            "--session-id", session_id,
+        ]
+
+        fout = open(output_file, "a")
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=fout,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=source_path,
+            env=env,
+            start_new_session=True,
+        )
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        fout.close()
+
+        # Store PID
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    t.btw_pid = proc.pid
+                    break
+
+        # Tail the output file
+        last_flush = time.monotonic()
+        file_pos = 0
+
+        while True:
+            alive = _pid_alive(proc.pid)
+
+            try:
+                with open(output_file, "r") as f:
+                    f.seek(file_pos)
+                    new_data = f.read()
+                    file_pos = f.tell()
+            except FileNotFoundError:
+                new_data = ""
+
+            for line in new_data.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "result":
+                    continue
+                text = _extract_assistant_text(obj)
+                if text:
+                    accumulated.append(text)
+
+            now = time.monotonic()
+            if now - last_flush >= _FLUSH_INTERVAL and accumulated:
+                _flush_btw_progress(todo_id, f"**You:** {message}\n\n" + "\n".join(accumulated))
+                last_flush = now
+
+            if not alive:
+                break
+            time.sleep(0.5)
+
+        # Final flush
+        output_text = "\n".join(accumulated)
+        proc.wait(timeout=60)
+        returncode = proc.returncode
+
+        if returncode != 0:
+            stderr_out = proc.stderr.read() if proc.stderr else ""
+            if stderr_out:
+                log.error("BTW Claude stderr for todo %s: %s", todo_id, stderr_out[:2000])
+                output_text += f"\n\nstderr: {stderr_out[:2000]}"
+
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    t.btw_output = (f"**You:** {message}\n\n" + output_text)[:50000]
+                    t.btw_status = "error" if returncode != 0 else "done"
+                    t.btw_pid = None
+                    t.btw_output_file = None
+                    break
+
+        bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
+
+    except Exception as e:
+        log.exception("BTW run error for todo %s", todo_id)
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    t.btw_status = "error"
+                    t.btw_output = (t.btw_output or "") + f"\n\n--- Error ---\n{e}"
+                    t.btw_pid = None
+                    t.btw_output_file = None
+                    break
+    finally:
+        process_manager.cleanup_output_file(output_file)
+        _btw_threads.pop(todo_id, None)
+
+
+# Track btw threads separately from main run threads
+_btw_threads: dict[str, threading.Thread] = {}
+
+
+def is_btw_running(todo_id: str) -> bool:
+    """Check if a btw side-channel is active for a todo."""
+    return todo_id in _btw_threads and _btw_threads[todo_id].is_alive()
+
+
+def start_btw(todo_id: str, message: str) -> str | None:
+    """Start a concurrent btw session for a running todo. Returns None on success, or error string."""
+    if is_btw_running(todo_id):
+        return "btw already running"
+
+    with StorageContext(read_only=True) as ctx:
+        todo = None
+        source_path = None
+        for t in ctx.store.todos:
+            if t.id == todo_id:
+                todo = t
+                break
+        if todo is None:
+            return "todo not found"
+        if todo.run_status != "running":
+            return "todo not running"
+
+        for p in ctx.store.projects:
+            if p.id == todo.project_id:
+                source_path = p.source_path
+                break
+        if not source_path:
+            return "no source_path"
+
+        todo_text = todo.text
+        run_model = ctx.metadata.run_model
+
+    thread = threading.Thread(
+        target=run_btw_for_todo,
+        args=(todo_id, message, source_path, run_model, todo_text),
+        daemon=True,
+    )
+    thread.start()
+    _btw_threads[todo_id] = thread
+    return None
 
 
 # ── Subprocess invocation & tailing ──────────────────────────────
@@ -740,6 +948,16 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
                 project_busy = True
                 break
 
+        # Enforce daily run quota for fresh runs (not follow-ups on already-run todos)
+        todo_quota = 0
+        for p in ctx.store.projects:
+            if p.id == todo.project_id:
+                todo_quota = p.todo_quota
+                break
+        if todo_quota > 0 and todo.run_started_at is None:
+            if _runs_in_window(todo.project_id, ctx.store.todos) >= todo_quota:
+                return "run_quota_exceeded"
+
         trigger = "autopilot" if autopilot else "manual"
 
         if project_busy:
@@ -758,6 +976,8 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         todo.run_output = None
         todo.run_trigger = trigger
         todo.queued_at = None
+        if todo.run_started_at is None:
+            todo.run_started_at = _now()
         todo_text = todo.text
         proj_id = todo.project_id
         run_model = ctx.metadata.run_model
@@ -790,9 +1010,11 @@ def _process_queue(project_id: str) -> None:
         # Pick next candidate and transition to running
         candidate = queued[0]
         source_path = None
+        todo_quota = 0
         for p in ctx.store.projects:
             if p.id == project_id:
                 source_path = p.source_path
+                todo_quota = p.todo_quota
                 break
         if not source_path:
             # Can't run — clear all queued items for this project
@@ -802,9 +1024,17 @@ def _process_queue(project_id: str) -> None:
                 t.queued_at = None
             return
 
+        # Enforce daily run quota for fresh runs
+        if todo_quota > 0 and candidate.run_started_at is None:
+            if _runs_in_window(project_id, ctx.store.todos) >= todo_quota:
+                log.info("Queue: skipping todo %s (run quota %d reached)", candidate.id, todo_quota)
+                return
+
         candidate.status = "in_progress"
         candidate.run_status = "running"
         candidate.queued_at = None
+        if candidate.run_started_at is None:
+            candidate.run_started_at = _now()
         todo_id = candidate.id
         todo_text = candidate.text
         run_model = ctx.metadata.run_model
@@ -845,13 +1075,20 @@ def autopilot_continue(project_id: str) -> None:
             if t.project_id == project_id and (is_todo_running(t.id) or t.run_status == "running"):
                 return  # still busy (manual queue drained into a run)
 
-        # Check quota
+        # Check autopilot quota
         quota = 0
+        todo_quota = 0
         for p in ctx.store.projects:
             if p.id == project_id:
                 quota = p.auto_run_quota
+                todo_quota = p.todo_quota
                 break
         if quota <= 0:
+            return
+
+        # Enforce daily run quota
+        if todo_quota > 0 and _runs_in_window(project_id, ctx.store.todos) >= todo_quota:
+            log.info("Autopilot continue: run quota %d reached for project %s, stopping", todo_quota, project_id)
             return
 
         # Find eligible candidates

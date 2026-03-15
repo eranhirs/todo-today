@@ -13,7 +13,7 @@ All endpoints return errors in a consistent format:
 - `detail` (string): Always present. Describes the error.
 - `error_code` (string | null): Optional machine-readable code. Set for validation errors (`"VALIDATION_ERROR"`) and unhandled server errors (`"INTERNAL_ERROR"`).
 
-Common HTTP status codes: 400 (bad request), 403 (forbidden/demo mode), 404 (not found), 409 (conflict/already running), 422 (validation error), 500 (internal server error).
+Common HTTP status codes: 400 (bad request), 403 (forbidden/demo mode), 404 (not found), 409 (conflict/already running), 422 (validation error), 429 (daily run limit reached), 500 (internal server error).
 
 ## State
 
@@ -36,11 +36,12 @@ Create a project.
 Get a single project.
 
 ### `PUT /api/projects/{project_id}`
-Update project name, source_path, or autopilot quota.
+Update project name, source_path, autopilot quota, or todo quota.
 ```json
-{ "name": "new-name", "auto_run_quota": 2 }
+{ "name": "new-name", "auto_run_quota": 2, "todo_quota": 10 }
 ```
 `auto_run_quota`: 0 = Autopilot disabled, 1+ = max todos to auto-run per cycle for this project.
+`todo_quota`: 0 = unlimited, 1+ = max todo runs per 24-hour sliding window. When the limit is reached, new runs return HTTP 429. Todos can always be created freely. Follow-ups on already-run todos don't count against the limit.
 
 ### `DELETE /api/projects/{project_id}`
 Delete a project and all its todos.
@@ -76,7 +77,27 @@ Returns `{ "status": "started" }`.
 
 When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. On failure, `run_status` is set to `"error"` and `run_output` contains the error message.
 
-Returns 409 if the todo is already running, 400 if the project has no `source_path`.
+Returns 409 if the todo is already running, 400 if the project has no `source_path`, 429 if the daily run limit is reached.
+
+### `POST /api/todos/{todo_id}/stop`
+Stop a running Claude session. The todo is set to `run_status: "stopped"` and `status: "waiting"`, preserving `session_id` and `run_output` so follow-ups can continue. Returns `{ "status": "stopped" }`.
+
+### `POST /api/todos/{todo_id}/dequeue`
+Remove a queued todo from the run queue. Returns `{ "status": "dequeued" }`.
+
+### `POST /api/todos/{todo_id}/followup`
+Send a follow-up message to a completed/stopped Claude session. If another todo in the project is running, the follow-up is queued and auto-starts when the project becomes free.
+```json
+{ "message": "Also handle the edge case where..." }
+```
+Returns `{ "status": "started" }` or `{ "status": "queued" }`.
+
+### `POST /api/todos/{todo_id}/btw`
+Send a `/btw` message that spawns a **concurrent** Claude session alongside the running main task. The btw session runs in parallel as an independent side-channel in the same project directory. Its output is stored separately in `btw_output`/`btw_status` fields and displayed in a tabbed UI next to the main run output. Only one btw session can run at a time per todo.
+```json
+{ "message": "btw, also update the tests" }
+```
+Returns `{ "status": "started" }`. Returns 409 if the todo is not running or if a btw session is already active.
 
 ## Settings
 

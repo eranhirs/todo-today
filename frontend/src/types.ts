@@ -5,6 +5,7 @@ export interface Project {
   name: string;
   source_path: string;
   auto_run_quota: number;
+  todo_quota: number;
   created_at: string;
 }
 
@@ -23,6 +24,9 @@ export interface Todo {
   run_output: string | null;
   run_status: "running" | "done" | "error" | "stopped" | "queued" | null;
   run_trigger: "manual" | "autopilot" | null;
+  btw_output: string | null;
+  btw_status: "running" | "done" | "error" | null;
+  run_started_at: string | null;
   is_read: boolean;
   plan_only: boolean;
   sort_order: number;

@@ -7,10 +7,11 @@ interface Props {
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   projectBusy?: boolean;
+  atRunQuotaLimit?: boolean;
   disabled?: boolean;
 }
 
-export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, disabled = false }: Props) {
+export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, atRunQuotaLimit = false, disabled = false }: Props) {
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
 
@@ -81,17 +82,22 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
     );
   }
 
+  // Disable run buttons for fresh (never-run) todos when at daily run limit
+  const quotaBlocked = atRunQuotaLimit && !todo.run_started_at;
+
   return (
     <>
       <button
         className="btn-icon btn-plan"
         onClick={() => runWithClaude(true)}
-        title={disabled ? "Server offline" : projectBusy ? "Plan with Claude (queued — another task is running)" : "Plan with Claude — analyze and outline an approach without making code changes"}
+        disabled={quotaBlocked}
+        title={disabled ? "Server offline" : quotaBlocked ? "Daily run limit reached" : projectBusy ? "Plan with Claude (queued — another task is running)" : "Plan with Claude — analyze and outline an approach without making code changes"}
       >📋</button>
       <button
         className="btn-icon btn-run"
         onClick={() => runWithClaude(false)}
-        title={disabled ? "Server offline" : projectBusy ? "Run with Claude (queued — another task is running)" : "Run with Claude — implement this task, making code changes as needed"}
+        disabled={quotaBlocked}
+        title={disabled ? "Server offline" : quotaBlocked ? "Daily run limit reached" : projectBusy ? "Run with Claude (queued — another task is running)" : "Run with Claude — implement this task, making code changes as needed"}
       >▶</button>
     </>
   );

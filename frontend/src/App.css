@@ -224,6 +224,14 @@ body {
   flex-shrink: 0;
   margin-left: 4px;
 }
+.project-count-badge.badge-unread-runs {
+  background: var(--claude);
+  color: #1a1a2e;
+}
+.project-count-badge.badge-up-next {
+  background: var(--border);
+  color: var(--text-dim);
+}
 .project-item.active .project-count-badge {
   background: rgba(255, 255, 255, 0.2);
   color: #fff;
@@ -282,6 +290,50 @@ body {
   background: rgba(255, 255, 255, 0.12);
 }
 .project-item.active .autopilot-select:hover { border-color: rgba(255,255,255,0.4); color: #fff; }
+
+/* Project settings bar (shown in main content area when a project is selected) */
+.project-settings-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 0;
+  margin-bottom: 4px;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.project-settings-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: default;
+}
+.project-settings-label {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.project-settings-select {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.project-settings-select:hover { border-color: var(--text-dim); }
+.project-settings-select.quota-active {
+  border-color: var(--warning, #e2a93b);
+  color: var(--warning, #e2a93b);
+}
+.quota-usage {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.quota-usage.quota-full {
+  color: var(--warning, #e2a93b);
+  font-weight: 600;
+}
 
 /* Buttons */
 
@@ -1257,7 +1309,8 @@ body {
 .hooks-label {
   color: var(--text-dim);
 }
-.hooks-tooltip-icon {
+.hooks-tooltip-icon,
+.help-tooltip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1710,6 +1763,61 @@ body {
   border-radius: 3px;
 }
 
+/* ── Output Tabs (Run / BTW) ──────────────────────────────── */
+
+.output-tabs {
+  display: flex;
+  gap: 0;
+  width: 100%;
+  margin-top: 8px;
+  margin-bottom: -1px;
+  position: relative;
+  z-index: 1;
+}
+
+.output-tab {
+  padding: 4px 14px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  letter-spacing: 0.03em;
+}
+
+.output-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.output-tab.active {
+  color: var(--text);
+  background: #0a0c12;
+  border-color: var(--border);
+}
+
+.output-tab.tab-running {
+  color: var(--amber);
+}
+
+.output-tab.tab-running.active {
+  color: var(--amber);
+}
+
+.output-tabs + .run-output {
+  margin-top: 0;
+  border-radius: 0 6px 6px 6px;
+}
+
+.btw-output {
+  border-left: 2px solid var(--accent);
+}
+
 .todo-item { flex-wrap: wrap; }
 
 .followup-bar {
@@ -1731,6 +1839,10 @@ body {
   padding: 4px 8px;
   font-size: 0.8rem;
   font-family: inherit;
+}
+
+.btw-bar .followup-input {
+  border-color: #4a4e69;
 }
 
 .followup-input::placeholder {

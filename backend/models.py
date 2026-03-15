@@ -26,6 +26,7 @@ class Project(BaseModel):
     name: str
     source_path: str = ""
     auto_run_quota: int = 0  # 0 = autopilot disabled, 1+ = remaining todos to auto-run (decrements)
+    todo_quota: int = 0  # 0 = unlimited, 1+ = max todo runs per 24h sliding window
     created_at: str = Field(default_factory=_now)
 
 
@@ -46,7 +47,13 @@ class Todo(BaseModel):
     run_pid: Optional[int] = None
     run_output_file: Optional[str] = None
     queued_at: Optional[str] = None
+    run_started_at: Optional[str] = None
     pending_followup: Optional[str] = None
+    pending_btw: Optional[str] = None
+    btw_output: Optional[str] = None
+    btw_status: Optional[Literal["running", "done", "error"]] = None
+    btw_pid: Optional[int] = None
+    btw_output_file: Optional[str] = None
     is_read: bool = True  # Whether the user has seen the run output
     plan_only: bool = False  # When True, agent plans but cannot implement
     sort_order: int = 0
@@ -192,6 +199,7 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     source_path: Optional[str] = None
     auto_run_quota: Optional[int] = None
+    todo_quota: Optional[int] = None
 
 
 class TodoCreate(BaseModel):

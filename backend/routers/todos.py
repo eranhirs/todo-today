@@ -15,9 +15,11 @@ from ..run_manager import (
     _followup_claude_for_todo,
     _process_queue,
     dequeue_todo_run,
+    is_btw_running,
     is_project_busy,
     is_todo_running,
     process_manager,
+    start_btw,
     start_todo_run,
 )
 from ..storage import StorageContext
@@ -50,7 +52,12 @@ def create_todo(body: TodoCreate) -> Todo:
     if todo.status == "completed":
         todo.completed_at = _now()
     with StorageContext() as ctx:
-        if not any(p.id == body.project_id for p in ctx.store.projects):
+        project = None
+        for p in ctx.store.projects:
+            if p.id == body.project_id:
+                project = p
+                break
+        if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         # Auto-assign sort_order: min existing - 1 so new todos appear at top
         min_order = min((t.sort_order for t in ctx.store.todos if t.project_id == body.project_id), default=1)
@@ -171,7 +178,9 @@ def stop_todo(todo_id: str) -> dict:
             raise HTTPException(status_code=409, detail="Todo is not running")
 
         pid = todo.run_pid
+        btw_pid = todo.btw_pid
         output_file_str = todo.run_output_file
+        btw_output_file_str = todo.btw_output_file
         proj_id = todo.project_id
 
         # Update todo state — treat stop as a pause,
@@ -180,6 +189,13 @@ def stop_todo(todo_id: str) -> dict:
         todo.status = "waiting"
         todo.run_pid = None
         todo.run_output_file = None
+        # Also stop any concurrent btw session
+        if btw_pid:
+            todo.btw_pid = None
+            todo.btw_output_file = None
+            if todo.btw_status == "running":
+                todo.btw_status = "error"
+                todo.btw_output = ((todo.btw_output or "") + "\n\n--- Stopped ---")[:50000]
         # Append interruption marker to output
         if todo.run_output:
             todo.run_output = (todo.run_output + "\n\n--- Paused ---")[:50000]
@@ -187,13 +203,17 @@ def stop_todo(todo_id: str) -> dict:
     # Kill the subprocess (and its process group) outside the lock
     if pid:
         process_manager.kill_process(pid)
+    if btw_pid:
+        process_manager.kill_process(btw_pid)
 
     # Clean up the thread tracker
     process_manager.unregister_thread(todo_id)
 
-    # Clean up output file
+    # Clean up output files
     if output_file_str:
         process_manager.cleanup_output_file(Path(output_file_str))
+    if btw_output_file_str:
+        process_manager.cleanup_output_file(Path(btw_output_file_str))
 
     bus.emit_event_sync(EventType.RUN_STOPPED, todo_id=todo_id)
     log.info("Stopped (interrupted) claude run for todo %s (pid %s)", todo_id, pid)
@@ -223,6 +243,8 @@ def run_todo(todo_id: str, body: RunRequest = RunRequest()) -> dict:
                     break
 
     err = start_todo_run(todo_id)
+    if err == "run_quota_exceeded":
+        raise HTTPException(status_code=429, detail="Daily run limit reached for this project")
     if err == "already running":
         raise HTTPException(status_code=409, detail="This todo is already running")
     if err == "already queued":
@@ -327,4 +349,37 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
         todo_id, _followup_claude_for_todo,
         (todo_id, body.message, session_id, source_path, run_model, proj_id),
     )
+    return {"status": "started"}
+
+
+class BtwRequest(BaseModel):
+    message: str
+
+
+@router.post("/{todo_id}/btw")
+def btw_todo(todo_id: str, body: BtwRequest) -> dict:
+    """Send a /btw message as a concurrent side-channel Claude session.
+
+    Spawns an independent parallel Claude call that runs alongside the main
+    run. Output is stored separately in btw_output/btw_status fields and
+    displayed in a tab UI next to the main run output.
+    """
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    if is_btw_running(todo_id):
+        raise HTTPException(status_code=409, detail="A /btw session is already running — wait for it to finish")
+
+    err = start_btw(todo_id, body.message)
+    if err == "todo not found":
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if err == "todo not running":
+        raise HTTPException(status_code=409, detail="Todo is not currently running — use follow-up instead")
+    if err == "btw already running":
+        raise HTTPException(status_code=409, detail="A /btw session is already running — wait for it to finish")
+    if err == "no source_path":
+        raise HTTPException(status_code=400, detail="Project has no source_path configured")
+    if err:
+        raise HTTPException(status_code=500, detail=err)
+
     return {"status": "started"}

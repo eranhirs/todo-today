@@ -89,6 +89,12 @@ export const api = {
       body: JSON.stringify({ message }),
     }),
 
+  btwTodo: (id: string, message: string) =>
+    request<{ status: string }>(`/todos/${id}/btw`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
+
   wakeUpClaude: (model?: string, force?: boolean, sessionKeys?: string[]) =>
     request<{ status: string; message?: string }>("/claude/wake", {
       method: "POST",
@@ -157,7 +163,7 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
 
-  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number }) =>
+  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number; todo_quota?: number }) =>
     request<Project>(`/projects/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),

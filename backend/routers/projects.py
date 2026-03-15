@@ -44,6 +44,8 @@ def update_project(project_id: str, body: ProjectUpdate) -> Project:
                     p.source_path = body.source_path
                 if body.auto_run_quota is not None:
                     p.auto_run_quota = max(0, min(10, body.auto_run_quota))
+                if body.todo_quota is not None:
+                    p.todo_quota = max(0, body.todo_quota)
                 bus.emit_event_sync(EventType.PROJECT_UPDATED, project_id=p.id)
                 return p
     raise HTTPException(status_code=404, detail="Project not found")
