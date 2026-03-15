@@ -10,6 +10,46 @@ interface Props {
   disabled?: boolean;
 }
 
+const FOLLOWUP_RE = /\n\n--- Follow-up(?: \(queued\))? ---\n\*\*You:\*\* /;
+
+function renderOutput(text: string) {
+  const parts = text.split(FOLLOWUP_RE);
+  if (parts.length === 1) return text;
+
+  const elements: (string | React.ReactElement)[] = [parts[0]];
+  // After each split point, we have the user's message + rest of output
+  let matchIndex = 0;
+  let searchFrom = 0;
+  for (let i = 1; i < parts.length; i++) {
+    // Find which variant matched so we can reconstruct the header
+    const queuedMatch = text.indexOf("\n\n--- Follow-up (queued) ---\n**You:** ", searchFrom);
+    const normalMatch = text.indexOf("\n\n--- Follow-up ---\n**You:** ", searchFrom);
+    const isQueued = queuedMatch !== -1 && (normalMatch === -1 || queuedMatch < normalMatch);
+    const headerText = isQueued ? "Follow-up (queued)" : "Follow-up";
+    const fullHeader = isQueued
+      ? "\n\n--- Follow-up (queued) ---\n**You:** "
+      : "\n\n--- Follow-up ---\n**You:** ";
+    searchFrom = (isQueued ? queuedMatch : normalMatch) + fullHeader.length;
+
+    // Split the part into the user message (first line) and rest
+    const newlineIdx = parts[i].indexOf("\n");
+    const userMsg = newlineIdx === -1 ? parts[i] : parts[i].slice(0, newlineIdx);
+    const rest = newlineIdx === -1 ? "" : parts[i].slice(newlineIdx);
+
+    elements.push(
+      <span key={`followup-${matchIndex}`} className="followup-marker">
+        {"\n\n"}
+        <span className="followup-header">{"── " + headerText + " ──"}</span>
+        {"\n"}
+        <span className="followup-user-msg">{"▶ You: " + userMsg}</span>
+      </span>
+    );
+    if (rest) elements.push(rest);
+    matchIndex++;
+  }
+  return <>{elements}</>;
+}
+
 export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = false }: Props) {
   const [followupText, setFollowupText] = useState("");
   const outputRef = useRef<HTMLPreElement>(null);
@@ -65,7 +105,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
           onMouseDown={(e) => e.stopPropagation()}
           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
-          <pre ref={outputRef}>{todo.run_output}</pre>
+          <pre ref={outputRef}>{renderOutput(todo.run_output)}</pre>
         </div>
       )}
       {showFollowup && (

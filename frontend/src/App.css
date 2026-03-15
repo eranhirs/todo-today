@@ -49,9 +49,68 @@ body {
   gap: 20px;
 }
 
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
 .app-title {
   font-size: 1.3rem;
   font-weight: 700;
+}
+
+.sidebar-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s, background 0.15s;
+}
+
+.sidebar-collapse-btn:hover {
+  color: var(--text);
+  background: var(--card-bg);
+}
+
+/* Minimized sidebar */
+
+.sidebar.sidebar-minimized {
+  width: 48px;
+  padding: 12px 10px;
+  gap: 0;
+  align-items: center;
+  overflow: hidden;
+}
+
+.sidebar.sidebar-minimized .sidebar-header {
+  justify-content: center;
+}
+
+.sidebar.sidebar-minimized .app-title,
+.sidebar.sidebar-minimized .claude-status,
+.sidebar.sidebar-minimized .project-list,
+.sidebar.sidebar-minimized .update-history,
+.sidebar.sidebar-minimized .autopilot-history,
+.sidebar.sidebar-minimized .notif-log-section,
+.sidebar.sidebar-minimized .hook-debug-section {
+  display: none;
+}
+
+.sidebar.sidebar-minimized .sidebar-collapse-btn {
+  margin-top: 4px;
+}
+
+.sidebar {
+  transition: width 0.2s ease;
 }
 
 /* Claude Status */
@@ -1234,6 +1293,48 @@ body {
   cursor: pointer;
 }
 
+/* Demo banner */
+
+.demo-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  background: linear-gradient(135deg, var(--accent), #4a3ab5);
+  color: #fff;
+  text-align: center;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  height: 36px;
+}
+
+.demo-banner a {
+  color: #fff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+
+.demo-banner a:hover {
+  opacity: 0.85;
+}
+
+.demo-banner-icon {
+  vertical-align: -2px;
+  margin-left: 4px;
+}
+
+.app:has(.demo-banner) .sidebar {
+  padding-top: 56px;
+}
+
+.app:has(.demo-banner) .main {
+  padding-top: 48px;
+}
+
 /* Offline banner */
 
 .offline-banner {
@@ -1586,6 +1687,27 @@ body {
   margin: 0;
   max-height: 400px;
   overflow-y: auto;
+}
+
+.followup-marker {
+  display: inline;
+}
+
+.followup-header {
+  display: inline-block;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+}
+
+.followup-user-msg {
+  display: inline;
+  color: #e0e0e0;
+  font-weight: 600;
+  background: rgba(99, 102, 241, 0.12);
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 
 .todo-item { flex-wrap: wrap; }
@@ -2224,7 +2346,12 @@ body {
     flex-direction: column;
   }
 
-  .sidebar {
+  .sidebar-collapse-btn {
+    display: none;
+  }
+
+  .sidebar,
+  .sidebar.sidebar-minimized {
     position: fixed;
     top: 0;
     left: 0;
@@ -2234,7 +2361,21 @@ body {
     z-index: 1000;
     transform: translateX(-100%);
     transition: transform 0.25s ease;
+    padding: 20px;
     padding-top: 64px; /* room for the toggle button */
+    gap: 20px;
+    align-items: stretch;
+    overflow-y: auto;
+  }
+
+  .sidebar.sidebar-minimized .app-title,
+  .sidebar.sidebar-minimized .claude-status,
+  .sidebar.sidebar-minimized .project-list,
+  .sidebar.sidebar-minimized .update-history,
+  .sidebar.sidebar-minimized .autopilot-history,
+  .sidebar.sidebar-minimized .notif-log-section,
+  .sidebar.sidebar-minimized .hook-debug-section {
+    display: revert;
   }
 
   .sidebar.sidebar-open {
