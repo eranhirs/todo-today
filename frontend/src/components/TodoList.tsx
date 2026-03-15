@@ -1,9 +1,10 @@
-import { useState, useMemo, useRef, useCallback, useEffect } from "react";
+import { useState, useMemo, useRef, useCallback, useEffect, type KeyboardEvent, type FormEvent } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { AddTodo } from "./AddTodo";
 import { TodoItem } from "./TodoItem";
 import { parseTags } from "../utils/tags";
+import { getDisplayName, setDisplayName } from "../utils/displayNames";
 
 interface Props {
   todos: Todo[];
@@ -25,9 +26,37 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const [showDone, setShowDone] = useState(true);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [filterUnread, setFilterUnread] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   // When unread filter is active and the user opens a todo's output (marking it read),
   // keep that todo visible until a different output is opened.
   const [stickyTodoId, setStickyTodoId] = useState<string | null>(null);
+
+  // Project title rename state
+  const [renamingTitle, setRenamingTitle] = useState(false);
+  const [titleRenameValue, setTitleRenameValue] = useState("");
+  const titleRenameRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renamingTitle && titleRenameRef.current) {
+      titleRenameRef.current.focus();
+      titleRenameRef.current.select();
+    }
+  }, [renamingTitle]);
+
+  const commitTitleRename = useCallback(() => {
+    if (!selectedProjectId) return;
+    const trimmed = titleRenameValue.trim();
+    if (trimmed) {
+      setDisplayName(selectedProjectId, trimmed);
+      onRefresh();
+    }
+    setRenamingTitle(false);
+  }, [selectedProjectId, titleRenameValue, onRefresh]);
+
+  // Tag rename state
+  const [renamingTag, setRenamingTag] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   // Drag-and-drop state
   const dragItemId = useRef<string | null>(null);
@@ -68,6 +97,51 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
 
   const clearTags = useCallback(() => setSelectedTags(new Set()), []);
 
+  const startRenameTag = useCallback((tag: string) => {
+    setRenamingTag(tag);
+    setRenameValue(tag);
+  }, []);
+
+  const commitRenameTag = useCallback(async () => {
+    if (!renamingTag) return;
+    const newTag = renameValue.trim().toLowerCase();
+    if (!newTag || newTag === renamingTag) {
+      setRenamingTag(null);
+      return;
+    }
+    if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(newTag)) {
+      addToast("Invalid tag format — must start with a letter and contain only letters, numbers, hyphens, or underscores", "error");
+      setRenamingTag(null);
+      return;
+    }
+    try {
+      const result = await api.renameTag(renamingTag, newTag);
+      // Update selected tags if the renamed tag was selected
+      setSelectedTags((prev) => {
+        if (!prev.has(renamingTag)) return prev;
+        const next = new Set(prev);
+        next.delete(renamingTag);
+        next.add(newTag);
+        return next;
+      });
+      addToast(`Renamed #${renamingTag} → #${newTag} (${result.updated} todo${result.updated === 1 ? "" : "s"})`, "success");
+      onRefresh();
+    } catch {
+      addToast("Failed to rename tag", "error");
+    }
+    setRenamingTag(null);
+  }, [renamingTag, renameValue, addToast, onRefresh]);
+
+  const cancelRenameTag = useCallback(() => setRenamingTag(null), []);
+
+  // Focus rename input when it appears
+  useEffect(() => {
+    if (renamingTag && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingTag]);
+
   // Clear sticky todo when unread filter is turned off
   useEffect(() => {
     if (!filterUnread) setStickyTodoId(null);
@@ -83,9 +157,16 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     [projectFiltered]
   );
 
-  // Apply tag + unread filters
+  // Apply search + tag + unread filters
   const filtered = useMemo(() => {
     let result = projectFiltered;
+    if (searchQuery.trim()) {
+      const q = searchQuery.trim().toLowerCase();
+      result = result.filter((t) =>
+        t.text.toLowerCase().includes(q) ||
+        (t.run_output && t.run_output.toLowerCase().includes(q))
+      );
+    }
     if (selectedTags.size > 0) {
       result = result.filter((t) => {
         const todoTags = parseTags(t.text);
@@ -96,7 +177,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       result = result.filter((t) => (t.completed_by_run && !t.is_read) || t.id === stickyTodoId);
     }
     return result;
-  }, [projectFiltered, selectedTags, filterUnread, stickyTodoId]);
+  }, [projectFiltered, searchQuery, selectedTags, filterUnread, stickyTodoId]);
 
   // Sort helper: sort_order ascending, then created_at descending as tiebreaker
   const sortByOrder = (a: Todo, b: Todo) => {
@@ -131,7 +212,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     .filter((t) => t.status === "completed")
     .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
 
-  const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? "Unknown";
+  const projectName = (id: string) => getDisplayName(id) ?? projects.find((p) => p.id === id)?.name ?? "Unknown";
 
   const summary = selectedProjectId ? projectSummaries[selectedProjectId] : null;
 
@@ -148,6 +229,36 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     ).length;
   }, [selectedProjectId, todos]);
   const atRunQuotaLimit = selectedProject ? selectedProject.todo_quota > 0 && runsInWindow >= selectedProject.todo_quota : false;
+
+  // Compute when the next quota slot opens (earliest run in window + 24h)
+  const nextQuotaResetMs = useMemo(() => {
+    if (!selectedProjectId || !selectedProject || selectedProject.todo_quota <= 0) return null;
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const runTimesInWindow = todos
+      .filter((t) => t.project_id === selectedProjectId && t.run_started_at && new Date(t.run_started_at).getTime() >= cutoff)
+      .map((t) => new Date(t.run_started_at!).getTime())
+      .sort((a, b) => a - b);
+    if (runTimesInWindow.length === 0) return null;
+    // The earliest run ages out at its start time + 24h
+    return runTimesInWindow[0] + 24 * 60 * 60 * 1000;
+  }, [selectedProjectId, selectedProject, todos]);
+
+  // Live countdown string that updates every minute
+  const [quotaCountdown, setQuotaCountdown] = useState("");
+  useEffect(() => {
+    if (nextQuotaResetMs === null) { setQuotaCountdown(""); return; }
+    const update = () => {
+      const remaining = nextQuotaResetMs - Date.now();
+      if (remaining <= 0) { setQuotaCountdown("now"); return; }
+      const h = Math.floor(remaining / 3_600_000);
+      const m = Math.ceil((remaining % 3_600_000) / 60_000);
+      if (h > 0) setQuotaCountdown(`${h}h ${m}m`);
+      else setQuotaCountdown(`${m}m`);
+    };
+    update();
+    const id = setInterval(update, 60_000);
+    return () => clearInterval(id);
+  }, [nextQuotaResetMs]);
 
   // Drag-and-drop handlers
   const handleDragStart = useCallback((todoId: string, section: string) => {
@@ -240,13 +351,41 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       >
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} disabled={isOffline} onOutputOpen={handleOutputOpen} />
+        <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} />
       </div>
     ));
 
   return (
     <div className="todo-list">
-      <h2>{selectedProjectId ? projectName(selectedProjectId) : "All Projects"}</h2>
+      {selectedProjectId && renamingTitle ? (
+        <h2>
+          <input
+            ref={titleRenameRef}
+            className="project-title-rename-input"
+            value={titleRenameValue}
+            onChange={(e) => setTitleRenameValue(e.target.value)}
+            onBlur={commitTitleRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitTitleRename();
+              if (e.key === "Escape") setRenamingTitle(false);
+            }}
+          />
+        </h2>
+      ) : (
+        <h2
+          onDoubleClick={selectedProjectId ? () => {
+            setRenamingTitle(true);
+            setTitleRenameValue(projectName(selectedProjectId));
+          } : undefined}
+          title={selectedProjectId ? "Double-click to rename" : undefined}
+          style={selectedProjectId ? { cursor: "default" } : undefined}
+        >
+          {selectedProjectId ? projectName(selectedProjectId) : "All Projects"}
+        </h2>
+      )}
+      {selectedProject?.source_path && (
+        <p className="project-source-path">{selectedProject.source_path}</p>
+      )}
       {summary && <p className="project-summary">{summary}</p>}
 
       {selectedProject && (
@@ -273,7 +412,10 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               ))}
             </select>
             {selectedProject.todo_quota > 0 && (
-              <span className={`quota-usage${atRunQuotaLimit ? " quota-full" : ""}`}>
+              <span
+                className={`quota-usage${atRunQuotaLimit ? " quota-full" : ""}`}
+                title={quotaCountdown ? `Next slot opens in ${quotaCountdown}` : undefined}
+              >
                 {runsInWindow}/{selectedProject.todo_quota}
               </span>
             )}
@@ -287,9 +429,23 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         <AddTodo projects={projects} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} />
       )}
 
-      {(allTags.length > 0 || unreadCount > 0) && (
+      <div className="search-bar">
+        <input
+          type="text"
+          className="search-input"
+          placeholder="Search todos…"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Escape") setSearchQuery(""); }}
+        />
+        {searchQuery && (
+          <button className="search-clear" onClick={() => setSearchQuery("")} title="Clear search">×</button>
+        )}
+      </div>
+
+      {(allTags.length > 0 || unreadCount > 0 || filterUnread) && (
         <div className="tag-filter-bar">
-          {unreadCount > 0 && (
+          {(unreadCount > 0 || filterUnread) && (
             <button
               className={`tag-filter-pill unread-filter${filterUnread ? " active" : ""}`}
               onClick={() => setFilterUnread((v) => !v)}
@@ -297,15 +453,34 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               ⚡ Unread ({unreadCount})
             </button>
           )}
-          {allTags.map((tag) => (
-            <button
-              key={tag}
-              className={`tag-filter-pill${selectedTags.has(tag) ? " active" : ""}`}
-              onClick={() => toggleTag(tag)}
-            >
-              #{tag}
-            </button>
-          ))}
+          {allTags.map((tag) =>
+            renamingTag === tag ? (
+              <form
+                key={tag}
+                className="tag-rename-form"
+                onSubmit={(e: FormEvent) => { e.preventDefault(); commitRenameTag(); }}
+              >
+                <span className="tag-rename-hash">#</span>
+                <input
+                  ref={renameInputRef}
+                  className="tag-rename-input"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={commitRenameTag}
+                  onKeyDown={(e: KeyboardEvent) => { if (e.key === "Escape") cancelRenameTag(); }}
+                />
+              </form>
+            ) : (
+              <button
+                key={tag}
+                className={`tag-filter-pill${selectedTags.has(tag) ? " active" : ""}`}
+                onClick={() => toggleTag(tag)}
+                onDoubleClick={(e) => { e.preventDefault(); startRenameTag(tag); }}
+              >
+                #{tag}
+              </button>
+            )
+          )}
           {(selectedTags.size > 0 || filterUnread) && (
             <button className="tag-filter-clear" onClick={() => { clearTags(); setFilterUnread(false); }}>Clear</button>
           )}
@@ -314,9 +489,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
 
       {/* Up Next */}
       <button className="btn-link section-header" onClick={() => setShowUpNext(!showUpNext)}>
-        {showUpNext ? "▾" : "▸"} Up Next ({upNext.length})
+        {(showUpNext || searchQuery) ? "▾" : "▸"} Up Next ({upNext.length})
       </button>
-      {showUpNext && (
+      {(showUpNext || searchQuery) && (
         <>
           {upNext.length === 0 && backlog.length === 0 && done.length === 0 && (
             <div className="empty-state">
@@ -339,9 +514,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       {backlog.length > 0 && (
         <>
           <button className="btn-link section-header" onClick={() => setShowBacklog(!showBacklog)}>
-            {showBacklog ? "▾" : "▸"} Backlog ({backlog.length})
+            {(showBacklog || searchQuery) ? "▾" : "▸"} Backlog ({backlog.length})
           </button>
-          {showBacklog && renderTodoList(backlog, "backlog")}
+          {(showBacklog || searchQuery) && renderTodoList(backlog, "backlog")}
         </>
       )}
 
@@ -349,9 +524,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       {done.length > 0 && (
         <>
           <button className="btn-link" onClick={() => setShowDone(!showDone)}>
-            {showDone ? "▾" : "▸"} Completed ({done.length})
+            {(showDone || searchQuery) ? "▾" : "▸"} Completed ({done.length})
           </button>
-          {showDone && (() => {
+          {(showDone || searchQuery) && (() => {
             const groups = new Map<string, Todo[]>();
             for (const t of done) {
               const day = t.completed_at
@@ -366,7 +541,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                 {items.map((t) => (
                   <div key={t.id}>
                     {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                    <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} disabled={isOffline} onOutputOpen={handleOutputOpen} />
+                    <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} />
                   </div>
                 ))}
               </div>
