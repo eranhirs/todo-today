@@ -51,7 +51,7 @@ TODOS = [
     {
         "id": "todo_demo_01",
         "project_id": "proj_claude_todos",
-        "text": "Add lifecycle hooks for real-time session state detection via Claude Code events",
+        "text": "Add lifecycle hooks for real-time session state detection via Claude Code events #backend #hooks",
         "status": "completed",
         "source": "claude",
         "created_at": _ts(NOW - timedelta(days=3)),
@@ -60,40 +60,58 @@ TODOS = [
     {
         "id": "todo_demo_02",
         "project_id": "proj_claude_todos",
-        "text": "Implement toast notifications with type-based styling (warning/success/error/info)",
+        "text": "Implement toast notifications with type-based styling (warning/success/error/info) #frontend #ui",
         "status": "completed",
         "source": "claude",
         "created_at": _ts(NOW - timedelta(days=2)),
         "completed_at": _ts(NOW - timedelta(days=1, hours=18)),
+        "completed_by_run": True,
+        "is_read": True,
+        "run_output": "Implemented toast notification system with four visual styles:\n\n1. Added ToastContainer component with auto-dismiss timers\n2. Created useToast hook for easy integration\n3. Styled variants: success (green), error (red), warning (amber), info (blue)\n4. Animations: slide-in from top-right, fade-out on dismiss\n\nFiles modified:\n- frontend/src/components/Toast.tsx (new)\n- frontend/src/hooks/useToast.ts (new)\n- frontend/src/App.tsx (integrated ToastContainer)",
+        "run_status": "done",
+        "run_trigger": "autopilot",
     },
     {
         "id": "todo_demo_03",
         "project_id": "proj_claude_todos",
-        "text": "Add \"Run with Claude\" button to execute todos as autonomous Claude Code tasks",
+        "text": "Add \"Run with Claude\" button to execute todos as autonomous Claude Code tasks #backend #frontend",
         "status": "completed",
         "source": "user",
         "created_at": _ts(NOW - timedelta(days=2, hours=6)),
         "completed_at": _ts(NOW - timedelta(days=1, hours=12)),
+        "completed_by_run": True,
+        "is_read": True,
         "run_output": "Successfully implemented the Run with Claude feature:\n\n1. Added POST /api/todos/{id}/run endpoint\n2. Spawns `claude -p` subprocess in project directory\n3. Tracks run_status (running/done/error) and stores output\n4. Frontend shows play button, spinner while running, collapsible output\n\nFiles modified:\n- backend/routers/todos.py (new endpoint + background runner)\n- frontend/src/components/TodoItem.tsx (play button + output viewer)\n- backend/models.py (run_output, run_status fields)",
         "run_status": "done",
+        "run_trigger": "manual",
     },
     {
         "id": "todo_demo_04",
         "project_id": "proj_claude_todos",
-        "text": "Hook-triggered analysis: auto-analyze sessions when Claude Code events fire",
+        "text": "Hook-triggered analysis: auto-analyze sessions when Claude Code events fire #backend #hooks",
         "status": "completed",
         "source": "claude",
         "created_at": _ts(NOW - timedelta(days=1, hours=6)),
         "completed_at": _ts(NOW - timedelta(hours=8)),
+        "completed_by_run": True,
+        "is_read": False,
+        "run_output": "Implemented hook-triggered analysis pipeline:\n\n1. Added Claude Code lifecycle hook registration (on session start/stop)\n2. Hook endpoint POST /api/hooks/claude-event receives events\n3. Debounces rapid events (5s window) to avoid duplicate analyses\n4. Reuses existing analysis engine — same prompt, same model\n5. Added hook_analysis_enabled toggle to pause without unregistering\n\nKey design decision: hooks share the analysis lock with scheduled heartbeat\nto prevent concurrent analyses from conflicting.\n\nFiles modified:\n- backend/hooks.py (new — hook registration + event handler)\n- backend/scheduler.py (shared analysis lock)\n- backend/routers/settings.py (hook_analysis_enabled toggle)\n- install-hooks.sh (new — registers hooks with Claude Code CLI)",
+        "run_status": "done",
+        "run_trigger": "manual",
     },
     {
         "id": "todo_demo_05",
         "project_id": "proj_claude_todos",
-        "text": "Add toggles to temporarily pause scheduled heartbeat and hook-triggered analysis",
+        "text": "Add toggles to temporarily pause scheduled heartbeat and hook-triggered analysis #frontend #ui",
         "status": "completed",
         "source": "user",
         "created_at": _ts(NOW - timedelta(hours=6)),
         "completed_at": _ts(NOW - timedelta(hours=3)),
+        "completed_by_run": True,
+        "is_read": False,
+        "run_output": "Added pause/resume toggles for both analysis triggers:\n\n1. Two toggle switches in the Settings sidebar section\n2. Heartbeat toggle: pauses the periodic scheduler timer\n3. Hook toggle: ignores incoming hook events without unregistering\n4. Visual state: green dot = active, gray = paused\n5. State persists across server restarts (saved in metadata.json)\n\nFiles modified:\n- frontend/src/components/Sidebar.tsx (toggle UI)\n- backend/routers/settings.py (PATCH endpoints)\n- backend/scheduler.py (check enabled flags before analysis)",
+        "run_status": "done",
+        "run_trigger": "autopilot",
     },
     {
         "id": "todo_demo_06",
@@ -106,7 +124,7 @@ TODOS = [
     {
         "id": "todo_demo_07",
         "project_id": "proj_claude_todos",
-        "text": "Add dark/light theme toggle",
+        "text": "Add dark/light theme toggle #frontend #ui",
         "status": "next",
         "source": "user",
         "created_at": _ts(NOW - timedelta(hours=2)),
@@ -122,7 +140,7 @@ TODOS = [
     {
         "id": "todo_demo_09",
         "project_id": "proj_claude_todos",
-        "text": "Waiting on user to test hook notifications with multiple concurrent Claude sessions",
+        "text": "Waiting on user to test hook notifications with multiple concurrent Claude sessions #hooks",
         "status": "waiting",
         "source": "claude",
         "created_at": _ts(NOW - timedelta(hours=4)),
@@ -150,16 +168,21 @@ TODOS = [
     {
         "id": "todo_demo_22",
         "project_id": "proj_webthinker",
-        "text": "Fixed event ordering bug in timeline builder",
+        "text": "Fixed event ordering bug in timeline builder #bugfix",
         "status": "completed",
         "source": "claude",
         "created_at": _ts(NOW - timedelta(days=3)),
         "completed_at": _ts(NOW - timedelta(days=2, hours=16)),
+        "completed_by_run": True,
+        "is_read": False,
+        "run_output": "Fixed the event ordering bug in the timeline builder:\n\nRoot cause: Events were sorted by creation time instead of logical sequence\norder. When two events had the same timestamp (sub-millisecond precision),\ntheir relative order was non-deterministic.\n\nFix: Added a stable sort key combining (timestamp, sequence_number) where\nsequence_number is assigned at insertion time. Also added a regression test\nwith 50 concurrent events to verify ordering stability.\n\nFiles modified:\n- src/timeline/builder.py (stable sort key)\n- tests/test_timeline.py (regression test)",
+        "run_status": "done",
+        "run_trigger": "manual",
     },
     {
         "id": "todo_demo_23",
         "project_id": "proj_webthinker",
-        "text": "Refactor trace storage to use self-similar directory structure",
+        "text": "Refactor trace storage to use self-similar directory structure #refactor",
         "status": "in_progress",
         "source": "claude",
         "session_id": "sess_abc123",
@@ -168,7 +191,7 @@ TODOS = [
     {
         "id": "todo_demo_24",
         "project_id": "proj_webthinker",
-        "text": "Add citation validation with source provenance tracking",
+        "text": "Add citation validation with source provenance tracking #research",
         "status": "next",
         "source": "user",
         "created_at": _ts(NOW - timedelta(days=1)),
@@ -186,11 +209,16 @@ TODOS = [
     {
         "id": "todo_demo_30",
         "project_id": "proj_bench",
-        "text": "Created Streamlit dashboard with leaderboard and comparison charts",
+        "text": "Created Streamlit dashboard with leaderboard and comparison charts #frontend #analytics",
         "status": "completed",
         "source": "claude",
         "created_at": _ts(NOW - timedelta(days=4)),
         "completed_at": _ts(NOW - timedelta(days=3, hours=12)),
+        "completed_by_run": True,
+        "is_read": True,
+        "run_output": "Built the Streamlit evaluation dashboard:\n\n1. Leaderboard table with sortable columns (model, accuracy, latency, cost)\n2. Side-by-side comparison charts (bar + radar)\n3. Per-category breakdown with drill-down\n4. Auto-refresh from evaluation results directory\n\nFiles modified:\n- dashboard/app.py (main Streamlit app)\n- dashboard/charts.py (Plotly chart builders)\n- dashboard/data_loader.py (results ingestion)",
+        "run_status": "done",
+        "run_trigger": "manual",
     },
     {
         "id": "todo_demo_31",
@@ -213,7 +241,7 @@ TODOS = [
     {
         "id": "todo_demo_33",
         "project_id": "proj_bench",
-        "text": "Add per-question difficulty analysis and failure mode clustering",
+        "text": "Add per-question difficulty analysis and failure mode clustering #analytics",
         "status": "next",
         "source": "claude",
         "created_at": _ts(NOW - timedelta(days=2)),
@@ -234,7 +262,11 @@ for t in TODOS:
     t.setdefault("completed_at", None)
     t.setdefault("run_output", None)
     t.setdefault("run_status", None)
+    t.setdefault("run_trigger", None)
     t.setdefault("source", "claude")
+    t.setdefault("completed_by_run", False)
+    t.setdefault("is_read", True)
+    t.setdefault("plan_only", False)
 
 TODOS_JSON = {"projects": PROJECTS, "todos": TODOS}
 
