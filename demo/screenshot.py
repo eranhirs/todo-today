@@ -83,6 +83,12 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
         dash_page.goto(dashboard_url, wait_until="load", timeout=60000)
         time.sleep(SETTLE_SECONDS)
 
+        # Collapse sidebar for cleaner dashboard screenshot
+        dash_collapse_btn = dash_page.locator(".sidebar-collapse-btn").first
+        if dash_collapse_btn.count() > 0:
+            dash_collapse_btn.click()
+            time.sleep(0.5)
+
         dashboard_path = output_dir / "dashboard.png"
         dash_page.screenshot(path=str(dashboard_path), full_page=False)
         paths.append(dashboard_path)
