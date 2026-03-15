@@ -8,10 +8,11 @@ interface Props {
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   projectBusy?: boolean;
   atRunQuotaLimit?: boolean;
+  quotaCountdown?: string;
   disabled?: boolean;
 }
 
-export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, atRunQuotaLimit = false, disabled = false }: Props) {
+export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false }: Props) {
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
 
@@ -84,6 +85,9 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
 
   // Disable run buttons for fresh (never-run) todos when at daily run limit
   const quotaBlocked = atRunQuotaLimit && !todo.run_started_at;
+  const quotaTitle = quotaBlocked
+    ? `Daily run limit reached${quotaCountdown ? ` — next slot in ${quotaCountdown}` : ""}`
+    : "";
 
   return (
     <>
@@ -91,13 +95,13 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
         className="btn-icon btn-plan"
         onClick={() => runWithClaude(true)}
         disabled={quotaBlocked}
-        title={disabled ? "Server offline" : quotaBlocked ? "Daily run limit reached" : projectBusy ? "Plan with Claude (queued — another task is running)" : "Plan with Claude — analyze and outline an approach without making code changes"}
+        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? "Plan with Claude (queued — another task is running)" : "Plan with Claude — analyze and outline an approach without making code changes"}
       >📋</button>
       <button
         className="btn-icon btn-run"
         onClick={() => runWithClaude(false)}
         disabled={quotaBlocked}
-        title={disabled ? "Server offline" : quotaBlocked ? "Daily run limit reached" : projectBusy ? "Run with Claude (queued — another task is running)" : "Run with Claude — implement this task, making code changes as needed"}
+        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? "Run with Claude (queued — another task is running)" : "Run with Claude — implement this task, making code changes as needed"}
       >▶</button>
     </>
   );

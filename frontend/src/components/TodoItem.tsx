@@ -17,6 +17,7 @@ interface Props {
   triggerEdit?: boolean;
   projectBusy?: boolean;
   atRunQuotaLimit?: boolean;
+  quotaCountdown?: string;
   disabled?: boolean;
   onOutputOpen?: (todoId: string) => void;
 }
@@ -54,7 +55,7 @@ function timeAgo(iso: string): string {
   return `${weeks}w ago`;
 }
 
-export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, disabled = false, onOutputOpen }: Props) {
+export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, onOutputOpen }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
@@ -110,6 +111,8 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
 
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const isExpandable = !!(todo.run_output || todo.original_text);
+
   const handleTextClick = async () => {
     if (clickTimer.current) {
       // Double-click detected — cancel single-click action
@@ -119,7 +122,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     }
     clickTimer.current = setTimeout(async () => {
       clickTimer.current = null;
-      if (!todo.run_output) return;
+      if (!isExpandable) return;
       const willShow = !showOutput;
       setShowOutput(willShow);
       if (willShow) {
@@ -371,7 +374,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
             )}
           </div>
         ) : (
-          <span className="todo-text" onClick={handleTextClick} onDoubleClick={handleTextDoubleClick} style={{ cursor: todo.run_output ? "pointer" : undefined }}>
+          <span className="todo-text" onClick={handleTextClick} onDoubleClick={handleTextDoubleClick} style={{ cursor: isExpandable ? "pointer" : undefined }}>
             {todo.emoji && <span className="todo-emoji">{todo.emoji}</span>}
             <span dangerouslySetInnerHTML={{ __html: renderedText }} />
           </span>
@@ -442,37 +445,30 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
         )}
-        {todo.run_output && (
-          <button
-            className="btn-icon btn-output"
-            onClick={async () => {
-              const willShow = !showOutput;
-              setShowOutput(willShow);
-              if (willShow) {
-                onOutputOpen?.(todo.id);
-                if (!todo.is_read && todo.completed_by_run) {
-                  onOptimisticUpdate((todos) =>
-                    todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
-                  );
-                  try {
-                    await api.updateTodo(todo.id, { is_read: true });
-                    onRefresh();
-                  } catch { /* silent — not critical */ }
-                }
-              }
-            }}
-            title="View Claude output"
-          >{showOutput ? "▾" : "▸"}</button>
-        )}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} disabled={disabled} />
+        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} />
         {todo.user_ordered && (
           <button className="btn-icon btn-unpin" onClick={unpinOrder} title="Unpin order — let the system reorder this item">📌</button>
         )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>
+      {todo.images && todo.images.length > 0 && (
+        <div className="todo-images">
+          {todo.images.map((filename, idx) => (
+            <a key={filename} href={api.imageUrl(filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
+              <img src={api.imageUrl(filename)} alt={`Attachment ${idx + 1}`} />
+            </a>
+          ))}
+          <span className="todo-images-warning">Images in /tmp — may be cleared on reboot</span>
+        </div>
+      )}
       {todo.status === "stale" && todo.stale_reason && (
         <span className="stale-reason">{todo.stale_reason}</span>
+      )}
+      {showOutput && todo.original_text && (
+        <div className="todo-original-text">
+          <span className="todo-original-label">Original:</span> {todo.original_text}
+        </div>
       )}
       <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} />
     </div>

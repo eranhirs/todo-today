@@ -1,6 +1,7 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
+import { getDisplayName, setDisplayName } from "../utils/displayNames";
 
 interface Props {
   projects: Project[];
@@ -23,6 +24,25 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (renamingId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingId]);
+
+  const commitRename = (projectId: string) => {
+    const trimmed = renameValue.trim();
+    if (trimmed) {
+      setDisplayName(projectId, trimmed);
+    }
+    setRenamingId(null);
+    onRefresh(); // trigger re-render so display name updates everywhere
+  };
 
   const countsByProject = useMemo(() => {
     const counts: Record<string, ProjectCounts> = {};
@@ -43,6 +63,44 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     }
     return counts;
   }, [todos]);
+
+  // Map of project_id -> earliest run reset time (ms) for quota-blocked projects
+  const quotaBlockedProjects = useMemo(() => {
+    const blocked = new Map<string, number>();
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    for (const p of projects) {
+      if (p.todo_quota <= 0) continue;
+      let runsInWindow = 0;
+      let earliestRun = Infinity;
+      for (const t of todos) {
+        if (t.project_id === p.id && t.run_started_at && new Date(t.run_started_at).getTime() >= cutoff) {
+          runsInWindow++;
+          const runTime = new Date(t.run_started_at).getTime();
+          if (runTime < earliestRun) earliestRun = runTime;
+        }
+      }
+      if (runsInWindow >= p.todo_quota) {
+        blocked.set(p.id, earliestRun + 24 * 60 * 60 * 1000);
+      }
+    }
+    return blocked;
+  }, [projects, todos]);
+
+  // Live countdown for sidebar tooltips — updates every minute
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (quotaBlockedProjects.size === 0) return;
+    const id = setInterval(() => setTick((n) => n + 1), 60_000);
+    return () => clearInterval(id);
+  }, [quotaBlockedProjects.size]);
+
+  const formatCountdown = useCallback((resetMs: number) => {
+    const remaining = resetMs - Date.now();
+    if (remaining <= 0) return "now";
+    const h = Math.floor(remaining / 3_600_000);
+    const m = Math.ceil((remaining % 3_600_000) / 60_000);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }, []);
 
   const globalCounts = useMemo(() => {
     let next = 0;
@@ -113,14 +171,41 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
       )}
       {projects.map((p) => {
         const c = countsByProject[p.id];
+        const isQuotaBlocked = quotaBlockedProjects.has(p.id);
+        const quotaResetMs = quotaBlockedProjects.get(p.id);
         return (
           <div
             key={p.id}
-            className={`project-item ${selectedId === p.id ? "active" : ""}`}
+            className={`project-item ${selectedId === p.id ? "active" : ""} ${isQuotaBlocked ? "quota-blocked" : ""}`}
             onClick={() => onSelect(p.id)}
           >
             <span className="project-name">
-              {p.name}
+              {isQuotaBlocked && <span className="project-indicator indicator-quota-blocked" title={`Daily run limit reached — next slot in ${formatCountdown(quotaResetMs!)}`}>⏸</span>}
+              {renamingId === p.id ? (
+                <input
+                  ref={renameInputRef}
+                  className="project-rename-input"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={() => commitRename(p.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename(p.id);
+                    if (e.key === "Escape") setRenamingId(null);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setRenamingId(p.id);
+                    setRenameValue(getDisplayName(p.id) ?? p.name);
+                  }}
+                  title="Double-click to rename"
+                >
+                  {getDisplayName(p.id) ?? p.name}
+                </span>
+              )}
               {c && c.running > 0 && <span className="project-indicator indicator-running" title={`${c.running} running`}>&#9679;</span>}
               {c && c.inProgress > 0 && !c.running && <span className="project-indicator indicator-in-progress" title={`${c.inProgress} in progress`}>&#9679;</span>}
               {c && c.waiting > 0 && <span className="project-indicator indicator-waiting" title={`${c.waiting} waiting`}>&#9679;</span>}
