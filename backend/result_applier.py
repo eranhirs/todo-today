@@ -158,6 +158,13 @@ def _apply_result(
             t.stale_reason = su.reason
         elif su.status != "stale":
             t.stale_reason = None
+        # Dequeue if the todo was queued to run
+        if su.status == "stale" and t.run_status == "queued":
+            log.info("Dequeuing stale todo %s", su.id)
+            t.run_status = None
+            t.run_trigger = None
+            t.queued_at = None
+            t.pending_followup = None
         if su.status == "completed" and not was_completed:
             t.completed_at = _now()
             counters.todos_completed += 1
@@ -177,6 +184,7 @@ def _apply_result(
     known_tags = set()
     for t in ctx.store.todos:
         known_tags.update(parse_tags(t.text))
+
     for nt in result.new_todos:
         # Strip leftover "Next:"/"Consider:" prefixes defensively
         text = re.sub(r"^(Next|Consider|Waiting|Stale):\s*", "", nt.text, flags=re.IGNORECASE)
@@ -249,6 +257,14 @@ def _apply_result(
                 elif mod.status != "completed" and was_completed:
                     t.completed_at = None
                 changed = True
+        # Dequeue if the todo was queued to run
+        if t.status == "stale" and t.run_status == "queued":
+            log.info("Dequeuing stale todo %s", mod.id)
+            t.run_status = None
+            t.run_trigger = None
+            t.queued_at = None
+            t.pending_followup = None
+            changed = True
         if changed:
             counters.todos_modified += 1
             counters.modified_todo_texts.append(t.text)

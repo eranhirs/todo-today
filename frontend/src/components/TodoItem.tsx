@@ -16,7 +16,9 @@ interface Props {
   isFocused?: boolean;
   triggerEdit?: boolean;
   projectBusy?: boolean;
+  atRunQuotaLimit?: boolean;
   disabled?: boolean;
+  onOutputOpen?: (todoId: string) => void;
 }
 
 const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
@@ -52,7 +54,7 @@ function timeAgo(iso: string): string {
   return `${weeks}w ago`;
 }
 
-export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, disabled = false }: Props) {
+export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, disabled = false, onOutputOpen }: Props) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
@@ -105,6 +107,43 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triggerEdit]);
+
+  const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleTextClick = async () => {
+    if (clickTimer.current) {
+      // Double-click detected — cancel single-click action
+      clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+      return;
+    }
+    clickTimer.current = setTimeout(async () => {
+      clickTimer.current = null;
+      if (!todo.run_output) return;
+      const willShow = !showOutput;
+      setShowOutput(willShow);
+      if (willShow) {
+        onOutputOpen?.(todo.id);
+        if (!todo.is_read && todo.completed_by_run) {
+          onOptimisticUpdate((todos) =>
+            todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
+          );
+          try {
+            await api.updateTodo(todo.id, { is_read: true });
+            onRefresh();
+          } catch { /* silent — not critical */ }
+        }
+      }
+    }, 250);
+  };
+
+  const handleTextDoubleClick = () => {
+    if (clickTimer.current) {
+      clearTimeout(clickTimer.current);
+      clickTimer.current = null;
+    }
+    startEdit();
+  };
 
   const isPending = todo.id.startsWith("temp-");
 
@@ -332,7 +371,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
             )}
           </div>
         ) : (
-          <span className="todo-text" onDoubleClick={startEdit}>
+          <span className="todo-text" onClick={handleTextClick} onDoubleClick={handleTextDoubleClick} style={{ cursor: todo.run_output ? "pointer" : undefined }}>
             {todo.emoji && <span className="todo-emoji">{todo.emoji}</span>}
             <span dangerouslySetInnerHTML={{ __html: renderedText }} />
           </span>
@@ -409,21 +448,24 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
             onClick={async () => {
               const willShow = !showOutput;
               setShowOutput(willShow);
-              if (willShow && !todo.is_read && todo.completed_by_run) {
-                onOptimisticUpdate((todos) =>
-                  todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
-                );
-                try {
-                  await api.updateTodo(todo.id, { is_read: true });
-                  onRefresh();
-                } catch { /* silent — not critical */ }
+              if (willShow) {
+                onOutputOpen?.(todo.id);
+                if (!todo.is_read && todo.completed_by_run) {
+                  onOptimisticUpdate((todos) =>
+                    todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
+                  );
+                  try {
+                    await api.updateTodo(todo.id, { is_read: true });
+                    onRefresh();
+                  } catch { /* silent — not critical */ }
+                }
               }
             }}
             title="View Claude output"
           >{showOutput ? "▾" : "▸"}</button>
         )}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} disabled={disabled} />
+        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} disabled={disabled} />
         {todo.user_ordered && (
           <button className="btn-icon btn-unpin" onClick={unpinOrder} title="Unpin order — let the system reorder this item">📌</button>
         )}

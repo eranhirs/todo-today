@@ -11,9 +11,11 @@ Claude Todos is a Claude-integrated todo app that bridges your Claude Code sessi
 3. **Claude analyzer** extracts session transcripts and asks Claude (via CLI) to identify completed work and suggest new tasks
 4. Results are applied to the todo store — marking todos complete, adding new ones, discovering new projects
 5. **Autopilot** — after each analysis, projects with `auto_run_quota > 0` start one "next" todo per project. When a run finishes, the next eligible todo auto-starts and the quota decrements by one. No queueing — each run triggers the next on completion. The cycle repeats: analysis discovers todos → Autopilot runs them → next analysis picks up the results.
+5b. **Daily Run Limits** — each project has an optional `todo_quota` (0 = unlimited). When set, no more than N todos can be run (executed by Claude) within a 24-hour sliding window. Todos can always be created freely. Follow-ups on already-run todos don't count against the limit.
 6. **Event Bus** — centralized pub/sub system propagates events (hook updates, analysis completions, run lifecycle, queue drains) to all consumers. An SSE endpoint (`/api/events`) streams events to the frontend in real time, supplementing the 3s poll with instant updates.
 7. **Frontend** polls every 3 seconds as a baseline, with SSE event stream triggering immediate refreshes when state changes
 8. **Run with Claude** — users can click a play button on any todo to spawn a `claude -p` session that works on the task in the project directory. The background process updates the todo with output on completion. After the run finishes, analysis is triggered directly (bypassing hooks) via `queue_run_session_analysis`, ensuring reliable analysis even if hook delivery fails.
+8b. **BTW Messages** — while a run is in progress, users can send `/btw` messages that spawn a concurrent, independent Claude session running in parallel alongside the main run. The btw session operates as an ephemeral side-channel in the same project directory, with its output stored separately (`btw_output`/`btw_status`). The frontend displays a tabbed UI (Run | /btw) so users can view both outputs side by side.
 
 ## Tech Stack
 

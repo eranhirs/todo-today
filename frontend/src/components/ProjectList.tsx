@@ -15,6 +15,8 @@ interface ProjectCounts {
   inProgress: number;
   waiting: number;
   running: number;
+  next: number;
+  unreadRuns: number;
 }
 
 export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }: Props) {
@@ -26,17 +28,28 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     const counts: Record<string, ProjectCounts> = {};
     for (const t of todos) {
       if (t.status === "completed" || t.status === "rejected") continue;
-      if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0 };
+      if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
       const c = counts[t.project_id];
       c.total++;
       if (t.status === "in_progress") c.inProgress++;
       if (t.status === "waiting") c.waiting++;
       if (t.run_status === "running") c.running++;
+      if (t.status === "next") c.next++;
+      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) c.unreadRuns++;
     }
     return counts;
   }, [todos]);
 
-  const totalActive = useMemo(() => todos.filter((t) => t.status !== "completed" && t.status !== "rejected").length, [todos]);
+  const globalCounts = useMemo(() => {
+    let next = 0;
+    let unreadRuns = 0;
+    for (const t of todos) {
+      if (t.status === "completed" || t.status === "rejected") continue;
+      if (t.status === "next") next++;
+      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) unreadRuns++;
+    }
+    return { next, unreadRuns };
+  }, [todos]);
 
   const handleAdd = async () => {
     if (!name.trim()) return;
@@ -82,7 +95,11 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
         onClick={() => onSelect(null)}
       >
         <span className="project-name">All Projects</span>
-        {totalActive > 0 && <span className="project-count-badge">{totalActive}</span>}
+        {globalCounts.unreadRuns > 0 ? (
+          <span className="project-count-badge badge-unread-runs" title={`${globalCounts.unreadRuns} unread run${globalCounts.unreadRuns !== 1 ? "s" : ""}`}>{globalCounts.unreadRuns}</span>
+        ) : globalCounts.next > 0 ? (
+          <span className="project-count-badge badge-up-next" title={`${globalCounts.next} up next`}>{globalCounts.next}</span>
+        ) : null}
       </div>
       {projects.length === 0 && !adding && (
         <div className="empty-state empty-state-compact">
@@ -103,7 +120,11 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
               {c && c.inProgress > 0 && !c.running && <span className="project-indicator indicator-in-progress" title={`${c.inProgress} in progress`}>&#9679;</span>}
               {c && c.waiting > 0 && <span className="project-indicator indicator-waiting" title={`${c.waiting} waiting`}>&#9679;</span>}
             </span>
-            {c && c.total > 0 && <span className="project-count-badge">{c.total}</span>}
+            {c && c.unreadRuns > 0 ? (
+              <span className="project-count-badge badge-unread-runs" title={`${c.unreadRuns} unread run${c.unreadRuns !== 1 ? "s" : ""}`}>{c.unreadRuns}</span>
+            ) : c && c.next > 0 ? (
+              <span className="project-count-badge badge-up-next" title={`${c.next} up next`}>{c.next}</span>
+            ) : null}
             <select
               className={`autopilot-select ${p.auto_run_quota > 0 ? "autopilot-active" : ""}`}
               value={p.auto_run_quota}

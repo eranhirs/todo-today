@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useCallback } from "react";
+import { useState, useMemo, useRef, useCallback, useEffect } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { AddTodo } from "./AddTodo";
@@ -25,6 +25,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const [showDone, setShowDone] = useState(true);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [filterUnread, setFilterUnread] = useState(false);
+  // When unread filter is active and the user opens a todo's output (marking it read),
+  // keep that todo visible until a different output is opened.
+  const [stickyTodoId, setStickyTodoId] = useState<string | null>(null);
 
   // Drag-and-drop state
   const dragItemId = useRef<string | null>(null);
@@ -65,6 +68,15 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
 
   const clearTags = useCallback(() => setSelectedTags(new Set()), []);
 
+  // Clear sticky todo when unread filter is turned off
+  useEffect(() => {
+    if (!filterUnread) setStickyTodoId(null);
+  }, [filterUnread]);
+
+  const handleOutputOpen = useCallback((todoId: string) => {
+    if (filterUnread) setStickyTodoId(todoId);
+  }, [filterUnread]);
+
   // Count unread todos (completed_by_run && !is_read)
   const unreadCount = useMemo(() =>
     projectFiltered.filter((t) => t.completed_by_run && !t.is_read).length,
@@ -81,10 +93,10 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       });
     }
     if (filterUnread) {
-      result = result.filter((t) => t.completed_by_run && !t.is_read);
+      result = result.filter((t) => (t.completed_by_run && !t.is_read) || t.id === stickyTodoId);
     }
     return result;
-  }, [projectFiltered, selectedTags, filterUnread]);
+  }, [projectFiltered, selectedTags, filterUnread, stickyTodoId]);
 
   // Sort helper: sort_order ascending, then created_at descending as tiebreaker
   const sortByOrder = (a: Todo, b: Todo) => {
@@ -122,6 +134,20 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const projectName = (id: string) => projects.find((p) => p.id === id)?.name ?? "Unknown";
 
   const summary = selectedProjectId ? projectSummaries[selectedProjectId] : null;
+
+  // Compute quota info for the selected project
+  const selectedProject = useMemo(() =>
+    selectedProjectId ? projects.find((p) => p.id === selectedProjectId) ?? null : null,
+    [selectedProjectId, projects]
+  );
+  const runsInWindow = useMemo(() => {
+    if (!selectedProjectId) return 0;
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    return todos.filter(
+      (t) => t.project_id === selectedProjectId && t.run_started_at && t.run_started_at >= cutoff
+    ).length;
+  }, [selectedProjectId, todos]);
+  const atRunQuotaLimit = selectedProject ? selectedProject.todo_quota > 0 && runsInWindow >= selectedProject.todo_quota : false;
 
   // Drag-and-drop handlers
   const handleDragStart = useCallback((todoId: string, section: string) => {
@@ -214,7 +240,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       >
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} disabled={isOffline} />
+        <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} disabled={isOffline} onOutputOpen={handleOutputOpen} />
       </div>
     ));
 
@@ -222,6 +248,38 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     <div className="todo-list">
       <h2>{selectedProjectId ? projectName(selectedProjectId) : "All Projects"}</h2>
       {summary && <p className="project-summary">{summary}</p>}
+
+      {selectedProject && (
+        <div className="project-settings-bar">
+          <label className="project-settings-item">
+            <span className="project-settings-label">Daily run limit</span>
+            <span
+              className="help-tooltip"
+              title={"Limits how many todos can be run (executed by Claude) within a 24-hour sliding window. " +
+                "Todos can always be added freely. Follow-ups on already-run todos don't count against the limit. " +
+                "Set to \"none\" for unlimited."}
+            >?</span>
+            <select
+              className={`project-settings-select${selectedProject.todo_quota > 0 ? " quota-active" : ""}`}
+              value={selectedProject.todo_quota}
+              onChange={async (e) => {
+                await api.updateProject(selectedProject.id, { todo_quota: Number(e.target.value) });
+                onRefresh();
+              }}
+            >
+              <option value={0}>none</option>
+              {[1, 2, 3, 5, 10, 15, 20, 30, 50].map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            {selectedProject.todo_quota > 0 && (
+              <span className={`quota-usage${atRunQuotaLimit ? " quota-full" : ""}`}>
+                {runsInWindow}/{selectedProject.todo_quota}
+              </span>
+            )}
+          </label>
+        </div>
+      )}
 
       {selectedProjectId ? (
         <AddTodo projectId={selectedProjectId} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} />
@@ -308,7 +366,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                 {items.map((t) => (
                   <div key={t.id}>
                     {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                    <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} disabled={isOffline} />
+                    <TodoItem todo={t} allTags={allTags} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} disabled={isOffline} onOutputOpen={handleOutputOpen} />
                   </div>
                 ))}
               </div>
