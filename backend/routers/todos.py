@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
+import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..event_bus import EventType, bus
 from ..models import Todo, TodoCreate, TodoReorder, TodoUpdate, _now
-from ..tags import collect_all_tags
+from ..tags import collect_all_tags, rename_tag_in_text, parse_tags
 from ..run_manager import (
     _followup_claude_for_todo,
     _process_queue,
@@ -26,6 +29,13 @@ from ..storage import StorageContext
 
 _DEMO_MODE = os.environ.get("TODO_DEMO", "").lower() in ("1", "true", "yes")
 
+# Image storage directory — /tmp so it's clear this is ephemeral
+IMAGE_DIR = Path("/tmp/claude-todos-images")
+IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+
+_ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
+_MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
+
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/todos", tags=["todos"])
 
@@ -37,6 +47,34 @@ def list_tags() -> list[str]:
         return collect_all_tags([t.text for t in ctx.store.todos])
 
 
+class TagRename(BaseModel):
+    old_tag: str
+    new_tag: str
+
+
+@router.put("/tags/rename")
+def rename_tag(body: TagRename) -> dict:
+    """Rename a tag across all todos that contain it."""
+    old = body.old_tag.lower().strip()
+    new = body.new_tag.lower().strip()
+    if not old or not new:
+        raise HTTPException(status_code=400, detail="Tags must not be empty")
+    if old == new:
+        return {"status": "ok", "updated": 0}
+    # Validate new tag format
+    import re
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", new):
+        raise HTTPException(status_code=400, detail="Invalid tag format")
+    updated = 0
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            tags = parse_tags(t.text)
+            if old in tags:
+                t.text = rename_tag_in_text(t.text, old, new)
+                updated += 1
+    return {"status": "ok", "updated": updated}
+
+
 @router.get("")
 def list_todos(project_id: Optional[str] = None) -> list[Todo]:
     with StorageContext(read_only=True) as ctx:
@@ -46,9 +84,48 @@ def list_todos(project_id: Optional[str] = None) -> list[Todo]:
         return todos
 
 
+@router.post("/images", status_code=201)
+async def upload_image(file: UploadFile) -> dict:
+    """Upload an image to be attached to a todo. Returns the filename."""
+    if file.content_type not in _ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported image type: {file.content_type}")
+    ext = mimetypes.guess_extension(file.content_type) or ".png"
+    if ext == ".jpe":
+        ext = ".jpg"
+    filename = f"{uuid.uuid4().hex[:16]}{ext}"
+    filepath = IMAGE_DIR / filename
+    data = await file.read()
+    if len(data) > _MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=400, detail="Image too large (max 20 MB)")
+    filepath.write_bytes(data)
+    return {"filename": filename}
+
+
+@router.get("/images/{filename}")
+def get_image(filename: str) -> FileResponse:
+    """Serve an uploaded image."""
+    # Prevent path traversal
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    filepath = IMAGE_DIR / filename
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(filepath)
+
+
+@router.delete("/images/{filename}", status_code=204)
+def delete_image(filename: str) -> None:
+    """Delete an uploaded image."""
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    filepath = IMAGE_DIR / filename
+    if filepath.exists():
+        filepath.unlink()
+
+
 @router.post("", status_code=201)
 def create_todo(body: TodoCreate) -> Todo:
-    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only)
+    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, images=body.images)
     if todo.status == "completed":
         todo.completed_at = _now()
     with StorageContext() as ctx:
@@ -97,6 +174,7 @@ def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
             if t.id == todo_id:
                 if body.text is not None:
                     t.text = body.text
+                    t.original_text = None  # User chose this text — clear analyzer rename history
                 if body.project_id is not None:
                     t.project_id = body.project_id
                 if body.status is not None:

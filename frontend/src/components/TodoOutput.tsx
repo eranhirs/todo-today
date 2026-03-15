@@ -80,6 +80,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const [followupText, setFollowupText] = useState("");
   const [btwText, setBtwText] = useState("");
   const [activeTab, setActiveTab] = useState<OutputTab>("run");
+  const [expanded, setExpanded] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
   const btwOutputRef = useRef<HTMLPreElement>(null);
   const followupRef = useRef<HTMLInputElement>(null);
@@ -112,12 +113,12 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     }
   }, [showOutput, activeTab, todo.btw_output]);
 
-  // Auto-focus follow-up input when interrupted
+  // Auto-focus follow-up input when output is opened and follow-up bar is visible
   useEffect(() => {
-    if (todo.run_status === "stopped" && showOutput && followupRef.current) {
+    if (showOutput && showFollowup && followupRef.current) {
       followupRef.current.focus();
     }
-  }, [todo.run_status, showOutput]);
+  }, [showOutput, showFollowup]);
 
   const sendFollowup = async () => {
     if (disabled) {
@@ -188,6 +189,25 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         </div>
       )}
 
+      {/* Red flags — coping phrase warnings */}
+      {(!showTabs || activeTab === "run") && todo.red_flags && todo.red_flags.length > 0 && (
+        <div
+          className="red-flags"
+          draggable={false}
+          onMouseDown={(e) => e.stopPropagation()}
+          onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        >
+          <div className="red-flags-header">Coping detected — {todo.red_flags.length} red flag{todo.red_flags.length > 1 ? "s" : ""}</div>
+          {todo.red_flags.map((flag, i) => (
+            <div key={i} className="red-flag-item">
+              <span className="red-flag-label">{flag.label}</span>
+              <span className="red-flag-explanation">{flag.explanation}</span>
+              <span className="red-flag-excerpt">"{flag.excerpt}"</span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Run output tab */}
       {(!showTabs || activeTab === "run") && todo.run_output && (
         <div
@@ -196,7 +216,14 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
           onMouseDown={(e) => e.stopPropagation()}
           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
-          <pre ref={outputRef}>{renderOutput(todo.run_output)}</pre>
+          <pre ref={outputRef} className={expanded ? "expanded" : ""}>{renderOutput(todo.run_output)}</pre>
+          <button
+            className="btn-expand-output"
+            onClick={() => setExpanded(e => !e)}
+            title={expanded ? "Collapse output" : "Expand output"}
+          >
+            {expanded ? "▲ Collapse" : "▼ Expand"}
+          </button>
         </div>
       )}
 
@@ -208,7 +235,14 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
           onMouseDown={(e) => e.stopPropagation()}
           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
-          <pre ref={btwOutputRef}>{renderBtwOutput(todo.btw_output)}</pre>
+          <pre ref={btwOutputRef} className={expanded ? "expanded" : ""}>{renderBtwOutput(todo.btw_output)}</pre>
+          <button
+            className="btn-expand-output"
+            onClick={() => setExpanded(e => !e)}
+            title={expanded ? "Collapse output" : "Expand output"}
+          >
+            {expanded ? "▲ Collapse" : "▼ Expand"}
+          </button>
         </div>
       )}
 

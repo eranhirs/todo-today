@@ -234,6 +234,9 @@ def _apply_result(
             emoji, clean_text = _extract_emoji(mod.text)
             # Strip unknown tags — Claude can use existing tags but not create new ones
             clean_text = filter_unknown_tags(clean_text, known_tags)
+            # Preserve original text so users can see what they typed before the rename
+            if t.original_text is None:
+                t.original_text = t.text
             t.text = clean_text
             if emoji:
                 t.emoji = emoji

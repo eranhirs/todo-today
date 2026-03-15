@@ -1,9 +1,14 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
 
 type AddMode = "add" | "add-run" | "add-plan";
+
+interface PendingImage {
+  filename: string;  // server-side filename after upload
+  previewUrl: string; // local blob URL for preview
+}
 
 interface Props {
   projectId?: string;
@@ -29,6 +34,8 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
   const dropdownRef = useRef<HTMLDivElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
   const [modifierHeld, setModifierHeld] = useState(false);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [uploading, setUploading] = useState(false);
 
   // Track Cmd/Ctrl held state for button label
   useEffect(() => {
@@ -69,6 +76,13 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [dropdownOpen]);
+
+  // Clean up blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Compute tag suggestions based on cursor position
   const tagFragment = useMemo(() => {
@@ -118,6 +132,56 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     }, 0);
   };
 
+  const handleImageUpload = useCallback(async (files: File[]) => {
+    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+
+    setUploading(true);
+    try {
+      for (const file of imageFiles) {
+        try {
+          const { filename } = await api.uploadImage(file);
+          const previewUrl = URL.createObjectURL(file);
+          setPendingImages((prev) => [...prev, { filename, previewUrl }]);
+        } catch (err) {
+          addToast(`Failed to upload image: ${apiErrorMessage(err)}`, "error");
+        }
+      }
+    } finally {
+      setUploading(false);
+    }
+  }, [addToast]);
+
+  const removeImage = useCallback((idx: number) => {
+    setPendingImages((prev) => {
+      const removed = prev[idx];
+      if (removed) {
+        URL.revokeObjectURL(removed.previewUrl);
+        api.deleteImage(removed.filename).catch(() => {});
+      }
+      return prev.filter((_, i) => i !== idx);
+    });
+  }, []);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      e.preventDefault(); // Don't paste image data as text
+      handleImageUpload(imageFiles);
+    }
+  }, [handleImageUpload]);
+
   const switchMode = (m: AddMode) => {
     setMode(m);
     setDropdownOpen(false);
@@ -126,7 +190,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
   const handleAdd = async (overrideMode?: AddMode) => {
     const trimmed = text.trim();
     const pid = projectId ?? selectedProject;
-    if (!trimmed || !pid) {
+    if ((!trimmed && pendingImages.length === 0) || !pid) {
       if (!pid) addToast("Select a project first", "warning");
       return;
     }
@@ -135,12 +199,14 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     const shouldRun = activeMode === "add-run" || activeMode === "add-plan";
     const planOnly = activeMode === "add-plan";
 
+    const imageFilenames = pendingImages.map((img) => img.filename);
+
     // Optimistic placeholder
     const tempId = `temp-${Date.now()}`;
     const placeholder: Todo = {
       id: tempId,
       project_id: pid,
-      text: trimmed,
+      text: trimmed || "(image attached)",
       status: "next",
       source: "user",
       completed_by_run: false,
@@ -148,6 +214,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       session_id: null,
       created_at: new Date().toISOString(),
       completed_at: null,
+      original_text: null,
       run_output: null,
       run_status: shouldRun ? "queued" : null,
       run_trigger: shouldRun ? "manual" : null,
@@ -160,9 +227,14 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       user_ordered: false,
       stale_reason: null,
       rejected_at: null,
+      images: imageFilenames,
+      red_flags: [],
     };
     onOptimisticUpdate((todos) => [placeholder, ...todos]);
     setText("");
+    // Clean up preview URLs (server has the files now)
+    pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+    setPendingImages([]);
 
     // If offline, keep the placeholder visible but don't try the API
     if (isOffline) {
@@ -171,7 +243,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     }
 
     try {
-      const created = await api.createTodo(pid, trimmed, planOnly);
+      const created = await api.createTodo(pid, trimmed || "(image attached)", planOnly, imageFilenames);
       if (shouldRun) {
         try {
           const result = await api.runTodo(created.id);
@@ -217,12 +289,13 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       )}
       <div className="add-todo-input-wrapper">
         <textarea
-          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Ctrl+Enter to add & run, # for tags)"}
+          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Ctrl+Enter to add & run, # for tags, paste images)"}
           value={text}
           rows={1}
           disabled={disabled && !isOffline}
           onChange={(e) => setText(e.target.value)}
           ref={textareaRef}
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             // Handle tag suggestion navigation
             if (tagSuggestions.length > 0) {
@@ -263,6 +336,26 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
             }
           }}
         />
+        {pendingImages.length > 0 && (
+          <div className="add-todo-images">
+            {pendingImages.map((img, idx) => (
+              <div key={img.filename} className="add-todo-image-thumb">
+                <img src={img.previewUrl} alt={`Attachment ${idx + 1}`} />
+                <button
+                  className="add-todo-image-remove"
+                  onClick={() => removeImage(idx)}
+                  title="Remove image"
+                >
+                  x
+                </button>
+              </div>
+            ))}
+            <div className="add-todo-images-warning">
+              Images stored in /tmp — may be cleared on reboot
+            </div>
+          </div>
+        )}
+        {uploading && <div className="add-todo-uploading">Uploading image...</div>}
         {tagSuggestions.length > 0 && (
           <div className="tag-suggestions" ref={suggestionsRef}>
             {tagSuggestions.map((tag, i) => (

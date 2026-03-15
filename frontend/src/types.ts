@@ -21,6 +21,7 @@ export interface Todo {
   created_at: string;
   completed_at: string | null;
   rejected_at: string | null;
+  original_text: string | null;
   run_output: string | null;
   run_status: "running" | "done" | "error" | "stopped" | "queued" | null;
   run_trigger: "manual" | "autopilot" | null;
@@ -32,6 +33,8 @@ export interface Todo {
   sort_order: number;
   user_ordered: boolean;
   stale_reason: string | null;
+  images: string[];
+  red_flags: { label: string; explanation: string; excerpt: string }[];
 }
 
 export interface Insight {

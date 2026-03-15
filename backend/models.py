@@ -58,8 +58,11 @@ class Todo(BaseModel):
     plan_only: bool = False  # When True, agent plans but cannot implement
     sort_order: int = 0
     user_ordered: bool = False
+    original_text: Optional[str] = None  # Preserved when analyzer renames a user-created todo text
     stale_reason: Optional[str] = None
     rejected_at: Optional[str] = None
+    images: List[str] = []  # Filenames in the image temp directory
+    red_flags: List[Dict[str, str]] = []  # Coping-phrase red flags detected in run output
 
     @model_validator(mode="before")
     @classmethod
@@ -207,6 +210,7 @@ class TodoCreate(BaseModel):
     text: str
     status: TodoStatus = "next"
     plan_only: bool = False
+    images: List[str] = []
 
 
 class TodoUpdate(BaseModel):

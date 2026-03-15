@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+from .coping_detector import detect_coping_phrases
 from .event_bus import EventType, bus
 from .models import _now
 from .storage import DATA_DIR, StorageContext
@@ -473,7 +474,11 @@ def _invoke_claude(
     """
     disallowed = ["AskUserQuestion"]
     if plan_only:
-        disallowed.extend(["Edit", "Write", "Bash", "NotebookEdit"])
+        # Allow Write so the agent can save plan files; block Edit/Bash to
+        # prevent code changes.  Also block EnterPlanMode/ExitPlanMode so
+        # Claude Code's built-in plan mode doesn't re-restrict Write.
+        disallowed.extend(["Edit", "Bash", "NotebookEdit",
+                           "EnterPlanMode", "ExitPlanMode"])
     cmd = [
         "claude", "-p", "--output-format", "stream-json", "--verbose",
         "--dangerously-skip-permissions",
@@ -593,7 +598,7 @@ def _tail_output_file(
 # ── Run orchestration ────────────────────────────────────────────
 
 
-def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "", plan_only: bool = False) -> None:
+def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "", plan_only: bool = False, images: list[str] | None = None) -> None:
     """Background thread: run claude -p, auto-accepting plan mode if needed."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
     try:
@@ -603,6 +608,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             prompt = (
                 f"Plan this task — explore the codebase, understand the requirements, "
                 f"and create a detailed step-by-step implementation plan. "
+                f"Write the plan to a file (e.g. tasks/plan.md or a descriptive name). "
                 f"Do NOT write any code or make any changes. Only plan: {todo_text}"
             )
         else:
@@ -610,6 +616,11 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 f"Implement this task fully — write all the code, make all the changes, "
                 f"do not stop to ask for feedback or approval: {todo_text}"
             )
+        # Append image references so Claude can read them
+        if images:
+            prompt += "\n\nThis task has attached images. Read each one to see the visual context:"
+            for img in images:
+                prompt += f"\n- /tmp/claude-todos-images/{img}"
         session_header = f"Session: {session_id}\n\n"
         accumulated: list[str] = []
 
@@ -774,6 +785,9 @@ def _finalize_run(
         if final_result.get("permission_denials"):
             had_errors = True
 
+    # Scan output for coping phrases
+    red_flags = detect_coping_phrases(output_text)
+
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
@@ -781,6 +795,7 @@ def _finalize_run(
                 t.run_pid = None
                 t.run_output_file = None
                 t.is_read = False
+                t.red_flags = red_flags
                 if had_errors:
                     t.run_status = "error"
                     bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)
@@ -982,8 +997,9 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         proj_id = todo.project_id
         run_model = ctx.metadata.run_model
         is_plan_only = todo.plan_only
+        todo_images = list(todo.images) if todo.images else None
 
-    process_manager.spawn_thread(todo_id, _run_claude_for_todo, (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only))
+    process_manager.spawn_thread(todo_id, _run_claude_for_todo, (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only, todo_images))
     return None
 
 
@@ -1039,6 +1055,7 @@ def _process_queue(project_id: str) -> None:
         todo_text = candidate.text
         run_model = ctx.metadata.run_model
         is_plan_only = candidate.plan_only
+        todo_images = list(candidate.images) if candidate.images else None
 
         # Check if this is a queued follow-up (has pending_followup and session_id)
         followup_msg = candidate.pending_followup
@@ -1057,7 +1074,7 @@ def _process_queue(project_id: str) -> None:
     else:
         process_manager.spawn_thread(
             todo_id, _run_claude_for_todo,
-            (todo_id, todo_text, source_path, run_model, project_id, is_plan_only),
+            (todo_id, todo_text, source_path, run_model, project_id, is_plan_only, todo_images),
         )
     log.info("Queue: auto-started todo %s for project %s", todo_id, project_id)
 

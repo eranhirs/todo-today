@@ -52,10 +52,19 @@ Delete a project and all its todos.
 List todos, optionally filtered by project.
 
 ### `POST /api/todos`
-Create a todo.
+Create a todo. Optionally attach images (filenames from the upload endpoint).
 ```json
-{ "project_id": "proj_abc123", "text": "Fix the bug" }
+{ "project_id": "proj_abc123", "text": "Fix the bug", "images": ["abc123.png"] }
 ```
+
+### `POST /api/todos/images`
+Upload an image (multipart form-data). Returns `{ "filename": "abc123.png" }`. Images are stored in `/tmp/claude-todos-images/` — this directory may be cleared on reboot. Supported types: PNG, JPEG, GIF, WebP, SVG. Max 20 MB.
+
+### `GET /api/todos/images/{filename}`
+Serve an uploaded image by filename.
+
+### `DELETE /api/todos/images/{filename}`
+Delete an uploaded image.
 
 ### `GET /api/todos/{todo_id}`
 Get a single todo.
@@ -75,7 +84,7 @@ Kick off a background Claude Code session to complete the todo. Claude runs in t
 
 Returns `{ "status": "started" }`.
 
-When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. On failure, `run_status` is set to `"error"` and `run_output` contains the error message.
+When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. The output is also scanned for "coping" phrases (e.g. "belt-and-suspenders", "defensive", "just in case") and any matches are stored in `red_flags` — an array of `{ label, explanation, excerpt }` objects. On failure, `run_status` is set to `"error"` and `run_output` contains the error message.
 
 Returns 409 if the todo is already running, 400 if the project has no `source_path`, 429 if the daily run limit is reached.
 
