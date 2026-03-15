@@ -27,6 +27,11 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
   const countsByProject = useMemo(() => {
     const counts: Record<string, ProjectCounts> = {};
     for (const t of todos) {
+      // Count unread runs across ALL todos (including completed)
+      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) {
+        if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
+        counts[t.project_id].unreadRuns++;
+      }
       if (t.status === "completed" || t.status === "rejected") continue;
       if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
       const c = counts[t.project_id];
@@ -35,7 +40,6 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
       if (t.status === "waiting") c.waiting++;
       if (t.run_status === "running") c.running++;
       if (t.status === "next") c.next++;
-      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) c.unreadRuns++;
     }
     return counts;
   }, [todos]);
@@ -44,9 +48,10 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     let next = 0;
     let unreadRuns = 0;
     for (const t of todos) {
+      // Unread runs count across all statuses
+      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) unreadRuns++;
       if (t.status === "completed" || t.status === "rejected") continue;
       if (t.status === "next") next++;
-      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) unreadRuns++;
     }
     return { next, unreadRuns };
   }, [todos]);
