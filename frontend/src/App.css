@@ -657,18 +657,36 @@ body {
   font-size: 0.7rem;
   color: var(--text-dim);
   cursor: pointer;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 1px 4px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.badge-images:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border);
+}
+.badge-images.badge-images-active {
+  background: rgba(59, 130, 246, 0.12);
+  border-color: var(--blue);
+  color: var(--blue);
 }
 
-/* Image attachments — TodoItem */
+/* Image attachments — TodoItem (card-outside layout) */
 .todo-images-grouped {
-  padding: 4px 12px 4px 44px;
+  padding: 6px 12px 6px 18px;
+  margin: 0 0 4px 3px;
+  border-left: 2px solid var(--border);
+  background: rgba(255, 255, 255, 0.015);
+  border-radius: 0 6px 6px 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 .todo-images-group {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 .todo-images-group-label {
@@ -676,12 +694,13 @@ body {
   color: var(--text-dim);
   white-space: nowrap;
   min-width: 52px;
+  padding-top: 4px;
 }
 .todo-images {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  align-items: center;
+  align-items: flex-start;
 }
 .todo-image-thumb {
   display: block;
@@ -691,13 +710,23 @@ body {
   overflow: hidden;
   border: 1px solid var(--border);
   flex-shrink: 0;
-  transition: transform 0.15s;
+  cursor: pointer;
+  transition: width 0.2s ease, height 0.2s ease, border-color 0.15s;
 }
-.todo-image-thumb:hover { transform: scale(1.5); z-index: 10; }
+.todo-image-thumb:hover { border-color: var(--blue); }
+.todo-image-thumb.expanded {
+  width: 320px;
+  height: auto;
+  border-color: var(--blue);
+}
 .todo-image-thumb img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.todo-image-thumb.expanded img {
+  height: auto;
+  object-fit: contain;
 }
 
 /* Search bar */
@@ -1932,6 +1961,19 @@ body {
   color: var(--blue);
   letter-spacing: 0.03em;
   flex-shrink: 0;
+}
+
+.manual-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--orange, #d19a66);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
+
+.todo-item.todo-manual .todo-text {
+  opacity: 0.85;
 }
 
 .pinned-badge {

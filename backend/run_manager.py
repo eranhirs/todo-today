@@ -32,6 +32,23 @@ _FLUSH_INTERVAL = 3  # seconds between progress flushes
 
 _MAX_PLAN_RETRIES = 3  # max times we'll auto-accept a plan and continue
 
+OUTPUT_MAX_CHARS = 500_000  # single constant for the output size cap
+
+_TRUNCATION_NOTICE = (
+    "\n\n--- Output truncated ---\n"
+    f"Output exceeded the {OUTPUT_MAX_CHARS:,} character limit and was truncated. "
+    "Earlier content has been removed. Send a follow-up to continue."
+)
+
+
+def cap_output(text: str) -> str:
+    """Enforce the output character limit, appending a notice if truncated."""
+    if len(text) <= OUTPUT_MAX_CHARS:
+        return text
+    # Truncate from the beginning (keep most recent output) and add notice
+    budget = OUTPUT_MAX_CHARS - len(_TRUNCATION_NOTICE)
+    return _TRUNCATION_NOTICE + text[-budget:]
+
 # Patterns that indicate Claude API quota/rate-limit exhaustion.
 # When detected during an autopilot run, the todo is reset to "next" so the
 # next heartbeat can retry instead of marking it as permanently failed.
@@ -183,7 +200,7 @@ def _flush_progress(todo_id: str, output: str) -> None:
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
-                t.run_output = output[:500000]
+                t.run_output = cap_output(output)
                 break
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
@@ -265,7 +282,7 @@ def _flush_btw_progress(todo_id: str, output: str) -> None:
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
-                t.btw_output = output[:500000]
+                t.btw_output = cap_output(output)
                 break
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
@@ -383,7 +400,7 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
-                    t.btw_output = (f"**You:** {message}\n\n" + output_text)[:500000]
+                    t.btw_output = cap_output(f"**You:** {message}\n\n" + output_text)
                     t.btw_status = "error" if returncode != 0 else "done"
                     t.btw_pid = None
                     t.btw_output_file = None
@@ -771,7 +788,7 @@ def _finalize_run(
             for t in ctx.store.todos:
                 if t.id == todo_id:
                     t.run_status = "error"
-                    t.run_output = (session_header + stderr_msg)[:500000]
+                    t.run_output = cap_output(session_header + stderr_msg)
                     t.run_pid = None
                     t.run_output_file = None
                     break
@@ -793,7 +810,7 @@ def _finalize_run(
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
-                t.run_output = (session_header + output_text)[:500000]
+                t.run_output = cap_output(session_header + output_text)
                 t.run_pid = None
                 t.run_output_file = None
                 t.is_read = False
@@ -945,6 +962,8 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         if todo is None:
             return "todo not found"
 
+        if todo.manual:
+            return "manual task"
         if todo.run_status == "queued":
             return "already queued"
         if todo.run_status == "running":
@@ -999,7 +1018,7 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         proj_id = todo.project_id
         run_model = ctx.metadata.run_model
         is_plan_only = todo.plan_only
-        todo_images = list(todo.images) if todo.images else None
+        todo_images = [img.filename for img in todo.images] if todo.images else None
 
     process_manager.spawn_thread(todo_id, _run_claude_for_todo, (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only, todo_images))
     return None
@@ -1057,7 +1076,7 @@ def _process_queue(project_id: str) -> None:
         todo_text = candidate.text
         run_model = ctx.metadata.run_model
         is_plan_only = candidate.plan_only
-        todo_images = list(candidate.images) if candidate.images else None
+        todo_images = [img.filename for img in candidate.images] if candidate.images else None
 
         # Check if this is a queued follow-up (has pending_followup and session_id)
         followup_msg = candidate.pending_followup
@@ -1112,10 +1131,10 @@ def autopilot_continue(project_id: str) -> None:
             log.info("Autopilot continue: run quota %d reached for project %s, stopping", todo_quota, project_id)
             return
 
-        # Find eligible candidates
+        # Find eligible candidates (exclude manual tasks — those are for humans)
         candidates = [
             t for t in ctx.store.todos
-            if t.project_id == project_id and t.status == "next" and t.run_status not in ("queued", "running")
+            if t.project_id == project_id and t.status == "next" and t.run_status not in ("queued", "running") and not t.manual
         ]
         if not candidates:
             return

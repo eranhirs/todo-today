@@ -18,6 +18,7 @@ from .models import ErrorResponse, FullState, _now
 from .routers import claude, projects, todos
 from .run_manager import (
     autopilot_continue,
+    cap_output,
     parse_output_file_result,
     process_manager,
     reconnect_todo_run,
@@ -71,7 +72,7 @@ def _cleanup_stale_runs() -> None:
                         # Preserve existing output (from before restart) and append recovery info
                         existing = t.run_output or ""
                         recovery_header = existing + "\n\n[Recovered after server restart]\n\n" if existing else "[Recovered after server restart]\n\n"
-                        t.run_output = (recovery_header + output_text)[:500000] if output_text else t.run_output
+                        t.run_output = cap_output(recovery_header + output_text) if output_text else t.run_output
                         t.run_pid = None
                         t.run_output_file = None
                         if had_errors or not final_result:

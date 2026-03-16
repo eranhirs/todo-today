@@ -12,11 +12,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..event_bus import EventType, bus
-from ..models import Todo, TodoCreate, TodoReorder, TodoUpdate, _now
+from ..models import ImageAttachment, Todo, TodoCreate, TodoReorder, TodoUpdate, _now
 from ..tags import collect_all_tags, rename_tag_in_text, parse_tags
 from ..run_manager import (
+    OUTPUT_MAX_CHARS,
     _followup_claude_for_todo,
     _process_queue,
+    cap_output,
     dequeue_todo_run,
     is_btw_running,
     is_project_busy,
@@ -125,7 +127,14 @@ def delete_image(filename: str) -> None:
 
 @router.post("", status_code=201)
 def create_todo(body: TodoCreate) -> Todo:
-    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, images=body.images)
+    image_attachments = [ImageAttachment(filename=f, source="creation") for f in body.images]
+    # Parse /manual command from text
+    import re
+    text = body.text
+    is_manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', text))
+    if is_manual:
+        text = re.sub(r'(?:^|\s)/manual(?:\s|$)', ' ', text).strip()
+    todo = Todo(project_id=body.project_id, text=text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, images=image_attachments)
     if todo.status == "completed":
         todo.completed_at = _now()
     with StorageContext() as ctx:
@@ -195,6 +204,8 @@ def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                     t.stale_reason = body.stale_reason
                 if body.is_read is not None:
                     t.is_read = body.is_read
+                if body.manual is not None:
+                    t.manual = body.manual
                 if body.user_ordered is not None:
                     t.user_ordered = body.user_ordered
                     # When unpinning, recalculate sort_order for unpinned siblings by created_at
@@ -273,10 +284,10 @@ def stop_todo(todo_id: str) -> dict:
             todo.btw_output_file = None
             if todo.btw_status == "running":
                 todo.btw_status = "error"
-                todo.btw_output = ((todo.btw_output or "") + "\n\n--- Stopped ---")[:500000]
+                todo.btw_output = cap_output((todo.btw_output or "") + "\n\n--- Stopped ---")
         # Append interruption marker to output
         if todo.run_output:
-            todo.run_output = (todo.run_output + "\n\n--- Paused ---")[:500000]
+            todo.run_output = cap_output(todo.run_output + "\n\n--- Paused ---")
 
     # Kill the subprocess (and its process group) outside the lock
     if pid:
@@ -321,6 +332,8 @@ def run_todo(todo_id: str, body: RunRequest = RunRequest()) -> dict:
                     break
 
     err = start_todo_run(todo_id)
+    if err == "manual task":
+        raise HTTPException(status_code=400, detail="This is a manual task — it can only be completed by a human")
     if err == "run_quota_exceeded":
         raise HTTPException(status_code=429, detail="Daily run limit reached for this project")
     if err == "already running":
@@ -383,6 +396,8 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 break
         if todo is None:
             raise HTTPException(status_code=404, detail="Todo not found")
+        if todo.manual:
+            raise HTTPException(status_code=400, detail="This is a manual task — it can only be completed by a human")
         if not todo.session_id:
             raise HTTPException(status_code=400, detail="No session to follow up on — run the todo first")
         if todo.run_status == "running":
@@ -409,7 +424,10 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
         # Persist any new images on the todo
         if body.images:
-            todo.images = list(todo.images) + list(body.images)
+            new_attachments = [ImageAttachment(filename=f, source="followup") for f in body.images]
+            todo.images = list(todo.images) + new_attachments
+
+        img_suffix = f" [+{len(body.images)} image{'s' if len(body.images) != 1 else ''}]" if body.images else ""
 
         if project_busy:
             # Queue the follow-up; store the pending message so _process_queue can use it
@@ -419,13 +437,13 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
             todo.pending_followup = body.message
             todo.pending_followup_images = list(body.images)
             # Immediately show the user's follow-up message in the output
-            todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}\n"
+            todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n"
             return {"status": "queued"}
 
         todo.run_status = "running"
         todo.status = "in_progress"
         # Immediately show the user's follow-up message in the output
-        todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}\n"
+        todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}{img_suffix}\n"
         proj_id = todo.project_id
         run_model = ctx.metadata.run_model
         followup_images = list(body.images)

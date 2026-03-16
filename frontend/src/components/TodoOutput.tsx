@@ -11,6 +11,10 @@ interface Props {
   disabled?: boolean;
 }
 
+/** Must match backend OUTPUT_MAX_CHARS in run_manager.py */
+const OUTPUT_MAX_CHARS = 500_000;
+const OUTPUT_WARNING_THRESHOLD = 0.9; // warn at 90%
+
 const FOLLOWUP_RE = /\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* /;
 
 function renderOutput(text: string) {
@@ -44,12 +48,20 @@ function renderOutput(text: string) {
     const userMsg = newlineIdx === -1 ? parts[i] : parts[i].slice(0, newlineIdx);
     const rest = newlineIdx === -1 ? "" : parts[i].slice(newlineIdx);
 
+    // Extract image badge if present (e.g. " [+2 images]")
+    const imgBadgeMatch = userMsg.match(/ \[\+\d+ images?\]$/);
+    const msgText = imgBadgeMatch ? userMsg.slice(0, imgBadgeMatch.index) : userMsg;
+    const imgBadge = imgBadgeMatch ? imgBadgeMatch[0].trim() : null;
+
     elements.push(
       <span key={`followup-${matchIndex}`} className="followup-marker">
         {"\n\n"}
         <span className="followup-header">{"── " + headerText + " ──"}</span>
         {"\n"}
-        <span className="followup-user-msg">{"▶ You: " + userMsg}</span>
+        <span className="followup-user-msg">
+          {"▶ You: " + msgText}
+          {imgBadge && <span className="followup-img-badge">{" " + imgBadge}</span>}
+        </span>
       </span>
     );
     if (rest) elements.push(rest);
@@ -229,6 +241,11 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     });
   }, []);
 
+  const outputLen = todo.run_output?.length ?? 0;
+  const outputPct = outputLen / OUTPUT_MAX_CHARS;
+  const isNearLimit = outputPct >= OUTPUT_WARNING_THRESHOLD;
+  const isTruncated = todo.run_output?.includes("--- Output truncated ---") ?? false;
+
   if (!showOutput) return null;
 
   const showTabs = hasBtwOutput;
@@ -351,6 +368,14 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
             }}
           />
           <button className="btn-icon btn-run" onClick={sendBtw} disabled={disabled || isBtwRunning} title="Send /btw">↵</button>
+        </div>
+      )}
+      {/* Output limit warning — shown near follow-up bar */}
+      {showFollowup && (isNearLimit || isTruncated) && (
+        <div className="output-limit-warning" draggable={false} onMouseDown={(e) => e.stopPropagation()}>
+          {isTruncated
+            ? `⚠ Output was truncated at ${(OUTPUT_MAX_CHARS / 1000).toFixed(0)}K characters. Earlier content was removed to stay within the limit.`
+            : `⚠ Output is at ${Math.round(outputPct * 100)}% of the ${(OUTPUT_MAX_CHARS / 1000).toFixed(0)}K character limit. Follow-ups may cause truncation of earlier output.`}
         </div>
       )}
       {showFollowup && (
