@@ -602,6 +602,53 @@ body {
   color: #fff;
 }
 
+/* Command suggestions dropdown */
+.cmd-suggestions {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  z-index: 100;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+}
+.cmd-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.cmd-suggestion-item:hover,
+.cmd-suggestion-item.selected {
+  background: var(--accent);
+  color: #fff;
+}
+.cmd-suggestion-name {
+  font-weight: 600;
+  color: var(--orange, #d19a66);
+  white-space: nowrap;
+}
+.cmd-suggestion-item:hover .cmd-suggestion-name,
+.cmd-suggestion-item.selected .cmd-suggestion-name {
+  color: #fff;
+}
+.cmd-suggestion-desc {
+  opacity: 0.7;
+  font-size: 0.8rem;
+}
+
 /* Image attachments — AddTodo */
 .add-todo-images {
   display: flex;
@@ -849,13 +896,14 @@ body {
   white-space: nowrap;
 }
 
-/* Edit wrapper for tag suggestions in todo item */
+/* Edit wrapper for tag/command suggestions in todo item */
 .todo-edit-wrapper {
   position: relative;
   flex: 1;
   min-width: 0;
 }
-.todo-edit-wrapper .tag-suggestions {
+.todo-edit-wrapper .tag-suggestions,
+.todo-edit-wrapper .cmd-suggestions {
   bottom: auto;
   top: 100%;
   margin-bottom: 0;
@@ -2128,7 +2176,7 @@ body {
 .output-toolbar {
   position: absolute;
   top: 6px;
-  right: 18px;
+  right: 24px;
   display: flex;
   gap: 4px;
   z-index: 2;
@@ -2141,14 +2189,14 @@ body {
 }
 
 .output-toolbar-btn {
-  padding: 2px 7px;
+  padding: 4px 8px;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 4px;
   color: var(--text-dim);
-  font-size: 0.65rem;
+  font-size: 0.85rem;
   cursor: pointer;
-  line-height: 1.4;
+  line-height: 1;
   transition: background 0.15s, color 0.15s;
 }
 

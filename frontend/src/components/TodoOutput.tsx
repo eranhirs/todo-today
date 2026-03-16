@@ -309,7 +309,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
               onClick={() => copyOutput(todo.run_output!)}
               title="Copy output"
             >
-              {copied ? "Copied!" : "Copy"}
+              {copied ? "\u2713" : "\u2398"}
             </button>
             <button
               className="output-toolbar-btn"
@@ -337,7 +337,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
               onClick={() => copyOutput(todo.btw_output!)}
               title="Copy output"
             >
-              {copied ? "Copied!" : "Copy"}
+              {copied ? "\u2713" : "\u2398"}
             </button>
             <button
               className="output-toolbar-btn"
