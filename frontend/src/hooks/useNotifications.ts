@@ -4,7 +4,6 @@ import { api } from "../api";
 
 const TOAST_DURATION = 12_000;
 const TITLE_FLASH_INTERVAL = 1_000;
-const TITLE_FLASH_CYCLES = 6;
 
 /* SVG data-URI icons for browser notifications, one per event type */
 const svgIcon = (emoji: string, bg: string) =>
@@ -50,25 +49,23 @@ export function useNotifications() {
   const titleFlashTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const originalTitle = useRef(document.title);
 
-  // Flash the page title as a fallback notification when tab is not focused
+  // Flash the page title as a fallback notification when tab is not focused.
+  // Keeps flashing indefinitely until the user returns — native Notification
+  // can be silently suppressed by OS-level settings, so this is the reliable
+  // fallback that always fires when the tab is not focused.
   const flashTitle = useCallback((msg: string) => {
     if (document.hasFocus()) return;
-    // Don't stack flashes
+    // Don't stack flashes — restart with the latest message
     if (titleFlashTimer.current) clearInterval(titleFlashTimer.current);
     originalTitle.current = document.title;
-    let cycle = 0;
+    let tick = 0;
     titleFlashTimer.current = setInterval(() => {
-      cycle++;
-      document.title = cycle % 2 === 1 ? `*** ${msg}` : originalTitle.current;
-      if (cycle >= TITLE_FLASH_CYCLES) {
-        clearInterval(titleFlashTimer.current!);
-        titleFlashTimer.current = null;
-        document.title = originalTitle.current;
-      }
+      tick++;
+      document.title = tick % 2 === 1 ? `*** ${msg}` : originalTitle.current;
     }, TITLE_FLASH_INTERVAL);
   }, []);
 
-  // Stop flashing when user returns to the tab
+  // Stop flashing when user returns to the tab (focus or visibility change)
   useEffect(() => {
     const stopFlash = () => {
       if (titleFlashTimer.current) {
@@ -77,8 +74,13 @@ export function useNotifications() {
         document.title = originalTitle.current;
       }
     };
+    const onVisibility = () => { if (!document.hidden) stopFlash(); };
     window.addEventListener("focus", stopFlash);
-    return () => window.removeEventListener("focus", stopFlash);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("focus", stopFlash);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   const addToast = useCallback((text: string, type: ToastType = "info") => {
