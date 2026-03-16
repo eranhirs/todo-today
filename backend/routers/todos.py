@@ -5,7 +5,7 @@ import mimetypes
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -273,10 +273,10 @@ def stop_todo(todo_id: str) -> dict:
             todo.btw_output_file = None
             if todo.btw_status == "running":
                 todo.btw_status = "error"
-                todo.btw_output = ((todo.btw_output or "") + "\n\n--- Stopped ---")[:50000]
+                todo.btw_output = ((todo.btw_output or "") + "\n\n--- Stopped ---")[:500000]
         # Append interruption marker to output
         if todo.run_output:
-            todo.run_output = (todo.run_output + "\n\n--- Paused ---")[:50000]
+            todo.run_output = (todo.run_output + "\n\n--- Paused ---")[:500000]
 
     # Kill the subprocess (and its process group) outside the lock
     if pid:
@@ -358,6 +358,7 @@ def dequeue_todo(todo_id: str) -> dict:
 
 class FollowupRequest(BaseModel):
     message: str
+    images: List[str] = []
 
 
 @router.post("/{todo_id}/followup")
@@ -406,12 +407,17 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
         # Follow-up always moves the todo back to an active state
         todo.completed_at = None
 
+        # Persist any new images on the todo
+        if body.images:
+            todo.images = list(todo.images) + list(body.images)
+
         if project_busy:
             # Queue the follow-up; store the pending message so _process_queue can use it
             todo.status = "next"
             todo.run_status = "queued"
             todo.queued_at = _now()
             todo.pending_followup = body.message
+            todo.pending_followup_images = list(body.images)
             # Immediately show the user's follow-up message in the output
             todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}\n"
             return {"status": "queued"}
@@ -422,10 +428,11 @@ def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
         todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}\n"
         proj_id = todo.project_id
         run_model = ctx.metadata.run_model
+        followup_images = list(body.images)
 
     process_manager.spawn_thread(
         todo_id, _followup_claude_for_todo,
-        (todo_id, body.message, session_id, source_path, run_model, proj_id),
+        (todo_id, body.message, session_id, source_path, run_model, proj_id, followup_images),
     )
     return {"status": "started"}
 

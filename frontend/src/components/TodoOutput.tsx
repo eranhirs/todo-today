@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import type { Todo } from "../types";
 import { api } from "../api";
+import { apiErrorMessage } from "../errors";
 
 interface Props {
   todo: Todo;
@@ -81,9 +82,12 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const [btwText, setBtwText] = useState("");
   const [activeTab, setActiveTab] = useState<OutputTab>("run");
   const [expanded, setExpanded] = useState(false);
+  const [pendingImages, setPendingImages] = useState<{ filename: string; previewUrl: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
   const btwOutputRef = useRef<HTMLPreElement>(null);
   const followupRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
 
   const isRunning = todo.run_status === "running";
   const showFollowup = todo.session_id && !isRunning &&
@@ -120,16 +124,74 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     }
   }, [showOutput, showFollowup]);
 
+  // Clean up blob URLs on unmount
+  useEffect(() => {
+    return () => {
+      pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleImageUpload = useCallback(async (files: File[]) => {
+    const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+    if (imageFiles.length === 0) return;
+    setUploading(true);
+    try {
+      for (const file of imageFiles) {
+        try {
+          const { filename } = await api.uploadImage(file);
+          const previewUrl = URL.createObjectURL(file);
+          setPendingImages((prev) => [...prev, { filename, previewUrl }]);
+        } catch (err) {
+          addToast(`Failed to upload image: ${apiErrorMessage(err)}`, "error");
+        }
+      }
+    } finally {
+      setUploading(false);
+    }
+  }, [addToast]);
+
+  const removeImage = useCallback((idx: number) => {
+    setPendingImages((prev) => {
+      const removed = prev[idx];
+      if (removed) {
+        URL.revokeObjectURL(removed.previewUrl);
+        api.deleteImage(removed.filename).catch(() => {});
+      }
+      return prev.filter((_, i) => i !== idx);
+    });
+  }, []);
+
+  const handleFollowupPaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) imageFiles.push(file);
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      handleImageUpload(imageFiles);
+    }
+  }, [handleImageUpload]);
+
   const sendFollowup = async () => {
     if (disabled) {
       addToast("You're offline — follow-ups aren't available right now", "warning");
       return;
     }
     const msg = followupText.trim();
-    if (!msg) return;
+    if (!msg && pendingImages.length === 0) return;
     try {
-      const result = await api.followupTodo(todo.id, msg);
+      const imageFilenames = pendingImages.map((img) => img.filename);
+      const result = await api.followupTodo(todo.id, msg, imageFilenames);
       setFollowupText("");
+      // Revoke preview URLs
+      pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+      setPendingImages([]);
       if (result.status === "queued") {
         addToast("Follow-up queued — will run when the current task finishes", "info");
       } else {
@@ -266,22 +328,53 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         </div>
       )}
       {showFollowup && (
-        <div className="followup-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-          <input
-            ref={followupRef}
-            className="followup-input"
-            placeholder={disabled ? "Server offline — changes disabled" : todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
-            value={followupText}
-            disabled={disabled}
-            onChange={(e) => setFollowupText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                sendFollowup();
-              }
-            }}
-          />
-          <button className="btn-icon btn-run" onClick={sendFollowup} disabled={disabled} title="Send follow-up">↵</button>
+        <div className="followup-bar followup-bar-with-images" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+          {pendingImages.length > 0 && (
+            <div className="followup-image-previews">
+              {pendingImages.map((img, idx) => (
+                <div key={img.filename} className="followup-image-thumb">
+                  <img src={img.previewUrl} alt={`Attached ${idx + 1}`} />
+                  <button className="followup-image-remove" onClick={() => removeImage(idx)} title="Remove image">×</button>
+                </div>
+              ))}
+              {uploading && <div className="followup-image-thumb uploading">…</div>}
+            </div>
+          )}
+          <div className="followup-input-row">
+            <button
+              className="btn-icon btn-attach"
+              onClick={() => imageInputRef.current?.click()}
+              disabled={disabled || uploading}
+              title="Attach image"
+            >📎</button>
+            <input
+              type="file"
+              ref={imageInputRef}
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                if (e.target.files) handleImageUpload(Array.from(e.target.files));
+                e.target.value = "";
+              }}
+            />
+            <input
+              ref={followupRef}
+              className="followup-input"
+              placeholder={disabled ? "Server offline — changes disabled" : todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
+              value={followupText}
+              disabled={disabled}
+              onChange={(e) => setFollowupText(e.target.value)}
+              onPaste={handleFollowupPaste}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  sendFollowup();
+                }
+              }}
+            />
+            <button className="btn-icon btn-run" onClick={sendFollowup} disabled={disabled} title="Send follow-up">↵</button>
+          </div>
         </div>
       )}
     </>

@@ -183,7 +183,7 @@ def _flush_progress(todo_id: str, output: str) -> None:
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
-                t.run_output = output[:50000]
+                t.run_output = output[:500000]
                 break
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
@@ -265,7 +265,7 @@ def _flush_btw_progress(todo_id: str, output: str) -> None:
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
-                t.btw_output = output[:50000]
+                t.btw_output = output[:500000]
                 break
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
@@ -383,7 +383,7 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
-                    t.btw_output = (f"**You:** {message}\n\n" + output_text)[:50000]
+                    t.btw_output = (f"**You:** {message}\n\n" + output_text)[:500000]
                     t.btw_status = "error" if returncode != 0 else "done"
                     t.btw_pid = None
                     t.btw_output_file = None
@@ -474,11 +474,7 @@ def _invoke_claude(
     """
     disallowed = ["AskUserQuestion"]
     if plan_only:
-        # Allow Write so the agent can save plan files; block Edit/Bash to
-        # prevent code changes.  Also block EnterPlanMode/ExitPlanMode so
-        # Claude Code's built-in plan mode doesn't re-restrict Write.
-        disallowed.extend(["Edit", "Bash", "NotebookEdit",
-                           "EnterPlanMode", "ExitPlanMode"])
+        disallowed.extend(["Edit", "Bash", "NotebookEdit"])
     cmd = [
         "claude", "-p", "--output-format", "stream-json", "--verbose",
         "--dangerously-skip-permissions",
@@ -608,7 +604,6 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             prompt = (
                 f"Plan this task — explore the codebase, understand the requirements, "
                 f"and create a detailed step-by-step implementation plan. "
-                f"Write the plan to a file (e.g. tasks/plan.md or a descriptive name). "
                 f"Do NOT write any code or make any changes. Only plan: {todo_text}"
             )
         else:
@@ -703,7 +698,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             autopilot_continue(project_id)
 
 
-def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "") -> None:
+def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "", images: list[str] | None = None) -> None:
     """Background thread: send a follow-up message to an existing Claude session."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
     try:
@@ -718,6 +713,13 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
             else:
                 existing_output = ""
 
+        # Append image references so Claude can read them
+        prompt = message
+        if images:
+            prompt += "\n\nThis follow-up has attached images. Read each one to see the visual context:"
+            for img in images:
+                prompt += f"\n- /tmp/claude-todos-images/{img}"
+
         session_header = existing_output
         accumulated: list[str] = []
 
@@ -725,7 +727,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
         output_file.write_text("")
 
         final_result, stream_objects, returncode = _invoke_claude(
-            todo_id, message, session_id, source_path, model, env,
+            todo_id, prompt, session_id, source_path, model, env,
             accumulated, session_header, output_file, resume=True,
         )
 
@@ -769,7 +771,7 @@ def _finalize_run(
             for t in ctx.store.todos:
                 if t.id == todo_id:
                     t.run_status = "error"
-                    t.run_output = (session_header + stderr_msg)[:50000]
+                    t.run_output = (session_header + stderr_msg)[:500000]
                     t.run_pid = None
                     t.run_output_file = None
                     break
@@ -791,7 +793,7 @@ def _finalize_run(
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
-                t.run_output = (session_header + output_text)[:50000]
+                t.run_output = (session_header + output_text)[:500000]
                 t.run_pid = None
                 t.run_output_file = None
                 t.is_read = False
@@ -1060,8 +1062,10 @@ def _process_queue(project_id: str) -> None:
         # Check if this is a queued follow-up (has pending_followup and session_id)
         followup_msg = candidate.pending_followup
         followup_session = candidate.session_id if followup_msg else None
+        followup_images = list(candidate.pending_followup_images) if followup_msg else None
         if followup_msg:
             candidate.pending_followup = None
+            candidate.pending_followup_images = []
         else:
             candidate.run_output = None
 
@@ -1069,7 +1073,7 @@ def _process_queue(project_id: str) -> None:
     if followup_session and followup_msg:
         process_manager.spawn_thread(
             todo_id, _followup_claude_for_todo,
-            (todo_id, followup_msg, followup_session, source_path, run_model, project_id),
+            (todo_id, followup_msg, followup_session, source_path, run_model, project_id, followup_images),
         )
     else:
         process_manager.spawn_thread(
