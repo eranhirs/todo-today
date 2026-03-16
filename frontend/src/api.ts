@@ -117,10 +117,10 @@ export const api = {
   dequeueTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/dequeue`, { method: "POST" }),
 
-  followupTodo: (id: string, message: string) =>
+  followupTodo: (id: string, message: string, images: string[] = []) =>
     request<{ status: string }>(`/todos/${id}/followup`, {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, images }),
     }),
 
   btwTodo: (id: string, message: string) =>

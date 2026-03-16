@@ -412,11 +412,11 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               ))}
             </select>
             {selectedProject.todo_quota > 0 && (
-              <span
-                className={`quota-usage${atRunQuotaLimit ? " quota-full" : ""}`}
-                title={quotaCountdown ? `Next slot opens in ${quotaCountdown}` : undefined}
-              >
+              <span className={`quota-usage${atRunQuotaLimit ? " quota-full" : ""}`}>
                 {runsInWindow}/{selectedProject.todo_quota}
+                {atRunQuotaLimit && quotaCountdown && (
+                  <span className="quota-countdown"> ({quotaCountdown})</span>
+                )}
               </span>
             )}
           </label>

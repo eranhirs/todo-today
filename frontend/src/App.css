@@ -355,6 +355,38 @@ body {
   opacity: 0.85;
 }
 
+/* Sidebar quota usage (next to project count badges) */
+.sidebar-quota-usage {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+  opacity: 0.7;
+}
+.sidebar-quota-usage.quota-full {
+  color: var(--warning, #e2a93b);
+  font-weight: 600;
+  opacity: 1;
+}
+.project-item.active .sidebar-quota-usage { color: rgba(255, 255, 255, 0.6); }
+.project-item.active .sidebar-quota-usage.quota-full { color: rgba(255, 255, 255, 0.85); }
+
+/* Inline countdown shown next to ⏸ in sidebar */
+.quota-countdown-inline {
+  font-size: 0.6rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.9;
+}
+
+/* Quota countdown shown inline on todo run controls */
+.run-quota-countdown {
+  font-size: 0.65rem;
+  color: var(--warning, #e2a93b);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
 /* Buttons */
 
 .btn-icon {

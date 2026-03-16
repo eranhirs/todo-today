@@ -64,9 +64,9 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     return counts;
   }, [todos]);
 
-  // Map of project_id -> earliest run reset time (ms) for quota-blocked projects
-  const quotaBlockedProjects = useMemo(() => {
-    const blocked = new Map<string, number>();
+  // Map of project_id -> { resetMs, runsInWindow } for projects with a quota
+  const quotaInfoByProject = useMemo(() => {
+    const info = new Map<string, { runsInWindow: number; resetMs: number | null }>();
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;
     for (const p of projects) {
       if (p.todo_quota <= 0) continue;
@@ -79,12 +79,22 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
           if (runTime < earliestRun) earliestRun = runTime;
         }
       }
-      if (runsInWindow >= p.todo_quota) {
-        blocked.set(p.id, earliestRun + 24 * 60 * 60 * 1000);
-      }
+      info.set(p.id, {
+        runsInWindow,
+        resetMs: runsInWindow >= p.todo_quota && earliestRun !== Infinity ? earliestRun + 24 * 60 * 60 * 1000 : null,
+      });
+    }
+    return info;
+  }, [projects, todos]);
+
+  // Derived: which projects are quota-blocked
+  const quotaBlockedProjects = useMemo(() => {
+    const blocked = new Map<string, number>();
+    for (const [id, info] of quotaInfoByProject) {
+      if (info.resetMs !== null) blocked.set(id, info.resetMs);
     }
     return blocked;
-  }, [projects, todos]);
+  }, [quotaInfoByProject]);
 
   // Live countdown for sidebar tooltips — updates every minute
   const [, setTick] = useState(0);
@@ -180,7 +190,11 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
             onClick={() => onSelect(p.id)}
           >
             <span className="project-name">
-              {isQuotaBlocked && <span className="project-indicator indicator-quota-blocked" title={`Daily run limit reached — next slot in ${formatCountdown(quotaResetMs!)}`}>⏸</span>}
+              {isQuotaBlocked && (
+                <span className="project-indicator indicator-quota-blocked" title={`Daily run limit reached — next slot in ${formatCountdown(quotaResetMs!)}`}>
+                  ⏸ <span className="quota-countdown-inline">{formatCountdown(quotaResetMs!)}</span>
+                </span>
+              )}
               {renamingId === p.id ? (
                 <input
                   ref={renameInputRef}
@@ -210,6 +224,18 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
               {c && c.inProgress > 0 && !c.running && <span className="project-indicator indicator-in-progress" title={`${c.inProgress} in progress`}>&#9679;</span>}
               {c && c.waiting > 0 && <span className="project-indicator indicator-waiting" title={`${c.waiting} waiting`}>&#9679;</span>}
             </span>
+            {(() => {
+              const qi = quotaInfoByProject.get(p.id);
+              if (qi && p.todo_quota > 0) {
+                const atLimit = qi.resetMs !== null;
+                return (
+                  <span className={`sidebar-quota-usage${atLimit ? " quota-full" : ""}`} title={`${qi.runsInWindow}/${p.todo_quota} daily runs used`}>
+                    {qi.runsInWindow}/{p.todo_quota}
+                  </span>
+                );
+              }
+              return null;
+            })()}
             {c && c.unreadRuns > 0 ? (
               <span className="project-count-badge badge-unread-runs" title={`${c.unreadRuns} unread run${c.unreadRuns !== 1 ? "s" : ""}`}>{c.unreadRuns}</span>
             ) : c && c.next > 0 ? (

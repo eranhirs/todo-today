@@ -49,6 +49,7 @@ class Todo(BaseModel):
     queued_at: Optional[str] = None
     run_started_at: Optional[str] = None
     pending_followup: Optional[str] = None
+    pending_followup_images: List[str] = []
     pending_btw: Optional[str] = None
     btw_output: Optional[str] = None
     btw_status: Optional[Literal["running", "done", "error"]] = None

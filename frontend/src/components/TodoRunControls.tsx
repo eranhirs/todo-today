@@ -91,6 +91,9 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
 
   return (
     <>
+      {quotaBlocked && quotaCountdown && (
+        <span className="run-quota-countdown" title={quotaTitle}>⏸ {quotaCountdown}</span>
+      )}
       <button
         className="btn-icon btn-plan"
         onClick={() => runWithClaude(true)}
