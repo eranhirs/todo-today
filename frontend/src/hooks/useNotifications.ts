@@ -1,8 +1,10 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Todo } from "../types";
 import { api } from "../api";
 
 const TOAST_DURATION = 12_000;
+const TITLE_FLASH_INTERVAL = 1_000;
+const TITLE_FLASH_CYCLES = 6;
 
 /* SVG data-URI icons for browser notifications, one per event type */
 const svgIcon = (emoji: string, bg: string) =>
@@ -41,11 +43,43 @@ export function useNotifications() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [notificationLog, setNotificationLog] = useState<NotificationLogEntry[]>([]);
   const [showNotifLog, setShowNotifLog] = useState(false);
-
   const knownWaitingIds = useRef<Set<string> | null>(null);
   const knownRunningIds = useRef<Set<string>>(new Set());
   const knownHookStates = useRef<Map<string, string>>(new Map());
   const hookSeeded = useRef(false);
+  const titleFlashTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const originalTitle = useRef(document.title);
+
+  // Flash the page title as a fallback notification when tab is not focused
+  const flashTitle = useCallback((msg: string) => {
+    if (document.hasFocus()) return;
+    // Don't stack flashes
+    if (titleFlashTimer.current) clearInterval(titleFlashTimer.current);
+    originalTitle.current = document.title;
+    let cycle = 0;
+    titleFlashTimer.current = setInterval(() => {
+      cycle++;
+      document.title = cycle % 2 === 1 ? `*** ${msg}` : originalTitle.current;
+      if (cycle >= TITLE_FLASH_CYCLES) {
+        clearInterval(titleFlashTimer.current!);
+        titleFlashTimer.current = null;
+        document.title = originalTitle.current;
+      }
+    }, TITLE_FLASH_INTERVAL);
+  }, []);
+
+  // Stop flashing when user returns to the tab
+  useEffect(() => {
+    const stopFlash = () => {
+      if (titleFlashTimer.current) {
+        clearInterval(titleFlashTimer.current);
+        titleFlashTimer.current = null;
+        document.title = originalTitle.current;
+      }
+    };
+    window.addEventListener("focus", stopFlash);
+    return () => window.removeEventListener("focus", stopFlash);
+  }, []);
 
   const addToast = useCallback((text: string, type: ToastType = "info") => {
     const id = Math.random().toString(36).slice(2);
@@ -69,7 +103,10 @@ export function useNotifications() {
       const n = new Notification("Claude Todos", { body: msg, icon });
       n.onclick = () => { window.focus(); n.close(); };
     }
-  }, [addToast]);
+    // Always flash the title when tab is not focused — native notifications
+    // can be silently suppressed by macOS or Linux notification settings
+    flashTitle(msg);
+  }, [addToast, flashTitle]);
 
   const notifyNewWaitingTodos = useCallback((todos: Todo[]) => {
     const currentWaitingIds = new Set(

@@ -40,6 +40,15 @@ def filter_unknown_tags(text: str, known_tags: set[str]) -> str:
     return TAG_RE.sub(_replace, text).strip()
 
 
+def rename_tag_in_text(text: str, old_tag: str, new_tag: str) -> str:
+    """Replace occurrences of #old_tag with #new_tag in text (case-insensitive match)."""
+    def _replace(m: re.Match) -> str:
+        if m.group(1).lower() == old_tag.lower():
+            return m.group(0)[:len(m.group(0)) - len(m.group(1))] + new_tag
+        return m.group(0)
+    return TAG_RE.sub(_replace, text)
+
+
 def collect_all_tags(todo_texts: list[str]) -> list[str]:
     """Collect all unique tags across multiple todo texts, sorted alphabetically."""
     all_tags: set[str] = set()
