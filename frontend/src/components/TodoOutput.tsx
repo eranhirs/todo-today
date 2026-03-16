@@ -82,6 +82,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const [btwText, setBtwText] = useState("");
   const [activeTab, setActiveTab] = useState<OutputTab>("run");
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [pendingImages, setPendingImages] = useState<{ filename: string; previewUrl: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
@@ -221,6 +222,13 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     }
   };
 
+  const copyOutput = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, []);
+
   if (!showOutput) return null;
 
   const showTabs = hasBtwOutput;
@@ -278,14 +286,23 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
           onMouseDown={(e) => e.stopPropagation()}
           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
+          <div className="output-toolbar">
+            <button
+              className="output-toolbar-btn"
+              onClick={() => copyOutput(todo.run_output!)}
+              title="Copy output"
+            >
+              {copied ? "Copied!" : "Copy"}
+            </button>
+            <button
+              className="output-toolbar-btn"
+              onClick={() => setExpanded(e => !e)}
+              title={expanded ? "Collapse output" : "Expand output"}
+            >
+              {expanded ? "⤡" : "⤢"}
+            </button>
+          </div>
           <pre ref={outputRef} className={expanded ? "expanded" : ""}>{renderOutput(todo.run_output)}</pre>
-          <button
-            className="btn-expand-output"
-            onClick={() => setExpanded(e => !e)}
-            title={expanded ? "Collapse output" : "Expand output"}
-          >
-            {expanded ? "▲ Collapse" : "▼ Expand"}
-          </button>
         </div>
       )}
 
@@ -297,14 +314,23 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
           onMouseDown={(e) => e.stopPropagation()}
           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
         >
+          <div className="output-toolbar">
+            <button
+              className="output-toolbar-btn"
+              onClick={() => copyOutput(todo.btw_output!)}
+              title="Copy output"
+            >
+              {copied ? "Copied!" : "Copy"}
+            </button>
+            <button
+              className="output-toolbar-btn"
+              onClick={() => setExpanded(e => !e)}
+              title={expanded ? "Collapse output" : "Expand output"}
+            >
+              {expanded ? "⤡" : "⤢"}
+            </button>
+          </div>
           <pre ref={btwOutputRef} className={expanded ? "expanded" : ""}>{renderBtwOutput(todo.btw_output)}</pre>
-          <button
-            className="btn-expand-output"
-            onClick={() => setExpanded(e => !e)}
-            title={expanded ? "Collapse output" : "Expand output"}
-          >
-            {expanded ? "▲ Collapse" : "▼ Expand"}
-          </button>
         </div>
       )}
 
