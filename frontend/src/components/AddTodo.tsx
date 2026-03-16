@@ -61,7 +61,10 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     const el = textareaRef.current;
     if (el) {
       el.style.height = "auto";
-      el.style.height = Math.min(el.scrollHeight, 150) + "px";
+      const maxH = 150;
+      const clamped = Math.min(el.scrollHeight, maxH);
+      el.style.height = clamped + "px";
+      el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
     }
   }, [text, textareaRef]);
 
@@ -227,7 +230,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       user_ordered: false,
       stale_reason: null,
       rejected_at: null,
-      images: imageFilenames,
+      images: imageFilenames.map((f) => ({ filename: f, added_at: new Date().toISOString(), source: "creation" as const })),
       red_flags: [],
     };
     onOptimisticUpdate((todos) => [placeholder, ...todos]);

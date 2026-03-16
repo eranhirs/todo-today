@@ -486,7 +486,7 @@ body {
   line-height: 1.4;
   min-height: 36px;
   max-height: 150px;
-  overflow-y: auto;
+  overflow-y: hidden;
 }
 .add-form input:focus, .add-todo input:focus, .add-todo textarea:focus {
   border-color: var(--accent-light);
@@ -660,11 +660,27 @@ body {
 }
 
 /* Image attachments — TodoItem */
+.todo-images-grouped {
+  padding: 4px 12px 4px 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.todo-images-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.todo-images-group-label {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  min-width: 52px;
+}
 .todo-images {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 6px 0 2px 32px;
   align-items: center;
 }
 .todo-image-thumb {
@@ -1078,6 +1094,8 @@ body {
   min-width: 0;
   resize: none;
   line-height: 1.4;
+  max-height: 150px;
+  overflow-y: auto;
 }
 
 .todo-meta {
@@ -2039,6 +2057,7 @@ body {
 /* ────────────────────────────────────────────────────────────── */
 
 .run-output {
+  position: relative;
   width: 100%;
   margin-top: 8px;
   padding: 10px;
@@ -2064,25 +2083,36 @@ body {
   max-height: none;
 }
 
-.btn-expand-output {
-  display: block;
-  width: 100%;
-  padding: 4px 0;
-  margin-top: 4px;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 4px;
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  cursor: pointer;
-  text-align: center;
-  opacity: 0.6;
+.output-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 18px;
+  display: flex;
+  gap: 4px;
+  z-index: 2;
+  opacity: 0;
   transition: opacity 0.15s;
 }
 
-.btn-expand-output:hover {
+.run-output:hover .output-toolbar {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.04);
+}
+
+.output-toolbar-btn {
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background 0.15s, color 0.15s;
+}
+
+.output-toolbar-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
 }
 
 .followup-marker {
@@ -2104,6 +2134,13 @@ body {
   background: rgba(99, 102, 241, 0.12);
   padding: 1px 4px;
   border-radius: 3px;
+}
+
+.followup-img-badge {
+  color: #a5b4fc;
+  font-weight: 500;
+  font-size: 0.85em;
+  opacity: 0.8;
 }
 
 /* ── Output Tabs (Run / BTW) ──────────────────────────────── */
@@ -2162,6 +2199,17 @@ body {
 }
 
 .todo-item { flex-wrap: wrap; }
+
+.output-limit-warning {
+  padding: 6px 10px;
+  font-size: 0.78rem;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.2);
+  border-radius: 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
 
 .followup-bar {
   display: flex;

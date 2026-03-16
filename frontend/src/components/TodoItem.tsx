@@ -320,6 +320,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   const isQueued = todo.run_status === "queued";
 
   return (
+    <>
     <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${isQueued ? " todo-queued" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}${isPending ? " todo-pending" : ""}`}>
       <div className="todo-content">
         <div className={`status-pills${pillsExpanded ? " expanded" : ""}`} ref={pillBarRef}>
@@ -466,24 +467,48 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>
-      {showOutput && todo.images && todo.images.length > 0 && (
-        <div className="todo-images">
-          {todo.images.map((filename, idx) => (
-            <a key={filename} href={api.imageUrl(filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
-              <img src={api.imageUrl(filename)} alt={`Attachment ${idx + 1}`} />
-            </a>
-          ))}
-        </div>
-      )}
       {todo.status === "stale" && todo.stale_reason && (
         <span className="stale-reason">{todo.stale_reason}</span>
       )}
-      {showOutput && todo.original_text && (
-        <div className="todo-original-text">
-          <span className="todo-original-label">Original:</span> {todo.original_text}
-        </div>
-      )}
-      <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} />
     </div>
+    {showOutput && todo.images && todo.images.length > 0 && (() => {
+      const creationImages = todo.images.filter((img) => img.source === "creation");
+      const followupImages = todo.images.filter((img) => img.source === "followup");
+      return (
+        <div className="todo-images-grouped">
+          {creationImages.length > 0 && (
+            <div className="todo-images-group">
+              {followupImages.length > 0 && <span className="todo-images-group-label">Attached</span>}
+              <div className="todo-images">
+                {creationImages.map((img, idx) => (
+                  <a key={img.filename} href={api.imageUrl(img.filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
+                    <img src={api.imageUrl(img.filename)} alt={`Attachment ${idx + 1}`} />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+          {followupImages.length > 0 && (
+            <div className="todo-images-group">
+              <span className="todo-images-group-label">Follow-up</span>
+              <div className="todo-images">
+                {followupImages.map((img, idx) => (
+                  <a key={img.filename} href={api.imageUrl(img.filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
+                    <img src={api.imageUrl(img.filename)} alt={`Follow-up ${idx + 1}`} />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    })()}
+    {showOutput && todo.original_text && (
+      <div className="todo-original-text">
+        <span className="todo-original-label">Original:</span> {todo.original_text}
+      </div>
+    )}
+    <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} />
+    </>
   );
 }
