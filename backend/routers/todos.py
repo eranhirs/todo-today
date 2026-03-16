@@ -128,13 +128,10 @@ def delete_image(filename: str) -> None:
 @router.post("", status_code=201)
 def create_todo(body: TodoCreate) -> Todo:
     image_attachments = [ImageAttachment(filename=f, source="creation") for f in body.images]
-    # Parse /manual command from text
+    # Derive manual flag from /manual command in text (text is kept as-is)
     import re
-    text = body.text
-    is_manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', text))
-    if is_manual:
-        text = re.sub(r'(?:^|\s)/manual(?:\s|$)', ' ', text).strip()
-    todo = Todo(project_id=body.project_id, text=text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, images=image_attachments)
+    is_manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
+    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, images=image_attachments)
     if todo.status == "completed":
         todo.completed_at = _now()
     with StorageContext() as ctx:
@@ -184,6 +181,9 @@ def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                 if body.text is not None:
                     t.text = body.text
                     t.original_text = None  # User chose this text — clear analyzer rename history
+                    # Re-derive manual flag from text content
+                    import re
+                    t.manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
                 if body.project_id is not None:
                     t.project_id = body.project_id
                 if body.status is not None:
@@ -204,8 +204,6 @@ def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                     t.stale_reason = body.stale_reason
                 if body.is_read is not None:
                     t.is_read = body.is_read
-                if body.manual is not None:
-                    t.manual = body.manual
                 if body.user_ordered is not None:
                     t.user_ordered = body.user_ordered
                     # When unpinning, recalculate sort_order for unpinned siblings by created_at

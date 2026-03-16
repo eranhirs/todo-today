@@ -1061,11 +1061,9 @@ def _process_queue(project_id: str) -> None:
                 t.queued_at = None
             return
 
-        # Enforce daily run quota for fresh runs
-        if todo_quota > 0 and candidate.run_started_at is None:
-            if _runs_in_window(project_id, ctx.store.todos) >= todo_quota:
-                log.info("Queue: skipping todo %s (run quota %d reached)", candidate.id, todo_quota)
-                return
+        # NOTE: No quota check here — items already in the queue were approved
+        # at insertion time. Quota changes only block new insertions, not
+        # already-queued items.
 
         candidate.status = "in_progress"
         candidate.run_status = "running"

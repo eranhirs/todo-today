@@ -30,10 +30,11 @@ export interface Todo {
   run_started_at: string | null;
   is_read: boolean;
   plan_only: boolean;
+  manual: boolean;
   sort_order: number;
   user_ordered: boolean;
   stale_reason: string | null;
-  images: string[];
+  images: { filename: string; added_at: string; source: "creation" | "followup" }[];
   red_flags: { label: string; explanation: string; excerpt: string }[];
 }
 

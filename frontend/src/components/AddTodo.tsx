@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
+import { COMMANDS } from "../utils/commands";
 
 type AddMode = "add" | "add-run" | "add-plan";
 
@@ -28,6 +29,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
   const [mode, setMode] = useState<AddMode>("add");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
+  const [cmdSuggestions, setCmdSuggestions] = useState<typeof COMMANDS>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const localRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? localRef;
@@ -102,10 +104,25 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     return null;
   }, [text, textareaRef]);
 
+  // Compute command suggestions based on cursor position
+  const cmdFragment = useMemo(() => {
+    const el = textareaRef.current;
+    if (!el) return null;
+    const cursorPos = el.selectionStart ?? text.length;
+    const beforeCursor = text.slice(0, cursorPos);
+    // Look for / that starts a command at/near cursor
+    const match = beforeCursor.match(/(?:^|\s)\/([A-Za-z][A-Za-z0-9_-]*)$/);
+    if (match) return match[1].toLowerCase();
+    // Just typed /
+    const slashMatch = beforeCursor.match(/(?:^|\s)\/$/);
+    if (slashMatch) return "";
+    return null;
+  }, [text, textareaRef]);
+
   useEffect(() => {
     if (tagFragment === null) {
       setTagSuggestions([]);
-      setSelectedSuggestion(0);
+      if (cmdFragment === null) setSelectedSuggestion(0);
       return;
     }
     const matches = allTags.filter((t) =>
@@ -114,6 +131,37 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     setTagSuggestions(matches);
     setSelectedSuggestion(0);
   }, [tagFragment, allTags]);
+
+  useEffect(() => {
+    if (cmdFragment === null) {
+      setCmdSuggestions([]);
+      if (tagFragment === null) setSelectedSuggestion(0);
+      return;
+    }
+    const matches = COMMANDS.filter((c) =>
+      cmdFragment === "" || c.name.startsWith(cmdFragment)
+    );
+    setCmdSuggestions(matches);
+    setSelectedSuggestion(0);
+  }, [cmdFragment, tagFragment]);
+
+  const applyCmdSuggestion = (cmdName: string) => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const cursorPos = el.selectionStart ?? text.length;
+    const beforeCursor = text.slice(0, cursorPos);
+    const afterCursor = text.slice(cursorPos);
+    const slashIdx = beforeCursor.lastIndexOf("/");
+    if (slashIdx === -1) return;
+    const newText = beforeCursor.slice(0, slashIdx) + "/" + cmdName + " " + afterCursor;
+    setText(newText);
+    setCmdSuggestions([]);
+    setTimeout(() => {
+      el.focus();
+      const newCursorPos = slashIdx + 1 + cmdName.length + 1;
+      el.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  };
 
   const applySuggestion = (tag: string) => {
     const el = textareaRef.current;
@@ -226,6 +274,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       run_started_at: null,
       is_read: true,
       plan_only: planOnly,
+      manual: false,
       sort_order: -Infinity,
       user_ordered: false,
       stale_reason: null,
@@ -300,11 +349,13 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
           ref={textareaRef}
           onPaste={handlePaste}
           onKeyDown={(e) => {
-            // Handle tag suggestion navigation
-            if (tagSuggestions.length > 0) {
+            // Handle suggestion navigation (tags or commands)
+            const hasSuggestions = tagSuggestions.length > 0 || cmdSuggestions.length > 0;
+            const suggestionCount = tagSuggestions.length || cmdSuggestions.length;
+            if (hasSuggestions) {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
-                setSelectedSuggestion((s) => Math.min(s + 1, tagSuggestions.length - 1));
+                setSelectedSuggestion((s) => Math.min(s + 1, suggestionCount - 1));
                 return;
               }
               if (e.key === "ArrowUp") {
@@ -313,15 +364,21 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
                 return;
               }
               if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-                if (tagSuggestions[selectedSuggestion]) {
+                if (tagSuggestions.length > 0 && tagSuggestions[selectedSuggestion]) {
                   e.preventDefault();
                   applySuggestion(tagSuggestions[selectedSuggestion]);
+                  return;
+                }
+                if (cmdSuggestions.length > 0 && cmdSuggestions[selectedSuggestion]) {
+                  e.preventDefault();
+                  applyCmdSuggestion(cmdSuggestions[selectedSuggestion].name);
                   return;
                 }
               }
               if (e.key === "Escape") {
                 e.preventDefault();
                 setTagSuggestions([]);
+                setCmdSuggestions([]);
                 return;
               }
             }
@@ -371,6 +428,23 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
                 }}
               >
                 #{tag}
+              </button>
+            ))}
+          </div>
+        )}
+        {cmdSuggestions.length > 0 && (
+          <div className="cmd-suggestions" ref={suggestionsRef}>
+            {cmdSuggestions.map((cmd, i) => (
+              <button
+                key={cmd.name}
+                className={`cmd-suggestion-item${i === selectedSuggestion ? " selected" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  applyCmdSuggestion(cmd.name);
+                }}
+              >
+                <span className="cmd-suggestion-name">/{cmd.name}</span>
+                <span className="cmd-suggestion-desc">{cmd.description}</span>
               </button>
             ))}
           </div>

@@ -5,6 +5,9 @@ phrases are strong signals that Claude is making bad choices: adding
 overlapping mechanisms, silently swallowing errors, or over-engineering
 instead of writing clean, minimal code.
 
+Also detects deflection phrases — ways Claude avoids doing the actual work
+by blaming pre-existing issues or declaring the task too large.
+
 Each pattern returns a short label (the red flag) when matched.
 """
 
@@ -69,6 +72,47 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         re.compile(r"\bworkaround\b", re.IGNORECASE),
         "Workaround",
         "A workaround signals the root cause wasn't addressed.",
+    ),
+    # ── Deflection: avoiding the task ────────────────────────────
+    (
+        re.compile(r"\bpre-?existing (?:issue|problem|bug|error)", re.IGNORECASE),
+        "\"Pre-existing issue\"",
+        "Blaming something else instead of fixing the problem at hand.",
+    ),
+    (
+        re.compile(r"\b(?:major|significant|large[- ]scale) refactor", re.IGNORECASE),
+        "\"Major refactor\"",
+        "Declaring the task too large is a way to avoid doing it.",
+    ),
+    (
+        re.compile(r"\bout(?:side| of) (?:the )?scope\b", re.IGNORECASE),
+        "\"Out of scope\"",
+        "Scope-dodging — the user asked for it, so it's in scope.",
+    ),
+    (
+        re.compile(r"\bbeyond (?:the scope|what)", re.IGNORECASE),
+        "\"Beyond the scope\"",
+        "Another way to decline work the user requested.",
+    ),
+    (
+        re.compile(r"\bseparate (?:task|effort|ticket|PR|pull request)\b", re.IGNORECASE),
+        "\"Separate task\"",
+        "Deferring work to an imaginary future task instead of doing it now.",
+    ),
+    (
+        re.compile(r"\bnot (?:directly )?related to\b", re.IGNORECASE),
+        "\"Not related to\"",
+        "Dismissing relevant work as unrelated to avoid addressing it.",
+    ),
+    (
+        re.compile(r"\bminimal(?:ly)? (?:invasive|impactful|disruptive)\b", re.IGNORECASE),
+        "\"Minimally invasive\"",
+        "Often a justification for a shallow fix instead of a proper one.",
+    ),
+    (
+        re.compile(r"\bleave (?:that|this|it) (?:for|to|as) (?:a )?(?:later|future|another|the user)", re.IGNORECASE),
+        "\"Leave for later\"",
+        "Punting work to an undefined future instead of completing it now.",
     ),
 ]
 

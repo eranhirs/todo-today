@@ -18,6 +18,12 @@ def _now() -> str:
 TodoStatus = Literal["next", "in_progress", "completed", "consider", "waiting", "stale", "rejected"]
 
 
+class ImageAttachment(BaseModel):
+    filename: str
+    added_at: str = Field(default_factory=_now)
+    source: Literal["creation", "followup"] = "creation"
+
+
 # ── Stored models ──────────────────────────────────────────────
 
 
@@ -57,12 +63,13 @@ class Todo(BaseModel):
     btw_output_file: Optional[str] = None
     is_read: bool = True  # Whether the user has seen the run output
     plan_only: bool = False  # When True, agent plans but cannot implement
+    manual: bool = False  # When True, task is for human execution — cannot be run by Claude
     sort_order: int = 0
     user_ordered: bool = False
     original_text: Optional[str] = None  # Preserved when analyzer renames a user-created todo text
     stale_reason: Optional[str] = None
     rejected_at: Optional[str] = None
-    images: List[str] = []  # Filenames in the image temp directory
+    images: List[ImageAttachment] = []  # Image attachments with metadata
     red_flags: List[Dict[str, str]] = []  # Coping-phrase red flags detected in run output
 
     @model_validator(mode="before")
@@ -77,6 +84,11 @@ class Todo(BaseModel):
         if isinstance(data, dict) and data.get("source") == "claude_run":
             data["source"] = "claude"
             data.setdefault("completed_by_run", True)
+        # Migrate legacy string-only images to ImageAttachment format
+        if isinstance(data, dict) and "images" in data:
+            imgs = data["images"]
+            if imgs and isinstance(imgs[0], str):
+                data["images"] = [{"filename": f, "added_at": data.get("created_at", _now()), "source": "creation"} for f in imgs]
         return data
 
 
@@ -211,7 +223,7 @@ class TodoCreate(BaseModel):
     text: str
     status: TodoStatus = "next"
     plan_only: bool = False
-    images: List[str] = []
+    images: List[str] = []  # Filenames from the frontend; converted to ImageAttachment on creation
 
 
 class TodoUpdate(BaseModel):

@@ -6,6 +6,7 @@ import DOMPurify from "dompurify";
 import { TodoRunControls } from "./TodoRunControls";
 import { TodoOutput } from "./TodoOutput";
 import { parseTags, stripTagsFromText } from "../utils/tags";
+import { COMMANDS, stripCommandsFromText } from "../utils/commands";
 
 interface Props {
   todo: Todo;
@@ -59,8 +60,11 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
+  const [showImages, setShowImages] = useState(false);
+  const [expandedImg, setExpandedImg] = useState<string | null>(null);
   const [pillsExpanded, setPillsExpanded] = useState(false);
   const [editTagSuggestions, setEditTagSuggestions] = useState<string[]>([]);
+  const [editCmdSuggestions, setEditCmdSuggestions] = useState<typeof COMMANDS>([]);
   const [editSelectedSuggestion, setEditSelectedSuggestion] = useState(0);
   const pillBarRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -239,12 +243,27 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     setEditing(false);
   };
 
-  // Compute tag suggestions for edit mode
-  const computeEditTagSuggestions = (value: string) => {
+  // Compute tag and command suggestions for edit mode
+  const computeEditSuggestions = (value: string) => {
     const el = inputRef.current;
-    if (!el || allTags.length === 0) { setEditTagSuggestions([]); return; }
+    if (!el) { setEditTagSuggestions([]); setEditCmdSuggestions([]); return; }
     const cursorPos = el.selectionStart ?? value.length;
     const beforeCursor = value.slice(0, cursorPos);
+
+    // Check for command fragment first
+    const cmdMatch = beforeCursor.match(/(?:^|\s)\/([A-Za-z][A-Za-z0-9_-]*)$/);
+    const slashMatch = beforeCursor.match(/(?:^|\s)\/$/);
+    const cmdFragment = cmdMatch ? cmdMatch[1].toLowerCase() : slashMatch ? "" : null;
+    if (cmdFragment !== null) {
+      setEditTagSuggestions([]);
+      setEditCmdSuggestions(COMMANDS.filter((c) => cmdFragment === "" || c.name.startsWith(cmdFragment)));
+      setEditSelectedSuggestion(0);
+      return;
+    }
+    setEditCmdSuggestions([]);
+
+    // Check for tag fragment
+    if (allTags.length === 0) { setEditTagSuggestions([]); return; }
     const match = beforeCursor.match(/(?:^|\s)#([A-Za-z][A-Za-z0-9_-]*)$/);
     const hashMatch = beforeCursor.match(/(?:^|\s)#$/);
     const fragment = match ? match[1].toLowerCase() : hashMatch ? "" : null;
@@ -271,12 +290,32 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     }, 0);
   };
 
+  const applyEditCmdSuggestion = (cmdName: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const cursorPos = el.selectionStart ?? editText.length;
+    const beforeCursor = editText.slice(0, cursorPos);
+    const afterCursor = editText.slice(cursorPos);
+    const slashIdx = beforeCursor.lastIndexOf("/");
+    if (slashIdx === -1) return;
+    const newText = beforeCursor.slice(0, slashIdx) + "/" + cmdName + " " + afterCursor;
+    setEditText(newText);
+    setEditCmdSuggestions([]);
+    setTimeout(() => {
+      el.focus();
+      const newPos = slashIdx + 1 + cmdName.length + 1;
+      el.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Handle tag suggestion navigation in edit mode
-    if (editTagSuggestions.length > 0) {
+    // Handle suggestion navigation in edit mode (tags or commands)
+    const hasEditSuggestions = editTagSuggestions.length > 0 || editCmdSuggestions.length > 0;
+    const editSuggestionCount = editTagSuggestions.length || editCmdSuggestions.length;
+    if (hasEditSuggestions) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setEditSelectedSuggestion((s) => Math.min(s + 1, editTagSuggestions.length - 1));
+        setEditSelectedSuggestion((s) => Math.min(s + 1, editSuggestionCount - 1));
         return;
       }
       if (e.key === "ArrowUp") {
@@ -285,15 +324,21 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         return;
       }
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
-        if (editTagSuggestions[editSelectedSuggestion]) {
+        if (editTagSuggestions.length > 0 && editTagSuggestions[editSelectedSuggestion]) {
           e.preventDefault();
           applyEditSuggestion(editTagSuggestions[editSelectedSuggestion]);
+          return;
+        }
+        if (editCmdSuggestions.length > 0 && editCmdSuggestions[editSelectedSuggestion]) {
+          e.preventDefault();
+          applyEditCmdSuggestion(editCmdSuggestions[editSelectedSuggestion].name);
           return;
         }
       }
       if (e.key === "Escape") {
         e.preventDefault();
         setEditTagSuggestions([]);
+        setEditCmdSuggestions([]);
         return;
       }
     }
@@ -311,7 +356,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   const tags = useMemo(() => parseTags(todo.text), [todo.text]);
 
   const renderedText = useMemo(() => {
-    const displayText = stripTagsFromText(todo.text);
+    const displayText = stripCommandsFromText(stripTagsFromText(todo.text));
     const raw = marked.parseInline(displayText) as string;
     return DOMPurify.sanitize(raw);
   }, [todo.text]);
@@ -321,7 +366,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
 
   return (
     <>
-    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${isQueued ? " todo-queued" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}${isPending ? " todo-pending" : ""}`}>
+    <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${isQueued ? " todo-queued" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}${isPending ? " todo-pending" : ""}${todo.manual ? " todo-manual" : ""}`}>
       <div className="todo-content">
         <div className={`status-pills${pillsExpanded ? " expanded" : ""}`} ref={pillBarRef}>
           {STATUS_OPTIONS.map((opt) => {
@@ -356,8 +401,8 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
               className="todo-text-input"
               value={editText}
               rows={Math.min(editText.split("\n").length, 6)}
-              onChange={(e) => { setEditText(e.target.value); computeEditTagSuggestions(e.target.value); }}
-              onBlur={() => { if (editTagSuggestions.length === 0) saveEdit(); }}
+              onChange={(e) => { setEditText(e.target.value); computeEditSuggestions(e.target.value); }}
+              onBlur={() => { if (editTagSuggestions.length === 0 && editCmdSuggestions.length === 0) saveEdit(); }}
               onKeyDown={handleKeyDown}
             />
             {editTagSuggestions.length > 0 && (
@@ -369,6 +414,20 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
                     onMouseDown={(e) => { e.preventDefault(); applyEditSuggestion(tag); }}
                   >
                     #{tag}
+                  </button>
+                ))}
+              </div>
+            )}
+            {editCmdSuggestions.length > 0 && (
+              <div className="cmd-suggestions">
+                {editCmdSuggestions.map((cmd, i) => (
+                  <button
+                    key={cmd.name}
+                    className={`cmd-suggestion-item${i === editSelectedSuggestion ? " selected" : ""}`}
+                    onMouseDown={(e) => { e.preventDefault(); applyEditCmdSuggestion(cmd.name); }}
+                  >
+                    <span className="cmd-suggestion-name">/{cmd.name}</span>
+                    <span className="cmd-suggestion-desc">{cmd.description}</span>
                   </button>
                 ))}
               </div>
@@ -388,6 +447,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
           </span>
         )}
         {isPending && <span className="pending-badge" title="Not sent — added while offline">not sent</span>}
+        {todo.manual && <span className="manual-badge" title="Manual task — for human execution, cannot be run by Claude">manual</span>}
         {todo.plan_only && <span className="plan-only-badge" title="Plan only — agent will plan but not implement">plan</span>}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <span className="run-spinner" title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."}>⟳</span>}
@@ -395,9 +455,13 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
       </div>
       <div className="todo-meta">
         {todo.images && todo.images.length > 0 && (
-          <span className="badge badge-images" title={`${todo.images.length} image${todo.images.length > 1 ? "s" : ""} attached`}>
+          <button
+            className={`badge badge-images${showImages ? " badge-images-active" : ""}`}
+            title={`${todo.images.length} image${todo.images.length > 1 ? "s" : ""} attached — click to ${showImages ? "hide" : "show"}`}
+            onClick={(e) => { e.stopPropagation(); setShowImages((v) => !v); }}
+          >
             🖼 {todo.images.length}
-          </span>
+          </button>
         )}
         <span className="todo-timestamp" title={todo.created_at}>
           {isActive ? (
@@ -461,7 +525,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
           </span>
         )}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} />
+        {!todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} />}
         {todo.user_ordered && (
           <button className="btn-icon btn-unpin" onClick={unpinOrder} title="Unpin order — let the system reorder this item">📌</button>
         )}
@@ -471,20 +535,29 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         <span className="stale-reason">{todo.stale_reason}</span>
       )}
     </div>
-    {showOutput && todo.images && todo.images.length > 0 && (() => {
+    {showImages && todo.images && todo.images.length > 0 && (() => {
       const creationImages = todo.images.filter((img) => img.source === "creation");
       const followupImages = todo.images.filter((img) => img.source === "followup");
+      const renderThumb = (img: { filename: string; source: string }, idx: number, label: string) => {
+        const isExpanded = expandedImg === img.filename;
+        return (
+          <div
+            key={img.filename}
+            className={`todo-image-thumb${isExpanded ? " expanded" : ""}`}
+            onClick={() => setExpandedImg(isExpanded ? null : img.filename)}
+            title={isExpanded ? "Click to collapse" : "Click to expand"}
+          >
+            <img src={api.imageUrl(img.filename)} alt={`${label} ${idx + 1}`} />
+          </div>
+        );
+      };
       return (
         <div className="todo-images-grouped">
           {creationImages.length > 0 && (
             <div className="todo-images-group">
               {followupImages.length > 0 && <span className="todo-images-group-label">Attached</span>}
               <div className="todo-images">
-                {creationImages.map((img, idx) => (
-                  <a key={img.filename} href={api.imageUrl(img.filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
-                    <img src={api.imageUrl(img.filename)} alt={`Attachment ${idx + 1}`} />
-                  </a>
-                ))}
+                {creationImages.map((img, idx) => renderThumb(img, idx, "Attachment"))}
               </div>
             </div>
           )}
@@ -492,11 +565,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
             <div className="todo-images-group">
               <span className="todo-images-group-label">Follow-up</span>
               <div className="todo-images">
-                {followupImages.map((img, idx) => (
-                  <a key={img.filename} href={api.imageUrl(img.filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
-                    <img src={api.imageUrl(img.filename)} alt={`Follow-up ${idx + 1}`} />
-                  </a>
-                ))}
+                {followupImages.map((img, idx) => renderThumb(img, idx, "Follow-up"))}
               </div>
             </div>
           )}
