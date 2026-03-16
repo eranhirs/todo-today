@@ -111,7 +111,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
 
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isExpandable = !!(todo.run_output || todo.original_text);
+  const isExpandable = !!(todo.run_output || todo.original_text || (todo.images && todo.images.length > 0));
 
   const handleTextClick = async () => {
     if (clickTimer.current) {
@@ -393,6 +393,11 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
       </div>
       <div className="todo-meta">
+        {todo.images && todo.images.length > 0 && (
+          <span className="badge badge-images" title={`${todo.images.length} image${todo.images.length > 1 ? "s" : ""} attached`}>
+            🖼 {todo.images.length}
+          </span>
+        )}
         <span className="todo-timestamp" title={todo.created_at}>
           {isActive ? (
             <span className="time-ago">{timeAgo(todo.created_at)}</span>
@@ -445,6 +450,15 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
         )}
+        {todo.red_flags && todo.red_flags.length > 0 && (
+          <span
+            className="badge badge-red-flags"
+            title={todo.red_flags.map((f) => f.label).join(", ")}
+            onClick={(e) => { e.stopPropagation(); setShowOutput(true); }}
+          >
+            {todo.red_flags.length} red flag{todo.red_flags.length > 1 ? "s" : ""}
+          </span>
+        )}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
         <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} />
         {todo.user_ordered && (
@@ -452,14 +466,13 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         )}
         <button className="btn-icon btn-delete" onClick={remove} title="Delete">×</button>
       </div>
-      {todo.images && todo.images.length > 0 && (
+      {showOutput && todo.images && todo.images.length > 0 && (
         <div className="todo-images">
           {todo.images.map((filename, idx) => (
             <a key={filename} href={api.imageUrl(filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
               <img src={api.imageUrl(filename)} alt={`Attachment ${idx + 1}`} />
             </a>
           ))}
-          <span className="todo-images-warning">Images in /tmp — may be cleared on reboot</span>
         </div>
       )}
       {todo.status === "stale" && todo.stale_reason && (

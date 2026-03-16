@@ -346,7 +346,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
                   onClick={() => removeImage(idx)}
                   title="Remove image"
                 >
-                  x
+                  ×
                 </button>
               </div>
             ))}
