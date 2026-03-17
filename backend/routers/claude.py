@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..storage import run_in_thread
 import json
 import logging
 from pathlib import Path
@@ -42,86 +43,107 @@ async def wake(body: WakeRequest = WakeRequest()) -> dict:
 
 
 @router.get("/sessions")
-def sessions() -> list[dict]:
-    all_sessions = list_all_sessions()
-    with StorageContext(read_only=True) as ctx:
-        mtimes = ctx.metadata.session_mtimes
-    for s in all_sessions:
-        s["last_analyzed_mtime"] = mtimes.get(s["key"])
-    return all_sessions
+async def sessions() -> list[dict]:
+    def _do():
+        all_sessions = list_all_sessions()
+        with StorageContext(read_only=True) as ctx:
+            mtimes = ctx.metadata.session_mtimes
+        for s in all_sessions:
+            s["last_analyzed_mtime"] = mtimes.get(s["key"])
+        return all_sessions
+    return await run_in_thread(_do)
 
 
 @router.put("/model")
-def update_model(body: ModelUpdate) -> dict:
-    with StorageContext() as ctx:
-        ctx.metadata.analysis_model = body.model
+async def update_model(body: ModelUpdate) -> dict:
+    def _do():
+        with StorageContext() as ctx:
+            ctx.metadata.analysis_model = body.model
+    await run_in_thread(_do)
     return {"model": body.model}
 
 
 @router.get("/settings")
-def get_settings() -> Settings:
-    with StorageContext(read_only=True) as ctx:
-        return ctx.metadata.get_settings()
+async def get_settings() -> Settings:
+    def _do():
+        with StorageContext(read_only=True) as ctx:
+            return ctx.metadata.get_settings()
+    return await run_in_thread(_do)
 
 
 @router.put("/settings")
-def update_settings(body: SettingsUpdate) -> Settings:
+async def update_settings(body: SettingsUpdate) -> Settings:
     """Update one or more settings fields. Only supplied fields are changed."""
     reschedule = body.analysis_interval_minutes is not None
-    with StorageContext() as ctx:
-        new_settings = ctx.metadata.apply_settings(body)
+    def _do():
+        with StorageContext() as ctx:
+            return ctx.metadata.apply_settings(body)
+    new_settings = await run_in_thread(_do)
     if reschedule and body.analysis_interval_minutes is not None:
         set_interval(body.analysis_interval_minutes)
     return new_settings
 
 
 @router.get("/status")
-def status() -> dict:
-    with StorageContext(read_only=True) as ctx:
-        return {
-            "scheduler_status": ctx.metadata.scheduler_status,
-            "heartbeat": ctx.metadata.heartbeat,
-            "last_analysis": ctx.metadata.last_analysis.model_dump() if ctx.metadata.last_analysis else None,
-        }
+async def status() -> dict:
+    def _do():
+        with StorageContext(read_only=True) as ctx:
+            return {
+                "scheduler_status": ctx.metadata.scheduler_status,
+                "heartbeat": ctx.metadata.heartbeat,
+                "last_analysis": ctx.metadata.last_analysis.model_dump() if ctx.metadata.last_analysis else None,
+            }
+    return await run_in_thread(_do)
 
 
 @router.put("/interval")
-def update_interval(body: IntervalUpdate) -> dict:
+async def update_interval(body: IntervalUpdate) -> dict:
     set_interval(body.minutes)
     return {"minutes": body.minutes}
 
 
 @router.get("/history")
-def history() -> list[AnalysisEntry]:
-    with StorageContext(read_only=True) as ctx:
-        return ctx.metadata.history
+async def history() -> list[AnalysisEntry]:
+    def _do():
+        with StorageContext(read_only=True) as ctx:
+            return ctx.metadata.history
+    return await run_in_thread(_do)
 
 
 @router.put("/heartbeat/enabled")
-def set_heartbeat_enabled(body: dict) -> dict:
+async def set_heartbeat_enabled(body: dict) -> dict:
     enabled = body.get("enabled", True)
-    with StorageContext() as ctx:
-        ctx.metadata.heartbeat_enabled = enabled
+    def _do():
+        with StorageContext() as ctx:
+            ctx.metadata.heartbeat_enabled = enabled
+    await run_in_thread(_do)
     return {"heartbeat_enabled": enabled}
 
 
 @router.put("/hook-analysis/enabled")
-def set_hook_analysis_enabled(body: dict) -> dict:
+async def set_hook_analysis_enabled(body: dict) -> dict:
     enabled = body.get("enabled", True)
-    with StorageContext() as ctx:
-        ctx.metadata.hook_analysis_enabled = enabled
+    def _do():
+        with StorageContext() as ctx:
+            ctx.metadata.hook_analysis_enabled = enabled
+    await run_in_thread(_do)
     return {"hook_analysis_enabled": enabled}
 
 
 
 @router.put("/insights/{insight_id}/dismiss")
-def dismiss_insight(insight_id: str) -> dict:
-    with StorageContext() as ctx:
-        for insight in ctx.metadata.insights:
-            if insight.id == insight_id:
-                insight.dismissed = True
-                return {"status": "ok"}
-    raise HTTPException(status_code=404, detail="Insight not found")
+async def dismiss_insight(insight_id: str) -> dict:
+    def _do():
+        with StorageContext() as ctx:
+            for insight in ctx.metadata.insights:
+                if insight.id == insight_id:
+                    insight.dismissed = True
+                    return {"status": "ok"}
+        return None
+    result = await run_in_thread(_do)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Insight not found")
+    return result
 
 
 # ── Hooks management ──────────────────────────────────────────
@@ -171,75 +193,85 @@ async def hooks_analyze(body: HookAnalyzeRequest) -> dict:
     # Skip analysis subprocess sessions — they contain our own prompts, not user work
     session_id = body.session_key.split("/")[-1] if "/" in body.session_key else ""
     if session_id:
-        with StorageContext(read_only=True) as ctx:
-            if session_id in set(ctx.metadata.analysis_session_ids):
-                return {"status": "skipped", "message": "Analysis subprocess session"}
+        def _check():
+            with StorageContext(read_only=True) as ctx:
+                return session_id in set(ctx.metadata.analysis_session_ids)
+        if await run_in_thread(_check):
+            return {"status": "skipped", "message": "Analysis subprocess session"}
     await bus.emit_event(EventType.HOOK_SESSION_UPDATE, session_key=body.session_key)
     return await queue_hook_analysis(body.session_key)
 
 
 @router.get("/hooks/events")
-def hooks_events() -> dict:
+async def hooks_events() -> dict:
     """Return sessions in notifiable states, excluding analysis/run subprocesses."""
-    with StorageContext(read_only=True) as ctx:
-        exclude = set(ctx.metadata.analysis_session_ids)
-    return get_actionable_sessions(exclude_session_ids=exclude)
+    def _do():
+        with StorageContext(read_only=True) as ctx:
+            exclude = set(ctx.metadata.analysis_session_ids)
+        return get_actionable_sessions(exclude_session_ids=exclude)
+    return await run_in_thread(_do)
 
 
 @router.get("/hooks/log")
-def hooks_log(limit: int = 100) -> list:
+async def hooks_log(limit: int = 100) -> list:
     """Return recent hook events for debugging."""
-    return load_event_log(limit=min(limit, 500))
+    return await run_in_thread(load_event_log, min(limit, 500))
 
 
 @router.get("/hooks/status")
-def hooks_status() -> dict:
-    settings = _load_settings()
-    hooks = settings.get("hooks", {})
-    installed_events = []
-    for event in _HOOK_EVENTS:
-        entries = hooks.get(event, [])
-        if any(_is_our_hook(e) for e in entries):
-            installed_events.append(event)
-    return {
-        "installed": len(installed_events) == len(_HOOK_EVENTS),
-        "installed_events": installed_events,
-        "hook_script": _HOOK_SCRIPT,
-    }
+async def hooks_status() -> dict:
+    def _do():
+        settings = _load_settings()
+        hooks = settings.get("hooks", {})
+        installed_events = []
+        for event in _HOOK_EVENTS:
+            entries = hooks.get(event, [])
+            if any(_is_our_hook(e) for e in entries):
+                installed_events.append(event)
+        return {
+            "installed": len(installed_events) == len(_HOOK_EVENTS),
+            "installed_events": installed_events,
+            "hook_script": _HOOK_SCRIPT,
+        }
+    return await run_in_thread(_do)
 
 
 @router.post("/hooks/install")
-def install_hooks() -> dict:
-    settings = _load_settings()
-    hooks = settings.setdefault("hooks", {})
-    installed = []
-    for event in _HOOK_EVENTS:
-        entries = hooks.setdefault(event, [])
-        if not any(_is_our_hook(e) for e in entries):
-            entries.append(_make_hook_entry())
-            installed.append(event)
-    _save_settings(settings)
-    log.info("Installed hooks for events: %s", installed or "(already installed)")
-    return {"status": "ok", "installed_events": installed}
+async def install_hooks() -> dict:
+    def _do():
+        settings = _load_settings()
+        hooks = settings.setdefault("hooks", {})
+        installed = []
+        for event in _HOOK_EVENTS:
+            entries = hooks.setdefault(event, [])
+            if not any(_is_our_hook(e) for e in entries):
+                entries.append(_make_hook_entry())
+                installed.append(event)
+        _save_settings(settings)
+        log.info("Installed hooks for events: %s", installed or "(already installed)")
+        return {"status": "ok", "installed_events": installed}
+    return await run_in_thread(_do)
 
 
 @router.post("/hooks/uninstall")
-def uninstall_hooks() -> dict:
-    settings = _load_settings()
-    hooks = settings.get("hooks", {})
-    removed = []
-    for event in _HOOK_EVENTS:
-        entries = hooks.get(event, [])
-        before = len(entries)
-        entries = [e for e in entries if not _is_our_hook(e)]
-        if len(entries) < before:
-            removed.append(event)
-        if entries:
-            hooks[event] = entries
-        else:
-            hooks.pop(event, None)
-    if not hooks:
-        settings.pop("hooks", None)
-    _save_settings(settings)
-    log.info("Uninstalled hooks for events: %s", removed or "(none found)")
-    return {"status": "ok", "removed_events": removed}
+async def uninstall_hooks() -> dict:
+    def _do():
+        settings = _load_settings()
+        hooks = settings.get("hooks", {})
+        removed = []
+        for event in _HOOK_EVENTS:
+            entries = hooks.get(event, [])
+            before = len(entries)
+            entries = [e for e in entries if not _is_our_hook(e)]
+            if len(entries) < before:
+                removed.append(event)
+            if entries:
+                hooks[event] = entries
+            else:
+                hooks.pop(event, None)
+        if not hooks:
+            settings.pop("hooks", None)
+        _save_settings(settings)
+        log.info("Uninstalled hooks for events: %s", removed or "(none found)")
+        return {"status": "ok", "removed_events": removed}
+    return await run_in_thread(_do)

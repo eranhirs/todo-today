@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import logging
 import os
@@ -8,6 +10,16 @@ import threading
 from pathlib import Path
 
 from .models import Metadata, TodoStore
+
+
+# Python 3.8 compatibility: asyncio.to_thread was added in 3.9
+if hasattr(asyncio, "to_thread"):
+    run_in_thread = asyncio.to_thread
+else:
+    async def run_in_thread(func, /, *args, **kwargs):
+        """Backport of asyncio.to_thread for Python 3.8."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, functools.partial(func, *args, **kwargs))
 
 logger = logging.getLogger(__name__)
 

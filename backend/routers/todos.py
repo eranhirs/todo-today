@@ -431,6 +431,26 @@ async def resolve_red_flag(todo_id: str, flag_index: int, body: RedFlagResolve) 
     return result
 
 
+@router.delete("/{todo_id}/red_flags/{flag_index}")
+async def dismiss_red_flag(todo_id: str, flag_index: int) -> Todo:
+    """Remove a red flag entirely (user dismissal — flag was irrelevant)."""
+    def _do():
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    if flag_index < 0 or flag_index >= len(t.red_flags):
+                        return "flag_not_found"
+                    t.red_flags.pop(flag_index)
+                    return t
+        return None
+    result = await run_in_thread(_do)
+    if result == "flag_not_found":
+        raise HTTPException(status_code=404, detail="Red flag not found")
+    if result is None:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    return result
+
+
 @router.delete("/{todo_id}", status_code=204)
 async def delete_todo(todo_id: str) -> None:
     def _do():

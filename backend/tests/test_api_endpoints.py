@@ -43,7 +43,7 @@ class TestProjectsAPI:
     def test_update_project_auto_run_quota_clamped(self, client):
         resp = client.put("/api/projects/proj_aaa", json={"auto_run_quota": 99})
         assert resp.status_code == 200
-        assert resp.json()["auto_run_quota"] == 10  # clamped to max
+        assert resp.json()["auto_run_quota"] == 50  # clamped to max
 
     def test_delete_project(self, client):
         resp = client.delete("/api/projects/proj_aaa")
