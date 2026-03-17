@@ -1,5 +1,6 @@
 import React from "react";
 import type { AnalysisEntry, Project, Todo } from "../types";
+import { getDisplayName } from "../utils/displayNames";
 
 interface Props {
   todos: Todo[];
@@ -7,6 +8,7 @@ interface Props {
   projectSummaries: Record<string, string>;
   history: AnalysisEntry[];
   onSelectProject: (id: string) => void;
+  completedTotal?: number;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -198,7 +200,7 @@ function ProjectWorkload({ todos, projects }: { todos: Todo[]; projects: Project
           const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
           return (
             <div key={proj.id} className="dash-workload-row">
-              <span className="dash-workload-name" title={proj.name}>{proj.name}</span>
+              <span className="dash-workload-name" title={getDisplayName(proj.id) ?? proj.name}>{getDisplayName(proj.id) ?? proj.name}</span>
               <div className="dash-workload-bar-wrap">
                 <div className="dash-workload-bar-track">
                   <div
@@ -247,10 +249,11 @@ function ProjectWorkload({ todos, projects }: { todos: Todo[]; projects: Project
   );
 }
 
-export function Dashboard({ todos, projects, projectSummaries, history, onSelectProject }: Props) {
+export function Dashboard({ todos, projects, projectSummaries, history, onSelectProject, completedTotal = 0 }: Props) {
   const allCounts = statusCounts(todos);
-  const totalTodos = todos.length;
-  const completedCount = allCounts["completed"] || 0;
+  // Use the true completed total from backend (todos array is capped)
+  const completedCount = completedTotal || allCounts["completed"] || 0;
+  const totalTodos = (todos.length - (allCounts["completed"] || 0)) + completedCount;
   const activeCount = totalTodos - completedCount;
   const completionRate = totalTodos === 0 ? 0 : Math.round((completedCount / totalTodos) * 100);
 
@@ -367,6 +370,99 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
         <ProjectWorkload todos={todos} projects={projects} />
       )}
 
+      {/* Red Flag Analysis */}
+      {(() => {
+        const allFlags = todos.flatMap((t) => t.red_flags || []);
+        if (allFlags.length === 0) return null;
+        const totalFlags = allFlags.length;
+        const resolvedFlags = allFlags.filter((f) => f.resolved).length;
+        const unresolvedFlags = totalFlags - resolvedFlags;
+        const todosWithFlags = todos.filter((t) => t.red_flags && t.red_flags.length > 0).length;
+        const resolveRate = totalFlags === 0 ? 0 : Math.round((resolvedFlags / totalFlags) * 100);
+        const flagRatio = totalTodos === 0 ? 0 : (todosWithFlags / totalTodos * 100);
+
+        // Distribution by type
+        const typeCounts: Record<string, { total: number; resolved: number }> = {};
+        for (const f of allFlags) {
+          if (!typeCounts[f.label]) typeCounts[f.label] = { total: 0, resolved: 0 };
+          typeCounts[f.label].total++;
+          if (f.resolved) typeCounts[f.label].resolved++;
+        }
+        const sortedTypes = Object.entries(typeCounts).sort((a, b) => b[1].total - a[1].total);
+        const maxTypeCount = Math.max(1, ...sortedTypes.map(([, v]) => v.total));
+
+        return (
+          <div className="dash-section">
+            <h3 className="dash-section-title">Red Flag Analysis</h3>
+            <div className="dash-metrics">
+              <div className="dash-metric">
+                <span className="dash-metric-value" style={{ color: unresolvedFlags > 0 ? "#ff4d4d" : "var(--green)" }}>{unresolvedFlags}</span>
+                <span className="dash-metric-label">Unresolved</span>
+              </div>
+              <div className="dash-metric">
+                <span className="dash-metric-value" style={{ color: "var(--green)" }}>{resolvedFlags}</span>
+                <span className="dash-metric-label">Resolved</span>
+              </div>
+              <div className="dash-metric">
+                <span className="dash-metric-value">{resolveRate}%</span>
+                <span className="dash-metric-label">Resolve Rate</span>
+              </div>
+              <div className="dash-metric">
+                <span className="dash-metric-value">{flagRatio.toFixed(0)}%</span>
+                <span className="dash-metric-label">Todos Flagged</span>
+              </div>
+              <div className="dash-metric">
+                <span className="dash-metric-value">{totalFlags}</span>
+                <span className="dash-metric-label">Total Flags</span>
+              </div>
+            </div>
+
+            {/* Flag type distribution */}
+            <div className="dash-workload-list" style={{ marginTop: "12px" }}>
+              {sortedTypes.map(([label, counts]) => {
+                const pct = counts.total === 0 ? 0 : Math.round((counts.resolved / counts.total) * 100);
+                return (
+                  <div key={label} className="dash-workload-row">
+                    <span className="dash-workload-name" title={label}>{label}</span>
+                    <div className="dash-workload-bar-wrap">
+                      <div className="dash-workload-bar-track">
+                        <div
+                          className="dash-workload-bar-fill completed"
+                          style={{ width: `${(counts.resolved / maxTypeCount) * 100}%` }}
+                          title={`${counts.resolved} resolved`}
+                        />
+                        <div
+                          className="dash-workload-bar-fill active-fill"
+                          style={{ width: `${((counts.total - counts.resolved) / maxTypeCount) * 100}%`, background: "#ff4d4d" }}
+                          title={`${counts.total - counts.resolved} unresolved`}
+                        />
+                      </div>
+                    </div>
+                    <div className="dash-workload-stats">
+                      <span className="dash-workload-total">{counts.total}</span>
+                      <span className="dash-workload-pct">{pct}%</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="dash-workload-legend">
+              <span className="dash-legend-item">
+                <span className="dash-legend-dot" style={{ background: "var(--green)" }} />
+                Resolved
+              </span>
+              <span className="dash-legend-item">
+                <span className="dash-legend-dot" style={{ background: "#ff4d4d" }} />
+                Unresolved
+              </span>
+              <span className="dash-workload-legend-hint">
+                % = resolve rate
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Project cards */}
       <div className="dash-section">
         <h3 className="dash-section-title">Projects</h3>
@@ -402,7 +498,7 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
               >
                 <div className="dash-project-header">
                   <div className="dash-project-info">
-                    <span className="dash-project-name">{proj.name}</span>
+                    <span className="dash-project-name">{getDisplayName(proj.id) ?? proj.name}</span>
                     <span className="dash-project-activity">{lastActivity}</span>
                   </div>
                   <ProgressRing completed={projCompleted} total={projTotal} />

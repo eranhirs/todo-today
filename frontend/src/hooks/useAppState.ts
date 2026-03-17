@@ -4,6 +4,7 @@ import { api, isStaticDemo } from "../api";
 import { ApiError } from "../errors";
 
 const POLL_INTERVAL = 3_000;
+const COMPLETED_PAGE_SIZE = 50;
 
 interface UseAppStateOptions {
   notifyNewWaitingTodos: (todos: Todo[]) => void;
@@ -18,6 +19,9 @@ export function useAppState({
 }: UseAppStateOptions) {
   const [state, setState] = useState<FullState | null>(null);
   const [isOffline, setIsOffline] = useState(false);
+  // Track how many completed todos we've loaded so far (for infinite scroll)
+  const completedLoadedRef = useRef(COMPLETED_PAGE_SIZE);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [selectedProject, setSelectedProject] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -57,6 +61,22 @@ export function useAppState({
     try {
       const data = await api.getState();
       setIsOffline(false);
+
+      // If user had loaded more completed todos, reload those extra pages too
+      const extraLoaded = completedLoadedRef.current;
+      if (extraLoaded > COMPLETED_PAGE_SIZE && data.has_more_completed) {
+        try {
+          const extra = await api.loadMoreCompleted(COMPLETED_PAGE_SIZE, extraLoaded - COMPLETED_PAGE_SIZE);
+          if (extra.todos.length > 0) {
+            const existingIds = new Set(data.todos.map((t) => t.id));
+            const newTodos = extra.todos.filter((t) => !existingIds.has(t.id));
+            data.todos = [...data.todos, ...newTodos];
+            data.has_more_completed = extra.has_more;
+            data.completed_total = extra.total;
+          }
+        } catch { /* ignore — base state is still valid */ }
+      }
+
       setState(data);
       notifyNewWaitingTodos(data.todos);
       notifyRunCompletions(data.todos);
@@ -82,6 +102,35 @@ export function useAppState({
       setState((prev) => (prev ? { ...prev, todos: fn(prev.todos) } : prev)),
     []
   );
+
+  // Load more completed todos (for infinite scroll)
+  const loadMoreCompleted = useCallback(async (projectId?: string | null) => {
+    if (loadingMore || !state?.has_more_completed) return;
+    setLoadingMore(true);
+    try {
+      const offset = completedLoadedRef.current;
+      const data = await api.loadMoreCompleted(offset, COMPLETED_PAGE_SIZE, projectId || undefined);
+      if (data.todos.length > 0) {
+        completedLoadedRef.current = offset + data.todos.length;
+        setState((prev) => {
+          if (!prev) return prev;
+          // Merge new completed todos, deduplicating by id
+          const existingIds = new Set(prev.todos.map((t) => t.id));
+          const newTodos = data.todos.filter((t) => !existingIds.has(t.id));
+          return {
+            ...prev,
+            todos: [...prev.todos, ...newTodos],
+            has_more_completed: data.has_more,
+            completed_total: data.total,
+          };
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load more completed todos:", err);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, state?.has_more_completed]);
 
   // Request browser notification permission
   useEffect(() => {
@@ -141,5 +190,7 @@ export function useAppState({
     refresh,
     optimisticUpdate,
     isOffline,
+    loadMoreCompleted,
+    loadingMore,
   };
 }

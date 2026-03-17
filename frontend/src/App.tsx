@@ -42,6 +42,8 @@ function App() {
     refresh,
     optimisticUpdate,
     isOffline,
+    loadMoreCompleted,
+    loadingMore,
   } = useAppState({
     notifyNewWaitingTodos,
     notifyRunCompletions,
@@ -250,6 +252,7 @@ function App() {
             projectSummaries={state.metadata.project_summaries}
             history={state.metadata.history}
             onSelectProject={(id) => { selectProject(id); switchView("list"); }}
+            completedTotal={state.completed_total}
           />
         ) : (
           <TodoList
@@ -264,6 +267,10 @@ function App() {
             editingTodoId={editingTodoId}
             addInputRef={addInputRef}
             isOffline={isOffline}
+            completedTotal={state.completed_total}
+            hasMoreCompleted={state.has_more_completed}
+            onLoadMoreCompleted={loadMoreCompleted}
+            loadingMoreCompleted={loadingMore}
           />
         )}
       </main>

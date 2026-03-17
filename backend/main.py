@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -31,10 +33,12 @@ from .scheduler import (
     start_scheduler,
     stop_scheduler,
 )
-from .storage import StorageContext
+from .storage import StorageContext, run_in_thread
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+_REQUEST_TIMEOUT = 30  # seconds — safety net for any blocked request
 
 
 def _cleanup_stale_runs() -> None:
@@ -111,7 +115,16 @@ def _cleanup_stale_runs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _cleanup_stale_runs()
+    # Increase the default anyio thread pool so storage-lock contention
+    # under moderate concurrency doesn't exhaust the pool.
+    try:
+        from anyio import to_thread
+        to_thread.current_default_thread_limiter().total_tokens = 100
+    except Exception:
+        pass  # best-effort; pool size will stay at default 40
+
+    # Run startup cleanup in a thread so it doesn't block the event loop
+    await run_in_thread(_cleanup_stale_runs)
     start_scheduler()
     # Catch up on hook events that fired while the server was down
     missed = get_missed_hook_sessions()
@@ -131,6 +144,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_timeout_middleware(request: Request, call_next):
+    """Cancel any request that takes longer than _REQUEST_TIMEOUT seconds."""
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=_REQUEST_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.warning("Request timed out after %ds: %s %s", _REQUEST_TIMEOUT, request.method, request.url.path)
+        return JSONResponse(
+            status_code=504,
+            content={"detail": f"Request timed out after {_REQUEST_TIMEOUT}s"},
+        )
+
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
@@ -161,17 +188,34 @@ app.include_router(todos.router)
 app.include_router(claude.router)
 
 
+COMPLETED_PAGE_SIZE = 50  # Number of completed todos to load per page
+
+
 @app.get("/api/state")
-def full_state() -> FullState:
-    with StorageContext(read_only=True) as ctx:
-        return FullState(
-            projects=ctx.store.projects,
-            todos=ctx.store.todos,
-            metadata=ctx.metadata,
-            settings=ctx.metadata.get_settings(),
-            analysis_locked=is_analysis_locked(),
-            autopilot_running=is_autopilot_running(),
-        )
+async def full_state() -> FullState:
+    def _do():
+        with StorageContext(read_only=True) as ctx:
+            all_todos = ctx.store.todos
+            # Split: keep all non-completed, cap completed to first page
+            non_completed = [t for t in all_todos if t.status != "completed"]
+            completed = sorted(
+                [t for t in all_todos if t.status == "completed"],
+                key=lambda t: t.completed_at or "",
+                reverse=True,
+            )
+            completed_total = len(completed)
+            capped_completed = completed[:COMPLETED_PAGE_SIZE]
+            return FullState(
+                projects=ctx.store.projects,
+                todos=non_completed + capped_completed,
+                metadata=ctx.metadata,
+                settings=ctx.metadata.get_settings(),
+                analysis_locked=is_analysis_locked(),
+                autopilot_running=is_autopilot_running(),
+                completed_total=completed_total,
+                has_more_completed=completed_total > COMPLETED_PAGE_SIZE,
+            )
+    return await run_in_thread(_do)
 
 
 @app.get("/api/events")
@@ -189,13 +233,13 @@ async def event_stream() -> StreamingResponse:
 
 
 @app.get("/api/events/recent")
-def recent_events(limit: int = 50) -> list[dict]:
+async def recent_events(limit: int = 50) -> list[dict]:
     """Return recent events from the bus ring buffer (for debugging)."""
     return bus.recent_events(limit=min(limit, 200))
 
 
 @app.get("/api/events/status")
-def event_bus_status() -> dict:
+async def event_bus_status() -> dict:
     """Return event bus status (subscriber count, recent event count)."""
     return {
         "subscribers": bus.subscriber_count,
