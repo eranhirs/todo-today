@@ -30,6 +30,7 @@ export interface Todo {
   run_started_at: string | null;
   is_read: boolean;
   plan_only: boolean;
+  plan_file: string | null;
   manual: boolean;
   is_command: boolean;
   sort_order: number;

@@ -72,6 +72,7 @@ class Todo(BaseModel):
     rejected_at: Optional[str] = None
     images: List[ImageAttachment] = []  # Image attachments with metadata
     red_flags: List[Dict[str, Any]] = []  # Coping-phrase red flags detected in run output
+    plan_file: Optional[str] = None  # Path to .claude/plans/ file written during plan_only run
 
     @model_validator(mode="before")
     @classmethod

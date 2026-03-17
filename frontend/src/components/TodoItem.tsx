@@ -514,7 +514,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
         {isPending && <span className="pending-badge" title="Not sent — added while offline">not sent</span>}
         {todo.manual && <span className="manual-badge" title="Manual task — for human execution, cannot be run by Claude">manual</span>}
         {todo.is_command && <span className="command-badge" title="Skill/command execution">cmd</span>}
-        {todo.plan_only && <span className="plan-only-badge" title="Plan only — agent will plan but not implement">plan</span>}
+        {todo.plan_only && <span className="plan-only-badge" title={todo.plan_file ? `Plan file: ${todo.plan_file}` : "Plan only — agent will plan but not implement"}>{todo.plan_file ? "plan ✓" : "plan"}</span>}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <span className="run-spinner" title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."}>⟳</span>}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}

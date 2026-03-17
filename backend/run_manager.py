@@ -260,6 +260,23 @@ def _handle_quota_error(todo_id: str, error_output: str, output_file: Path) -> N
     process_manager.cleanup_output_file(output_file)
 
 
+def _detect_plan_file(stream_objects: list[dict]) -> Optional[str]:
+    """Scan stream objects for a Write tool_use targeting .claude/plans/.
+
+    Returns the file path if found, else None.
+    """
+    for obj in stream_objects:
+        if obj.get("type") != "assistant":
+            continue
+        for block in obj.get("message", {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                if block.get("name") == "Write":
+                    file_path = block.get("input", {}).get("file_path", "")
+                    if ".claude/plans/" in file_path:
+                        return file_path
+    return None
+
+
 def _detect_exit_plan_mode(stream_lines: list[dict]) -> bool:
     """Check if the session ended by calling ExitPlanMode."""
     for obj in reversed(stream_lines):
@@ -681,7 +698,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         if returncode != 0 and _is_quota_error(all_output):
             _handle_quota_error(todo_id, all_output, output_file)
         else:
-            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only)
+            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, stream_objects=stream_objects)
 
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
@@ -776,9 +793,18 @@ def _finalize_run(
     session_header: str,
     output_file: Path,
     plan_only: bool = False,
+    stream_objects: Optional[list[dict]] = None,
 ) -> None:
     """Apply the final result of a claude run to the todo and clean up."""
-    if returncode != 0:
+    # Detect plan file written during the run
+    plan_file = _detect_plan_file(stream_objects or []) if plan_only else None
+
+    # For plan_only runs that successfully wrote a plan file, suppress errors —
+    # Claude may exit non-zero after writing the plan (e.g. permission denials
+    # for tools it tried after writing), but the plan itself is valid.
+    suppress_error = plan_only and plan_file is not None
+
+    if returncode != 0 and not suppress_error:
         stderr_msg = f"Exit code {returncode}"
         log.error("Claude run failed for todo %s: %s", todo_id, stderr_msg)
         output_so_far = "\n".join(accumulated)
@@ -798,7 +824,7 @@ def _finalize_run(
 
     output_text = "\n".join(accumulated)
     had_errors = False
-    if final_result:
+    if final_result and not suppress_error:
         if final_result.get("is_error"):
             had_errors = True
         if final_result.get("permission_denials"):
@@ -815,6 +841,8 @@ def _finalize_run(
                 t.run_output_file = None
                 t.is_read = False
                 t.red_flags = red_flags
+                if plan_file:
+                    t.plan_file = plan_file
                 if had_errors:
                     t.run_status = "error"
                     bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)

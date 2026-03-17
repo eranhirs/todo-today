@@ -425,6 +425,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       run_started_at: null,
       is_read: true,
       plan_only: planOnly,
+      plan_file: null,
       manual: false,
       is_command: false,
       sort_order: -Infinity,
