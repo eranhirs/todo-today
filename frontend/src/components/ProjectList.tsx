@@ -48,7 +48,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     const counts: Record<string, ProjectCounts> = {};
     for (const t of todos) {
       // Count unread runs across ALL todos (including completed)
-      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) {
+      if (!t.is_read && t.completed_by_run) {
         if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
         counts[t.project_id].unreadRuns++;
       }
@@ -117,7 +117,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     let unreadRuns = 0;
     for (const t of todos) {
       // Unread runs count across all statuses
-      if (!t.is_read && (t.run_status === "done" || t.run_status === "error")) unreadRuns++;
+      if (!t.is_read && t.completed_by_run) unreadRuns++;
       if (t.status === "completed" || t.status === "rejected") continue;
       if (t.status === "next") next++;
     }
@@ -241,27 +241,6 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
             ) : c && c.next > 0 ? (
               <span className="project-count-badge badge-up-next" title={`${c.next} up next`}>{c.next}</span>
             ) : null}
-            <select
-              className={`autopilot-select ${p.auto_run_quota > 0 ? "autopilot-active" : ""}`}
-              value={p.auto_run_quota}
-              onClick={(e) => e.stopPropagation()}
-              onChange={async (e) => {
-                e.stopPropagation();
-                await api.updateProject(p.id, { auto_run_quota: Number(e.target.value) });
-                onRefresh();
-              }}
-              title={p.auto_run_quota > 0 ? `Autopilot: will auto-run ${p.auto_run_quota} todo(s) on next analysis, then stop` : "Autopilot off"}
-            >
-              <option value={0}>off</option>
-              {(() => {
-                const presets = [1, 2, 3, 5, 10, 20];
-                const current = p.auto_run_quota;
-                const all = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
-                return all.map((n) => (
-                  <option key={n} value={n}>{n === current && current > 0 ? `🚀 ${n} left` : `🚀 ${n}`}</option>
-                ));
-              })()}
-            </select>
             <button className="btn-icon btn-delete" onClick={(e) => handleDeleteClick(p.id, p.name, e)} title="Delete">&times;</button>
           </div>
         );

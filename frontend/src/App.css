@@ -2357,6 +2357,30 @@ body {
   background: rgba(80, 200, 120, 0.18);
 }
 
+.red-flag-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.red-flag-dismiss-btn {
+  font-size: 0.72rem;
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0.4;
+  line-height: 1.2;
+}
+.red-flag-dismiss-btn:hover {
+  opacity: 1;
+  background: rgba(255, 60, 60, 0.15);
+  color: #ff6b6b;
+  border-color: rgba(255, 60, 60, 0.3);
+}
+
 .red-flag-explanation {
   font-size: 0.72rem;
   color: var(--text-dim);
