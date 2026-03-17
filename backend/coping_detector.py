@@ -75,7 +75,7 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
     ),
     # ── Deflection: avoiding the task ────────────────────────────
     (
-        re.compile(r"\bpre-?existing (?:issue|problem|bug|error)", re.IGNORECASE),
+        re.compile(r"\bpre-?existing (?:issue|problem|bug|error|failure)", re.IGNORECASE),
         "\"Pre-existing issue\"",
         "Blaming something else instead of fixing the problem at hand.",
     ),
@@ -114,6 +114,12 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "\"Leave for later\"",
         "Punting work to an undefined future instead of completing it now.",
     ),
+    # ── Unilateral action: fixing without discussing ──────────────
+    (
+        re.compile(r"\bthe fix:", re.IGNORECASE),
+        "\"The fix:\"",
+        "Jumped straight to a fix without discussing it — acting on its own.",
+    ),
 ]
 
 
@@ -132,6 +138,8 @@ class RedFlag:
             "label": self.label,
             "explanation": self.explanation,
             "excerpt": self.excerpt,
+            "resolved": False,
+            "source": "pattern",
         }
 
 

@@ -304,22 +304,42 @@ def _flush_btw_progress(todo_id: str, output: str) -> None:
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
 
-def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", todo_text: str = "") -> None:
+def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", todo_text: str = "", run_output: str = "") -> None:
     """Background thread: run a concurrent /btw Claude session alongside the main run.
 
     Spawns an independent Claude -p call in the same project directory with a fresh
-    session ID. The btw output is stored separately in btw_output/btw_status fields.
+    session ID. Includes the main task's accumulated output as context so Claude can
+    answer mid-task questions with full awareness of what's been done so far.
+    The btw output is stored separately in btw_output/btw_status fields.
     """
     output_file = _RUNS_DIR / f"{todo_id}_btw.jsonl"
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         session_id = str(uuid.uuid4())
-        prompt = (
-            f"A task is currently being worked on in this project: \"{todo_text}\"\n\n"
-            f"Meanwhile, the user has a side request (do NOT interfere with the main task's "
-            f"in-progress work — treat this as an independent, quick side-channel request):\n\n"
-            f"{message}"
-        )
+
+        # Build context from the main run's output (cap to avoid excessive prompt size)
+        max_context = 50_000
+        context_text = run_output
+        if len(context_text) > max_context:
+            context_text = context_text[-max_context:]
+            context_text = "[...earlier output truncated...]\n" + context_text
+
+        if context_text.strip():
+            prompt = (
+                f"A task is currently being worked on in this project: \"{todo_text}\"\n\n"
+                f"Here is the task's conversation so far (the main run's progress):\n\n"
+                f"--- Main task output ---\n{context_text}\n--- End main task output ---\n\n"
+                f"The user has a mid-task question. Answer concisely — this is a /btw "
+                f"side-channel that won't be added to the main conversation:\n\n"
+                f"{message}"
+            )
+        else:
+            prompt = (
+                f"A task is currently being worked on in this project: \"{todo_text}\"\n\n"
+                f"The user has a mid-task question. Answer concisely — this is a /btw "
+                f"side-channel that won't be added to the main conversation:\n\n"
+                f"{message}"
+            )
         session_header = ""
         accumulated: list[str] = []
 
@@ -474,11 +494,12 @@ def start_btw(todo_id: str, message: str) -> str | None:
             return "no source_path"
 
         todo_text = todo.text
+        run_output = todo.run_output or ""
         run_model = ctx.metadata.run_model
 
     thread = threading.Thread(
         target=run_btw_for_todo,
-        args=(todo_id, message, source_path, run_model, todo_text),
+        args=(todo_id, message, source_path, run_model, todo_text, run_output),
         daemon=True,
     )
     thread.start()

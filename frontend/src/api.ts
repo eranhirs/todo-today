@@ -113,6 +113,11 @@ export const api = {
       body: JSON.stringify({ flag_index: flagIndex, resolved }),
     }),
 
+  dismissRedFlag: (todoId: string, flagIndex: number) =>
+    request<Todo>(`/todos/${todoId}/red_flags/${flagIndex}`, {
+      method: "DELETE",
+    }),
+
   reorderTodos: (todoIds: string[], movedId?: string) =>
     request<{ status: string }>("/todos/reorder", {
       method: "PUT",

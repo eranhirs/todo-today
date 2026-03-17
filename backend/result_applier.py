@@ -289,6 +289,27 @@ def _apply_result(
         if removed:
             log.info("Auto-removed %d stale non-user todo(s)", removed)
 
+    # Apply AI-raised red flags to todos
+    for rf in result.red_flags:
+        t = todo_by_id.get(rf.todo_id)
+        if t is None:
+            log.warning("red_flags: unknown todo id=%s, skipping", rf.todo_id)
+            continue
+        if t.project_id != project_id:
+            log.warning("red_flags: todo %s not in project %s, skipping", rf.todo_id, project_id)
+            continue
+        # Avoid duplicate flags with the same label
+        existing_labels = {f.get("label") for f in t.red_flags}
+        if rf.label in existing_labels:
+            continue
+        t.red_flags.append({
+            "label": rf.label,
+            "explanation": rf.explanation,
+            "excerpt": "",
+            "resolved": False,
+            "source": "ai",
+        })
+
     # Dismiss stale insights
     if result.dismiss_insight_ids:
         dismiss_set = set(result.dismiss_insight_ids)

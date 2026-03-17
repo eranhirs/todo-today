@@ -89,9 +89,29 @@ function renderBtwOutput(text: string) {
 
 type OutputTab = "run" | "btw";
 
+// Module-level draft storage: persists follow-up/btw text per todo across tab switches
+const followupDrafts = new Map<string, string>();
+const btwDrafts = new Map<string, string>();
+
 export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = false }: Props) {
-  const [followupText, setFollowupText] = useState("");
-  const [btwText, setBtwText] = useState("");
+  const [followupText, setFollowupText] = useState(() => followupDrafts.get(todo.id) ?? "");
+  const [btwText, setBtwText] = useState(() => btwDrafts.get(todo.id) ?? "");
+
+  // Keep refs for draft save on unmount
+  const followupTextRef = useRef(followupText);
+  followupTextRef.current = followupText;
+  const btwTextRef = useRef(btwText);
+  btwTextRef.current = btwText;
+
+  // Save drafts on unmount
+  useEffect(() => {
+    return () => {
+      if (followupTextRef.current) followupDrafts.set(todo.id, followupTextRef.current);
+      else followupDrafts.delete(todo.id);
+      if (btwTextRef.current) btwDrafts.set(todo.id, btwTextRef.current);
+      else btwDrafts.delete(todo.id);
+    };
+  }, [todo.id]);
   const [activeTab, setActiveTab] = useState<OutputTab>("run");
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -202,6 +222,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
       const imageFilenames = pendingImages.map((img) => img.filename);
       const result = await api.followupTodo(todo.id, msg, imageFilenames);
       setFollowupText("");
+      followupDrafts.delete(todo.id);
       // Revoke preview URLs
       pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       setPendingImages([]);
@@ -226,6 +247,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     try {
       await api.btwTodo(todo.id, msg);
       setBtwText("");
+      btwDrafts.delete(todo.id);
       addToast("/btw started — running in parallel", "info");
       onRefresh();
     } catch (err) {
@@ -276,24 +298,73 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         </div>
       )}
 
-      {/* Red flags — coping phrase warnings */}
-      {(!showTabs || activeTab === "run") && todo.red_flags && todo.red_flags.length > 0 && (
-        <div
-          className="red-flags"
-          draggable={false}
-          onMouseDown={(e) => e.stopPropagation()}
-          onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
-        >
-          <div className="red-flags-header">Coping detected — {todo.red_flags.length} red flag{todo.red_flags.length > 1 ? "s" : ""}</div>
-          {todo.red_flags.map((flag, i) => (
-            <div key={i} className="red-flag-item">
-              <span className="red-flag-label">{flag.label}</span>
-              <span className="red-flag-explanation">{flag.explanation}</span>
-              <span className="red-flag-excerpt">"{flag.excerpt}"</span>
+      {/* Red flags — coping phrase warnings and AI-raised flags */}
+      {(!showTabs || activeTab === "run") && todo.red_flags && todo.red_flags.length > 0 && (() => {
+        const unresolvedCount = todo.red_flags.filter((f) => !f.resolved).length;
+        const resolvedCount = todo.red_flags.filter((f) => f.resolved).length;
+        const unresolvedAi = todo.red_flags.filter((f) => !f.resolved && f.source === "ai").length;
+        const unresolvedPattern = todo.red_flags.filter((f) => !f.resolved && f.source !== "ai").length;
+        const allResolved = unresolvedCount === 0;
+        const hasOnlyAi = unresolvedAi > 0 && unresolvedPattern === 0;
+        const headerParts: string[] = [];
+        if (unresolvedPattern > 0) headerParts.push(`${unresolvedPattern} red flag${unresolvedPattern > 1 ? "s" : ""}`);
+        if (unresolvedAi > 0) headerParts.push(`${unresolvedAi} AI flag${unresolvedAi > 1 ? "s" : ""}`);
+        return (
+          <div
+            className={`red-flags${allResolved ? " all-resolved" : hasOnlyAi ? " ai-only" : ""}`}
+            draggable={false}
+            onMouseDown={(e) => e.stopPropagation()}
+            onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+          >
+            <div className={`red-flags-header${allResolved ? " resolved" : hasOnlyAi ? " ai" : ""}`}>
+              {allResolved
+                ? `All ${resolvedCount} flag${resolvedCount > 1 ? "s" : ""} resolved ✓`
+                : `Flags raised — ${headerParts.join(", ")}${resolvedCount > 0 ? ` (${resolvedCount} resolved)` : ""}`}
             </div>
-          ))}
-        </div>
-      )}
+            {todo.red_flags.map((flag, i) => (
+              <div key={i} className={`red-flag-item${flag.resolved ? " resolved" : ""}${flag.source === "ai" ? " ai-flag" : ""}`}>
+                <div className="red-flag-row">
+                  <span className={`red-flag-label${flag.resolved ? " resolved" : ""}${flag.source === "ai" ? " ai" : ""}`}>
+                    {flag.resolved ? "✓ " : ""}{flag.source === "ai" ? "🤖 " : ""}{flag.label}
+                  </span>
+                  <span className="red-flag-actions">
+                    <button
+                      className={`red-flag-resolve-btn${flag.resolved ? " resolved" : ""}${flag.source === "ai" ? " ai" : ""}`}
+                      onClick={async () => {
+                        try {
+                          await api.resolveRedFlag(todo.id, i, !flag.resolved);
+                          onRefresh();
+                        } catch {
+                          addToast("Failed to update flag", "error");
+                        }
+                      }}
+                      title={flag.resolved ? "Mark as unresolved" : "Mark as resolved"}
+                    >
+                      {flag.resolved ? "reopen" : "resolve"}
+                    </button>
+                    <button
+                      className="red-flag-dismiss-btn"
+                      onClick={async () => {
+                        try {
+                          await api.dismissRedFlag(todo.id, i);
+                          onRefresh();
+                        } catch {
+                          addToast("Failed to dismiss flag", "error");
+                        }
+                      }}
+                      title="Dismiss — remove this flag (irrelevant)"
+                    >
+                      ×
+                    </button>
+                  </span>
+                </div>
+                <span className="red-flag-explanation">{flag.explanation}</span>
+                {flag.excerpt && <span className="red-flag-excerpt">"{flag.excerpt}"</span>}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Run output tab */}
       {(!showTabs || activeTab === "run") && todo.run_output && (
