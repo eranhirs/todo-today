@@ -1,11 +1,12 @@
 import { useState, useMemo, useRef, useCallback, useEffect, type KeyboardEvent, type FormEvent } from "react";
-import type { Project, Todo } from "../types";
+import { isUnread, type Project, type Todo } from "../types";
 import { api } from "../api";
 import { AddTodo } from "./AddTodo";
 import { TodoItem } from "./TodoItem";
 import { parseTags } from "../utils/tags";
 import { type CommandInfo } from "../utils/commands";
 import { getDisplayName, setDisplayName } from "../utils/displayNames";
+import { matchesTodo } from "../utils/todoSearch";
 
 interface Props {
   todos: Todo[];
@@ -54,10 +55,10 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     }
   }, [renamingTitle]);
 
-  // Fetch available commands/skills from backend
+  // Fetch available commands/skills scoped to the selected project
   useEffect(() => {
-    api.getCommands().then(setAllCommands).catch(() => {});
-  }, []);
+    api.getCommands(selectedProjectId ?? undefined).then(setAllCommands).catch(() => {});
+  }, [selectedProjectId]);
 
   const commitTitleRename = useCallback(() => {
     if (!selectedProjectId) return;
@@ -224,9 +225,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     if (filterUnread) setStickyTodoId(todoId);
   }, [filterUnread]);
 
-  // Count unread todos (completed_by_run && !is_read)
+  // Count unread todos
   const unreadCount = useMemo(() =>
-    projectFiltered.filter((t) => t.completed_by_run && !t.is_read).length,
+    projectFiltered.filter(isUnread).length,
     [projectFiltered]
   );
 
@@ -251,11 +252,8 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       result = projectFiltered;
       if (searchQuery.trim()) {
         // Fallback: client-side search while backend is loading
-        const q = searchQuery.trim().toLowerCase();
-        result = result.filter((t) =>
-          t.text.toLowerCase().includes(q) ||
-          (t.run_output && t.run_output.toLowerCase().includes(q))
-        );
+        const q = searchQuery.trim();
+        result = result.filter((t) => matchesTodo(t, q));
       }
     }
     if (selectedTags.size > 0) {
@@ -271,7 +269,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       });
     }
     if (filterUnread) {
-      result = result.filter((t) => (t.completed_by_run && !t.is_read) || t.id === stickyTodoId);
+      result = result.filter((t) => isUnread(t) || t.id === stickyTodoId);
     }
     if (filterCommands) {
       result = result.filter((t) => t.is_command);

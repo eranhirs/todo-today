@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import type { Project, Todo } from "../types";
+import { isUnread, type Project, type Todo } from "../types";
 import { api } from "../api";
 import { getDisplayName, setDisplayName } from "../utils/displayNames";
 
@@ -48,7 +48,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     const counts: Record<string, ProjectCounts> = {};
     for (const t of todos) {
       // Count unread runs across ALL todos (including completed)
-      if (!t.is_read && t.completed_by_run) {
+      if (isUnread(t)) {
         if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
         counts[t.project_id].unreadRuns++;
       }
@@ -117,7 +117,7 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
     let unreadRuns = 0;
     for (const t of todos) {
       // Unread runs count across all statuses
-      if (!t.is_read && t.completed_by_run) unreadRuns++;
+      if (isUnread(t)) unreadRuns++;
       if (t.status === "completed" || t.status === "rejected") continue;
       if (t.status === "next") next++;
     }

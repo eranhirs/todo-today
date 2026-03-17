@@ -34,9 +34,23 @@ from ..storage import StorageContext
 
 _DEMO_MODE = os.environ.get("TODO_DEMO", "").lower() in ("1", "true", "yes")
 
-# Image storage directory — /tmp so it's clear this is ephemeral
-IMAGE_DIR = Path("/tmp/claude-todos-images")
-IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+# Image storage: either local (next to todos.json) or ephemeral (/tmp)
+_TMP_IMAGE_DIR = Path("/tmp/claude-todos-images")
+
+
+def _get_image_dir() -> Path:
+    """Return the image directory based on the local_image_storage setting."""
+    from ..storage import DATA_DIR, load_metadata
+    try:
+        meta = load_metadata()
+        if meta.local_image_storage:
+            d = DATA_DIR / "images"
+            d.mkdir(parents=True, exist_ok=True)
+            return d
+    except Exception:
+        pass
+    _TMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    return _TMP_IMAGE_DIR
 
 _ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
 _MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -70,84 +84,96 @@ def _parse_skill_frontmatter(path: Path) -> dict | None:
     return fm
 
 
-def _discover_commands() -> list[dict]:
-    """Discover skills and commands from .claude directories."""
+def _scan_claude_dir(claude_dir: Path, results: list[dict], seen_names: set[str]) -> None:
+    """Scan a single .claude directory for skills and commands."""
+    # Skills: .claude/skills/*/SKILL.md
+    skills_dir = claude_dir / "skills"
+    if skills_dir.is_dir():
+        for skill_dir in skills_dir.iterdir():
+            if not skill_dir.is_dir():
+                continue
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.exists():
+                continue
+            fm = _parse_skill_frontmatter(skill_file)
+            if fm and fm["name"] not in seen_names:
+                seen_names.add(fm["name"])
+                results.append({
+                    "name": fm["name"],
+                    "description": fm.get("description", ""),
+                    "type": "skill",
+                })
+
+    # Commands: .claude/commands/*.md
+    commands_dir = claude_dir / "commands"
+    if commands_dir.is_dir():
+        for cmd_file in commands_dir.iterdir():
+            if cmd_file.suffix != ".md":
+                continue
+            fm = _parse_skill_frontmatter(cmd_file)
+            if fm and fm["name"] not in seen_names:
+                seen_names.add(fm["name"])
+                results.append({
+                    "name": fm["name"],
+                    "description": fm.get("description", ""),
+                    "type": "command",
+                })
+            elif not fm:
+                # Commands without frontmatter: use filename as name
+                name = cmd_file.stem
+                if name not in seen_names:
+                    seen_names.add(name)
+                    results.append({
+                        "name": name,
+                        "description": "",
+                        "type": "command",
+                    })
+
+
+def _discover_commands(project_id: str | None = None) -> list[dict]:
+    """Discover skills and commands scoped to one project (+ user-level ~/.claude)."""
     results: list[dict] = list(_BUILTIN_COMMANDS)
     seen_names: set[str] = {c["name"] for c in _BUILTIN_COMMANDS}
 
-    # Gather search directories: project source_paths + user home
-    search_roots: list[Path] = []
-    try:
-        with StorageContext(read_only=True) as ctx:
-            for p in ctx.store.projects:
-                if p.source_path:
-                    search_roots.append(Path(p.source_path))
-    except Exception:
-        pass
-    home_claude = Path.home() / ".claude"
-    search_roots.append(Path.home())  # for ~/.claude/skills and ~/.claude/commands
+    # If a project_id is given, only scan that project's source_path
+    if project_id:
+        try:
+            with StorageContext(read_only=True) as ctx:
+                for p in ctx.store.projects:
+                    if p.id == project_id and p.source_path:
+                        _scan_claude_dir(Path(p.source_path) / ".claude", results, seen_names)
+                        break
+        except Exception:
+            pass
+    else:
+        # No project selected: scan all projects
+        try:
+            with StorageContext(read_only=True) as ctx:
+                for p in ctx.store.projects:
+                    if p.source_path:
+                        _scan_claude_dir(Path(p.source_path) / ".claude", results, seen_names)
+        except Exception:
+            pass
 
-    for root in search_roots:
-        claude_dir = root / ".claude" if root != Path.home() else home_claude
-
-        # Skills: .claude/skills/*/SKILL.md
-        skills_dir = claude_dir / "skills"
-        if skills_dir.is_dir():
-            for skill_dir in skills_dir.iterdir():
-                if not skill_dir.is_dir():
-                    continue
-                skill_file = skill_dir / "SKILL.md"
-                if not skill_file.exists():
-                    continue
-                fm = _parse_skill_frontmatter(skill_file)
-                if fm and fm["name"] not in seen_names:
-                    seen_names.add(fm["name"])
-                    results.append({
-                        "name": fm["name"],
-                        "description": fm.get("description", ""),
-                        "type": "skill",
-                    })
-
-        # Commands: .claude/commands/*.md
-        commands_dir = claude_dir / "commands"
-        if commands_dir.is_dir():
-            for cmd_file in commands_dir.iterdir():
-                if not cmd_file.suffix == ".md":
-                    continue
-                fm = _parse_skill_frontmatter(cmd_file)
-                if fm and fm["name"] not in seen_names:
-                    seen_names.add(fm["name"])
-                    results.append({
-                        "name": fm["name"],
-                        "description": fm.get("description", ""),
-                        "type": "command",
-                    })
-                elif not fm:
-                    # Commands without frontmatter: use filename as name
-                    name = cmd_file.stem
-                    if name not in seen_names:
-                        seen_names.add(name)
-                        results.append({
-                            "name": name,
-                            "description": "",
-                            "type": "command",
-                        })
+    # Always include user-level ~/.claude
+    _scan_claude_dir(Path.home() / ".claude", results, seen_names)
 
     return results
 
 
-def _is_command_todo(text: str, command_names: set[str] | None = None) -> bool:
+def _is_command_todo(text: str, project_id: str | None = None) -> bool:
     """Check if text contains any recognized skill/command slash token (excluding /manual)."""
-    if command_names is None:
-        command_names = {c["name"] for c in _discover_commands()} - {"manual"}
+    command_names = {c["name"] for c in _discover_commands(project_id)} - {"manual"}
     matches = re.findall(r'(?:^|\s)/([A-Za-z][A-Za-z0-9_-]*)(?:\s|$)', text)
     return any(m.lower() in command_names for m in matches)
 
 
 @router.get("/commands")
-async def list_commands() -> list[dict]:
-    """Return all available slash commands and skills from .claude directories."""
-    return await run_in_thread(_discover_commands)
+async def list_commands(project_id: Optional[str] = None) -> list[dict]:
+    """Return slash commands and skills scoped to a project (+ user-level)."""
+    def _do():
+        return _discover_commands(project_id)
+    return await run_in_thread(_do)
 
 
 @router.get("/tags")
@@ -243,7 +269,7 @@ async def upload_image(file: UploadFile) -> dict:
     if ext == ".jpe":
         ext = ".jpg"
     filename = f"{uuid.uuid4().hex[:16]}{ext}"
-    filepath = IMAGE_DIR / filename
+    filepath = _get_image_dir() / filename
     data = await file.read()
     if len(data) > _MAX_IMAGE_SIZE:
         raise HTTPException(status_code=400, detail="Image too large (max 20 MB)")
@@ -257,7 +283,7 @@ async def get_image(filename: str) -> FileResponse:
     # Prevent path traversal
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
-    filepath = IMAGE_DIR / filename
+    filepath = _get_image_dir() / filename
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(filepath)
@@ -268,7 +294,7 @@ async def delete_image(filename: str) -> None:
     """Delete an uploaded image."""
     if "/" in filename or "\\" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
-    filepath = IMAGE_DIR / filename
+    filepath = _get_image_dir() / filename
     if filepath.exists():
         await run_in_thread(filepath.unlink)
 
@@ -278,7 +304,7 @@ async def create_todo(body: TodoCreate) -> Todo:
     image_attachments = [ImageAttachment(filename=f, source="creation") for f in body.images]
     # Derive manual flag from /manual command in text (text is kept as-is)
     is_manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
-    is_cmd = _is_command_todo(body.text)
+    is_cmd = _is_command_todo(body.text, body.project_id)
     todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, is_command=is_cmd, images=image_attachments)
     if todo.status == "completed":
         todo.completed_at = _now()
@@ -344,7 +370,7 @@ async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                         t.original_text = None  # User chose this text — clear analyzer rename history
                         # Re-derive manual flag and is_command from text content
                         t.manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
-                        t.is_command = _is_command_todo(body.text)
+                        t.is_command = _is_command_todo(body.text, t.project_id)
                     if body.project_id is not None:
                         t.project_id = body.project_id
                     if body.status is not None:
@@ -455,14 +481,30 @@ async def dismiss_red_flag(todo_id: str, flag_index: int) -> Todo:
 async def delete_todo(todo_id: str) -> None:
     def _do():
         with StorageContext() as ctx:
-            before = len(ctx.store.todos)
-            ctx.store.todos = [t for t in ctx.store.todos if t.id != todo_id]
-            if len(ctx.store.todos) == before:
-                return "not_found"
-        return "ok"
+            # Find the todo and collect its image filenames before removing
+            image_filenames = []
+            found = False
+            remaining = []
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    found = True
+                    image_filenames = [img.filename for img in t.images]
+                else:
+                    remaining.append(t)
+            if not found:
+                return None
+            ctx.store.todos = remaining
+        return image_filenames
     result = await run_in_thread(_do)
-    if result == "not_found":
+    if result is None:
         raise HTTPException(status_code=404, detail="Todo not found")
+    # Delete associated image files outside the lock
+    if result:
+        image_dir = _get_image_dir()
+        for fname in result:
+            fp = image_dir / fname
+            if fp.exists():
+                fp.unlink(missing_ok=True)
     bus.emit_event_sync(EventType.TODO_DELETED, todo_id=todo_id)
 
 
@@ -605,6 +647,47 @@ class FollowupRequest(BaseModel):
     images: List[str] = []
 
 
+class EditFollowupRequest(BaseModel):
+    message: str
+
+
+@router.patch("/{todo_id}/followup")
+async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
+    """Edit a queued follow-up message before it starts running."""
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    new_msg = body.message.strip()
+    if not new_msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    def _do():
+        with StorageContext() as ctx:
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    if t.run_status != "queued" or not t.pending_followup:
+                        return {"error": "not_queued"}
+                    old_msg = t.pending_followup
+                    t.pending_followup = new_msg
+                    # Update the displayed message in run_output
+                    if t.run_output:
+                        # Compute image suffix from pending images
+                        n_imgs = len(t.pending_followup_images)
+                        old_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+                        old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{old_suffix}\n"
+                        new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{old_suffix}\n"
+                        t.run_output = t.run_output.replace(old_line, new_line)
+                    return {"status": "updated"}
+            return {"error": "not_found"}
+
+    info = await run_in_thread(_do)
+    if info.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if info.get("error") == "not_queued":
+        raise HTTPException(status_code=409, detail="Follow-up is not queued or has already started")
+    return info
+
+
 @router.post("/{todo_id}/followup")
 async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
     """Send a follow-up message to a completed Claude session.
@@ -730,6 +813,8 @@ async def btw_todo(todo_id: str, body: BtwRequest) -> dict:
         raise HTTPException(status_code=404, detail="Todo not found")
     if err == "todo not running":
         raise HTTPException(status_code=409, detail="Todo is not currently running — use follow-up instead")
+    if err == "no session":
+        raise HTTPException(status_code=400, detail="No session to fork — the task hasn't started running yet")
     if err == "btw already running":
         raise HTTPException(status_code=409, detail="A /btw session is already running — wait for it to finish")
     if err == "no source_path":

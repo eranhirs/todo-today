@@ -74,10 +74,26 @@ async def delete_project(project_id: str) -> None:
             before = len(ctx.store.projects)
             ctx.store.projects = [p for p in ctx.store.projects if p.id != project_id]
             if len(ctx.store.projects) == before:
-                return "not_found"
-            ctx.store.todos = [t for t in ctx.store.todos if t.project_id != project_id]
-        return "ok"
+                return None
+            # Collect image filenames from todos being deleted
+            image_filenames = []
+            remaining = []
+            for t in ctx.store.todos:
+                if t.project_id == project_id:
+                    image_filenames.extend(img.filename for img in t.images)
+                else:
+                    remaining.append(t)
+            ctx.store.todos = remaining
+        return image_filenames
     result = await run_in_thread(_do)
-    if result == "not_found":
+    if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    # Delete associated image files outside the lock
+    if result:
+        from .todos import _get_image_dir
+        image_dir = _get_image_dir()
+        for fname in result:
+            fp = image_dir / fname
+            if fp.exists():
+                fp.unlink(missing_ok=True)
     bus.emit_event_sync(EventType.PROJECT_DELETED, project_id=project_id)

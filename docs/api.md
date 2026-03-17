@@ -58,7 +58,7 @@ Create a todo. Optionally attach images (filenames from the upload endpoint).
 ```
 
 ### `POST /api/todos/images`
-Upload an image (multipart form-data). Returns `{ "filename": "abc123.png" }`. Images are stored in `/tmp/claude-todos-images/` — this directory may be cleared on reboot. Supported types: PNG, JPEG, GIF, WebP, SVG. Max 20 MB.
+Upload an image (multipart form-data). Returns `{ "filename": "abc123.png" }`. When the `local_image_storage` setting is enabled, images are stored in `data/images/` (persistent, next to `todos.json`). Otherwise they go to `/tmp/claude-todos-images/` (ephemeral). Supported types: PNG, JPEG, GIF, WebP, SVG. Max 20 MB. Deleting a todo also deletes its associated image files.
 
 ### `GET /api/todos/images/{filename}`
 Serve an uploaded image by filename.
@@ -100,6 +100,13 @@ Send a follow-up message to a completed/stopped Claude session. If another todo 
 { "message": "Also handle the edge case where..." }
 ```
 Returns `{ "status": "started" }` or `{ "status": "queued" }`.
+
+### `PATCH /api/todos/{todo_id}/followup`
+Edit a queued follow-up message before it starts running. Only works when `run_status` is `"queued"` and a `pending_followup` exists.
+```json
+{ "message": "Updated follow-up text..." }
+```
+Returns `{ "status": "updated" }`. Returns 409 if the follow-up is not queued or has already started.
 
 ### `POST /api/todos/{todo_id}/btw`
 Send a `/btw` message that spawns a **concurrent** Claude session alongside the running main task. The btw session runs in parallel as an independent side-channel in the same project directory. Its output is stored separately in `btw_output`/`btw_status` fields and displayed in a tabbed UI next to the main run output. Only one btw session can run at a time per todo.

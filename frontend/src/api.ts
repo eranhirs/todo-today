@@ -56,7 +56,7 @@ export const api = {
 
   getTags: () => request<string[]>("/todos/tags"),
 
-  getCommands: () => request<{ name: string; description: string; type: "command" | "skill" }[]>("/todos/commands"),
+  getCommands: (projectId?: string) => request<{ name: string; description: string; type: "command" | "skill" }[]>(`/todos/commands${projectId ? `?project_id=${projectId}` : ""}`),
 
   renameTag: (oldTag: string, newTag: string) =>
     request<{ status: string; updated: number }>("/todos/tags/rename", {
@@ -140,6 +140,12 @@ export const api = {
     request<{ status: string }>(`/todos/${id}/followup`, {
       method: "POST",
       body: JSON.stringify({ message, images }),
+    }),
+
+  editFollowup: (id: string, message: string) =>
+    request<{ status: string }>(`/todos/${id}/followup`, {
+      method: "PATCH",
+      body: JSON.stringify({ message }),
     }),
 
   btwTodo: (id: string, message: string) =>

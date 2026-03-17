@@ -122,12 +122,51 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const followupRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
+  const [editingFollowup, setEditingFollowup] = useState(false);
+  const [editFollowupText, setEditFollowupText] = useState("");
+  const editFollowupRef = useRef<HTMLInputElement>(null);
+
   const isRunning = todo.run_status === "running";
   const showFollowup = todo.session_id && !isRunning &&
     (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped");
   const showBtw = isRunning;
   const hasBtwOutput = !!todo.btw_output;
   const isBtwRunning = todo.btw_status === "running";
+  const isQueuedFollowup = todo.run_status === "queued" && !!todo.pending_followup;
+
+  // Reset edit state when the todo is no longer queued
+  useEffect(() => {
+    if (!isQueuedFollowup) setEditingFollowup(false);
+  }, [isQueuedFollowup]);
+
+  // Auto-focus edit input when entering edit mode
+  useEffect(() => {
+    if (editingFollowup && editFollowupRef.current) {
+      editFollowupRef.current.focus();
+    }
+  }, [editingFollowup]);
+
+  const startEditFollowup = () => {
+    setEditFollowupText(todo.pending_followup ?? "");
+    setEditingFollowup(true);
+  };
+
+  const saveEditFollowup = async () => {
+    const trimmed = editFollowupText.trim();
+    if (!trimmed) return;
+    try {
+      await api.editFollowup(todo.id, trimmed);
+      setEditingFollowup(false);
+      addToast("Queued follow-up updated", "success");
+      onRefresh();
+    } catch {
+      addToast("Failed to update queued follow-up", "error");
+    }
+  };
+
+  const cancelEditFollowup = () => {
+    setEditingFollowup(false);
+  };
 
   // Auto-switch to btw tab when a new btw starts
   useEffect(() => {
@@ -391,6 +430,34 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
             </button>
           </div>
           <pre ref={outputRef} className={expanded ? "expanded" : ""}>{renderOutput(todo.run_output)}</pre>
+        </div>
+      )}
+
+      {/* Edit bar for queued follow-ups */}
+      {(!showTabs || activeTab === "run") && isQueuedFollowup && (
+        <div className="followup-edit-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+          {editingFollowup ? (
+            <div className="followup-edit-row">
+              <input
+                ref={editFollowupRef}
+                className="followup-input"
+                value={editFollowupText}
+                onChange={(e) => setEditFollowupText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); saveEditFollowup(); }
+                  if (e.key === "Escape") { e.preventDefault(); cancelEditFollowup(); }
+                }}
+                placeholder="Edit queued follow-up..."
+              />
+              <button className="btn-icon btn-save" onClick={saveEditFollowup} title="Save edit">&#x2713;</button>
+              <button className="btn-icon btn-cancel" onClick={cancelEditFollowup} title="Cancel edit">&#x2717;</button>
+            </div>
+          ) : (
+            <div className="followup-edit-row">
+              <span className="followup-queued-label">Queued follow-up</span>
+              <button className="btn-icon btn-edit-followup" onClick={startEditFollowup} disabled={disabled} title="Edit queued follow-up">&#x270E;</button>
+            </div>
+          )}
         </div>
       )}
 

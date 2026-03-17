@@ -25,7 +25,7 @@ PROJECTS = [
         "id": "proj_claude_todos",
         "name": "claude-todos",
         "source_path": "/home/user/projects/claude-todos",
-        "auto_run_quota": 2,
+        "auto_run_quota": 0,
         "created_at": _ts(NOW - timedelta(days=5)),
     },
     {
@@ -39,7 +39,7 @@ PROJECTS = [
         "id": "proj_bench",
         "name": "eval-bench",
         "source_path": "/home/user/projects/eval-bench",
-        "auto_run_quota": 1,
+        "auto_run_quota": 0,
         "created_at": _ts(NOW - timedelta(days=4)),
     },
 ]

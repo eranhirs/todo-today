@@ -2,9 +2,9 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
-import { BUILTIN_COMMANDS, type CommandInfo } from "../utils/commands";
+import { BUILTIN_COMMANDS, type CommandInfo, stripCommandsFromText } from "../utils/commands";
 import { stripTagsFromText } from "../utils/tags";
-import { stripCommandsFromText } from "../utils/commands";
+import { filterMentionSuggestions } from "../utils/todoSearch";
 
 type AddMode = "add" | "add-run" | "add-plan";
 
@@ -227,25 +227,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       if (tagFragment === null && cmdFragment === null) setSelectedSuggestion(0);
       return;
     }
-    // Filter todos that have run_output (i.e. Claude has responded)
-    let matches = allTodos.filter((t) => t.run_output);
-    if (mentionFragment !== "") {
-      const q = mentionFragment.toLowerCase();
-      matches = matches.filter((t) =>
-        t.text.toLowerCase().includes(q) ||
-        (t.run_output && t.run_output.toLowerCase().includes(q))
-      );
-    }
-    // Sort: running/done first, then by created_at descending
-    const statusPriority: Record<string, number> = { running: 0, done: 1, stopped: 2, error: 3, queued: 4 };
-    matches.sort((a, b) => {
-      const pa = statusPriority[a.run_status ?? ""] ?? 5;
-      const pb = statusPriority[b.run_status ?? ""] ?? 5;
-      if (pa !== pb) return pa - pb;
-      return b.created_at.localeCompare(a.created_at);
-    });
-    // Limit to 10 suggestions
-    setTodoSuggestions(matches.slice(0, 10));
+    setTodoSuggestions(filterMentionSuggestions(allTodos, mentionFragment));
     setSelectedSuggestion(0);
   }, [mentionFragment, allTodos, tagFragment, cmdFragment]);
 
@@ -433,6 +415,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       stale_reason: null,
       rejected_at: null,
       images: imageFilenames.map((f) => ({ filename: f, added_at: new Date().toISOString(), source: "creation" as const })),
+      pending_followup: null,
       red_flags: [],
     };
     onOptimisticUpdate((todos) => [placeholder, ...todos]);

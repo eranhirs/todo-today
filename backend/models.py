@@ -154,6 +154,7 @@ class Settings(BaseModel):
     run_model: str = "opus"
     heartbeat_enabled: bool = True
     hook_analysis_enabled: bool = True
+    local_image_storage: bool = False
 
 
 class SettingsUpdate(BaseModel):
@@ -162,6 +163,7 @@ class SettingsUpdate(BaseModel):
     analysis_model: Optional[str] = None
     heartbeat_enabled: Optional[bool] = None
     hook_analysis_enabled: Optional[bool] = None
+    local_image_storage: Optional[bool] = None
 
 
 class Metadata(BaseModel):
@@ -183,6 +185,7 @@ class Metadata(BaseModel):
     analysis_session_ids: List[str] = []
     heartbeat_enabled: bool = True
     hook_analysis_enabled: bool = True
+    local_image_storage: bool = False
 
     def get_settings(self) -> Settings:
         """Extract the settings subset from metadata."""
@@ -192,6 +195,7 @@ class Metadata(BaseModel):
             run_model=self.run_model,
             heartbeat_enabled=self.heartbeat_enabled,
             hook_analysis_enabled=self.hook_analysis_enabled,
+            local_image_storage=self.local_image_storage,
         )
 
     def apply_settings(self, update: SettingsUpdate) -> Settings:
@@ -204,6 +208,8 @@ class Metadata(BaseModel):
             self.heartbeat_enabled = update.heartbeat_enabled
         if update.hook_analysis_enabled is not None:
             self.hook_analysis_enabled = update.hook_analysis_enabled
+        if update.local_image_storage is not None:
+            self.local_image_storage = update.local_image_storage
         return self.get_settings()
 
 

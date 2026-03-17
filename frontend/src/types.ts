@@ -1,5 +1,9 @@
 export type TodoStatus = "next" | "in_progress" | "completed" | "consider" | "waiting" | "stale" | "rejected";
 
+/** Single source of truth for whether a todo counts as "unread". */
+export const isUnread = (t: Pick<Todo, "completed_by_run" | "is_read">): boolean =>
+  t.completed_by_run && !t.is_read;
+
 export interface Project {
   id: string;
   name: string;
@@ -37,6 +41,7 @@ export interface Todo {
   user_ordered: boolean;
   stale_reason: string | null;
   images: { filename: string; added_at: string; source: "creation" | "followup" }[];
+  pending_followup: string | null;
   red_flags: { label: string; explanation: string; excerpt: string; resolved: boolean; resolved_at?: string; source?: "pattern" | "ai" }[];
 }
 

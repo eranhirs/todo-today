@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import type { Todo, TodoStatus } from "../types";
+import { isUnread, type Todo, type TodoStatus } from "../types";
 import { api } from "../api";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -7,6 +7,7 @@ import { TodoRunControls } from "./TodoRunControls";
 import { TodoOutput } from "./TodoOutput";
 import { parseTags, stripTagsFromText } from "../utils/tags";
 import { BUILTIN_COMMANDS, type CommandInfo, stripCommandsFromText } from "../utils/commands";
+import { filterMentionSuggestions } from "../utils/todoSearch";
 
 interface Props {
   todo: Todo;
@@ -134,7 +135,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
       setShowOutput(willShow);
       if (willShow) {
         onOutputOpen?.(todo.id);
-        if (!todo.is_read && todo.completed_by_run) {
+        if (isUnread(todo)) {
           onOptimisticUpdate((todos) =>
             todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
           );
@@ -272,16 +273,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     const mentionFragment = mentionMatch ? mentionMatch[1].toLowerCase() : atMatch ? "" : null;
     if (mentionFragment !== null) {
       setEditTagSuggestions([]);
-      let matches = allTodos.filter((t) => t.run_output && t.id !== todo.id);
-      if (mentionFragment !== "") {
-        const q = mentionFragment;
-        matches = matches.filter((t) =>
-          t.text.toLowerCase().includes(q) ||
-          (t.run_output && t.run_output.toLowerCase().includes(q))
-        );
-      }
-      matches.sort((a, b) => b.created_at.localeCompare(a.created_at));
-      setEditMentionSuggestions(matches.slice(0, 10));
+      setEditMentionSuggestions(filterMentionSuggestions(allTodos, mentionFragment, todo.id));
       setEditSelectedSuggestion(0);
       return;
     }

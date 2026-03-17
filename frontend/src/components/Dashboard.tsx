@@ -129,6 +129,346 @@ function buildActivityData(todos: Todo[], days: number) {
   return buckets;
 }
 
+// ── Flag category mapping ──────────────────────────────────
+const FLAG_CATEGORIES: Record<string, string> = {
+  "Belt-and-suspenders": "Over-engineering",
+  "\"Defensive\" code": "Over-engineering",
+  "Just-in-case code": "Over-engineering",
+  "For good measure": "Over-engineering",
+  "Extra layer of protection": "Over-engineering",
+  "\"Gracefully handle\"": "Over-engineering",
+  "\"Robust\"": "Over-engineering",
+  "Future-proofing": "Over-engineering",
+  "Erring on the side of caution": "Over-engineering",
+  "\"Safer\" approach": "Over-engineering",
+  "Workaround": "Over-engineering",
+  "\"Pre-existing issue\"": "Deflection",
+  "\"Major refactor\"": "Deflection",
+  "\"Out of scope\"": "Deflection",
+  "\"Beyond the scope\"": "Deflection",
+  "\"Separate task\"": "Deflection",
+  "\"Not related to\"": "Deflection",
+  "\"Minimally invasive\"": "Deflection",
+  "\"Leave for later\"": "Deflection",
+  "\"The fix:\"": "Unilateral action",
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  "Over-engineering": "#ff6b6b",
+  "Deflection": "#f0a030",
+  "Unilateral action": "#c084fc",
+};
+
+function getCategoryForLabel(label: string): string {
+  return FLAG_CATEGORIES[label] || "Other";
+}
+
+function getCategoryColor(category: string): string {
+  return CATEGORY_COLORS[category] || "var(--text-dim)";
+}
+
+interface FlaggedTodo {
+  todo: Todo;
+  projectName: string;
+  unresolvedFlags: { label: string; explanation: string; source?: "pattern" | "ai" }[];
+}
+
+function FlagsDashboard({
+  todos,
+  projects,
+  onSelectProject,
+}: {
+  todos: Todo[];
+  projects: Project[];
+  onSelectProject: (id: string) => void;
+}) {
+  const [showResolved, setShowResolved] = React.useState(false);
+  const [expandedCategory, setExpandedCategory] = React.useState<string | null>(null);
+
+  const allFlags = todos.flatMap((t) =>
+    (t.red_flags || []).map((f) => ({ ...f, todoId: t.id, projectId: t.project_id }))
+  );
+  if (allFlags.length === 0) return null;
+
+  const totalFlags = allFlags.length;
+  const resolvedFlags = allFlags.filter((f) => f.resolved).length;
+  const unresolvedFlags = totalFlags - resolvedFlags;
+  const patternFlags = allFlags.filter((f) => f.source !== "ai");
+  const aiFlags = allFlags.filter((f) => f.source === "ai");
+  const unresolvedPattern = patternFlags.filter((f) => !f.resolved).length;
+  const unresolvedAi = aiFlags.filter((f) => !f.resolved).length;
+  const todosWithFlags = todos.filter((t) => t.red_flags && t.red_flags.length > 0).length;
+  const todosWithUnresolved = todos.filter(
+    (t) => t.red_flags && t.red_flags.some((f) => !f.resolved)
+  ).length;
+  const resolveRate = totalFlags === 0 ? 0 : Math.round((resolvedFlags / totalFlags) * 100);
+
+  // Project lookup
+  const projectMap = new Map(projects.map((p) => [p.id, p]));
+
+  // Flagged todos (actionable list)
+  const flaggedTodos: FlaggedTodo[] = todos
+    .filter((t) => t.red_flags && t.red_flags.some((f) => !f.resolved))
+    .map((t) => ({
+      todo: t,
+      projectName: (() => {
+        const p = projectMap.get(t.project_id);
+        return p ? (getDisplayName(p.id) ?? p.name) : "Unknown";
+      })(),
+      unresolvedFlags: t.red_flags.filter((f) => !f.resolved),
+    }))
+    .sort((a, b) => b.unresolvedFlags.length - a.unresolvedFlags.length);
+
+  // Category breakdown
+  const categoryStats: Record<string, { total: number; unresolved: number; labels: Set<string> }> = {};
+  for (const f of allFlags) {
+    const cat = getCategoryForLabel(f.label);
+    if (!categoryStats[cat]) categoryStats[cat] = { total: 0, unresolved: 0, labels: new Set() };
+    categoryStats[cat].total++;
+    categoryStats[cat].labels.add(f.label);
+    if (!f.resolved) categoryStats[cat].unresolved++;
+  }
+  const sortedCategories = Object.entries(categoryStats).sort((a, b) => b[1].total - a[1].total);
+  const maxCatCount = Math.max(1, ...sortedCategories.map(([, v]) => v.total));
+
+  // Per-project flag density
+  const projectFlagStats = projects
+    .map((p) => {
+      const projTodos = todos.filter((t) => t.project_id === p.id);
+      const projFlags = projTodos.flatMap((t) => t.red_flags || []);
+      const unresolved = projFlags.filter((f) => !f.resolved).length;
+      return {
+        project: p,
+        name: getDisplayName(p.id) ?? p.name,
+        total: projFlags.length,
+        unresolved,
+        todoCount: projTodos.length,
+      };
+    })
+    .filter((s) => s.total > 0)
+    .sort((a, b) => b.unresolved - a.unresolved || b.total - a.total);
+  const maxProjFlags = Math.max(1, ...projectFlagStats.map((s) => s.total));
+
+  // Flag type distribution (flat list)
+  const typeCounts: Record<string, { total: number; resolved: number; source: string }> = {};
+  for (const f of allFlags) {
+    if (!typeCounts[f.label]) typeCounts[f.label] = { total: 0, resolved: 0, source: f.source || "pattern" };
+    typeCounts[f.label].total++;
+    if (f.resolved) typeCounts[f.label].resolved++;
+  }
+  const sortedTypes = Object.entries(typeCounts).sort((a, b) => b[1].total - a[1].total);
+
+  return (
+    <div className="dash-section dash-flags-section">
+      <h3 className="dash-section-title">
+        Red Flag Analysis
+        {unresolvedFlags > 0 && (
+          <span className="dash-flags-alert">{unresolvedFlags} unresolved</span>
+        )}
+      </h3>
+
+      {/* Metrics row */}
+      <div className="dash-metrics">
+        <div className="dash-metric">
+          <span className="dash-metric-value" style={{ color: unresolvedFlags > 0 ? "#ff4d4d" : "var(--green)" }}>
+            {unresolvedFlags}
+          </span>
+          <span className="dash-metric-label">Unresolved</span>
+        </div>
+        <div className="dash-metric">
+          <span className="dash-metric-value" style={{ color: "var(--green)" }}>{resolvedFlags}</span>
+          <span className="dash-metric-label">Resolved</span>
+        </div>
+        <div className="dash-metric">
+          <span className="dash-metric-value">{resolveRate}%</span>
+          <span className="dash-metric-label">Resolve Rate</span>
+        </div>
+        <div className="dash-metric">
+          <span className="dash-metric-value">{todosWithFlags}</span>
+          <span className="dash-metric-label">Todos Flagged</span>
+        </div>
+      </div>
+
+      {/* Source breakdown chips */}
+      <div className="dash-flags-sources">
+        <span className="dash-flags-source-chip pattern">
+          <span className="dash-flags-source-dot" style={{ background: "#ff6b6b" }} />
+          {patternFlags.length} pattern{unresolvedPattern > 0 && (
+            <span className="dash-flags-source-unresolved">({unresolvedPattern} open)</span>
+          )}
+        </span>
+        <span className="dash-flags-source-chip ai">
+          <span className="dash-flags-source-dot" style={{ background: "#f0a030" }} />
+          {aiFlags.length} AI-raised{unresolvedAi > 0 && (
+            <span className="dash-flags-source-unresolved">({unresolvedAi} open)</span>
+          )}
+        </span>
+      </div>
+
+      {/* Category breakdown */}
+      <div className="dash-flags-categories">
+        <h4 className="dash-flags-subtitle">By Category</h4>
+        {sortedCategories.map(([category, stats]) => {
+          const color = getCategoryColor(category);
+          const isExpanded = expandedCategory === category;
+          const labelsInCat = sortedTypes.filter(
+            ([label]) => getCategoryForLabel(label) === category
+          );
+          return (
+            <div key={category} className="dash-flags-category">
+              <div
+                className="dash-flags-category-row"
+                onClick={() => setExpandedCategory(isExpanded ? null : category)}
+                style={{ cursor: "pointer" }}
+              >
+                <span className="dash-flags-category-name" style={{ color }}>
+                  <span className="dash-flags-expand-icon">{isExpanded ? "▾" : "▸"}</span>
+                  {category}
+                </span>
+                <div className="dash-workload-bar-wrap">
+                  <div className="dash-workload-bar-track">
+                    <div
+                      className="dash-workload-bar-fill"
+                      style={{
+                        width: `${((stats.total - stats.unresolved) / maxCatCount) * 100}%`,
+                        background: "var(--green)",
+                      }}
+                    />
+                    <div
+                      className="dash-workload-bar-fill"
+                      style={{
+                        width: `${(stats.unresolved / maxCatCount) * 100}%`,
+                        background: color,
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="dash-workload-stats">
+                  <span className="dash-workload-total">{stats.total}</span>
+                  {stats.unresolved > 0 && (
+                    <span className="dash-flags-cat-unresolved" style={{ color }}>{stats.unresolved} open</span>
+                  )}
+                </div>
+              </div>
+              {isExpanded && (
+                <div className="dash-flags-category-labels">
+                  {labelsInCat.map(([label, counts]) => (
+                    <div key={label} className="dash-flags-label-row">
+                      <span className="dash-flags-label-name">{label}</span>
+                      <span className="dash-flags-label-counts">
+                        {counts.total}{counts.total - counts.resolved > 0 && (
+                          <span style={{ color: "#ff6b6b", marginLeft: 4 }}>
+                            ({counts.total - counts.resolved} open)
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Flagged todos (actionable) */}
+      {flaggedTodos.length > 0 && (
+        <div className="dash-flags-todos">
+          <h4 className="dash-flags-subtitle">
+            Todos Needing Attention
+            <span className="dash-flags-subtitle-count">{todosWithUnresolved}</span>
+          </h4>
+          {flaggedTodos.slice(0, showResolved ? undefined : 8).map(({ todo, projectName, unresolvedFlags: uFlags }) => (
+            <div
+              key={todo.id}
+              className="dash-flags-todo-row"
+              onClick={() => onSelectProject(todo.project_id)}
+              title={`Click to go to ${projectName}`}
+            >
+              <div className="dash-flags-todo-info">
+                <span className="dash-flags-todo-text">
+                  {todo.emoji && <span>{todo.emoji} </span>}
+                  {todo.text.length > 60 ? todo.text.slice(0, 57) + "..." : todo.text}
+                </span>
+                <span className="dash-flags-todo-project">{projectName}</span>
+              </div>
+              <div className="dash-flags-todo-badges">
+                {uFlags.map((f, i) => (
+                  <span
+                    key={i}
+                    className={`dash-flags-todo-badge ${f.source === "ai" ? "ai" : "pattern"}`}
+                    title={f.explanation}
+                  >
+                    {f.source === "ai" && "🤖 "}{f.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))}
+          {flaggedTodos.length > 8 && !showResolved && (
+            <button
+              className="dash-flags-show-more"
+              onClick={() => setShowResolved(true)}
+            >
+              Show all {flaggedTodos.length} flagged todos
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Per-project flag density */}
+      {projectFlagStats.length > 1 && (
+        <div className="dash-flags-projects">
+          <h4 className="dash-flags-subtitle">By Project</h4>
+          {projectFlagStats.map(({ project, name, total, unresolved, todoCount }) => (
+            <div
+              key={project.id}
+              className="dash-workload-row dash-flags-project-row"
+              onClick={() => onSelectProject(project.id)}
+              style={{ cursor: "pointer" }}
+            >
+              <span className="dash-workload-name" title={name}>{name}</span>
+              <div className="dash-workload-bar-wrap">
+                <div className="dash-workload-bar-track">
+                  <div
+                    className="dash-workload-bar-fill completed"
+                    style={{ width: `${((total - unresolved) / maxProjFlags) * 100}%` }}
+                    title={`${total - unresolved} resolved`}
+                  />
+                  <div
+                    className="dash-workload-bar-fill"
+                    style={{ width: `${(unresolved / maxProjFlags) * 100}%`, background: "#ff4d4d" }}
+                    title={`${unresolved} unresolved`}
+                  />
+                </div>
+              </div>
+              <div className="dash-workload-stats">
+                <span className="dash-workload-total">{total}</span>
+                <span className="dash-flags-density" title="Flags per todo">
+                  {(total / Math.max(1, todoCount)).toFixed(1)}/todo
+                </span>
+              </div>
+            </div>
+          ))}
+          <div className="dash-workload-legend">
+            <span className="dash-legend-item">
+              <span className="dash-legend-dot" style={{ background: "var(--green)" }} />
+              Resolved
+            </span>
+            <span className="dash-legend-item">
+              <span className="dash-legend-dot" style={{ background: "#ff4d4d" }} />
+              Unresolved
+            </span>
+            <span className="dash-workload-legend-hint">
+              ratio = flags per todo
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 type WorkloadPeriod = "all" | "30d" | "7d";
 
 function ProjectWorkload({ todos, projects }: { todos: Todo[]; projects: Project[] }) {
@@ -371,97 +711,11 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
       )}
 
       {/* Red Flag Analysis */}
-      {(() => {
-        const allFlags = todos.flatMap((t) => t.red_flags || []);
-        if (allFlags.length === 0) return null;
-        const totalFlags = allFlags.length;
-        const resolvedFlags = allFlags.filter((f) => f.resolved).length;
-        const unresolvedFlags = totalFlags - resolvedFlags;
-        const todosWithFlags = todos.filter((t) => t.red_flags && t.red_flags.length > 0).length;
-        const resolveRate = totalFlags === 0 ? 0 : Math.round((resolvedFlags / totalFlags) * 100);
-        const flagRatio = totalTodos === 0 ? 0 : (todosWithFlags / totalTodos * 100);
-
-        // Distribution by type
-        const typeCounts: Record<string, { total: number; resolved: number }> = {};
-        for (const f of allFlags) {
-          if (!typeCounts[f.label]) typeCounts[f.label] = { total: 0, resolved: 0 };
-          typeCounts[f.label].total++;
-          if (f.resolved) typeCounts[f.label].resolved++;
-        }
-        const sortedTypes = Object.entries(typeCounts).sort((a, b) => b[1].total - a[1].total);
-        const maxTypeCount = Math.max(1, ...sortedTypes.map(([, v]) => v.total));
-
-        return (
-          <div className="dash-section">
-            <h3 className="dash-section-title">Red Flag Analysis</h3>
-            <div className="dash-metrics">
-              <div className="dash-metric">
-                <span className="dash-metric-value" style={{ color: unresolvedFlags > 0 ? "#ff4d4d" : "var(--green)" }}>{unresolvedFlags}</span>
-                <span className="dash-metric-label">Unresolved</span>
-              </div>
-              <div className="dash-metric">
-                <span className="dash-metric-value" style={{ color: "var(--green)" }}>{resolvedFlags}</span>
-                <span className="dash-metric-label">Resolved</span>
-              </div>
-              <div className="dash-metric">
-                <span className="dash-metric-value">{resolveRate}%</span>
-                <span className="dash-metric-label">Resolve Rate</span>
-              </div>
-              <div className="dash-metric">
-                <span className="dash-metric-value">{flagRatio.toFixed(0)}%</span>
-                <span className="dash-metric-label">Todos Flagged</span>
-              </div>
-              <div className="dash-metric">
-                <span className="dash-metric-value">{totalFlags}</span>
-                <span className="dash-metric-label">Total Flags</span>
-              </div>
-            </div>
-
-            {/* Flag type distribution */}
-            <div className="dash-workload-list" style={{ marginTop: "12px" }}>
-              {sortedTypes.map(([label, counts]) => {
-                const pct = counts.total === 0 ? 0 : Math.round((counts.resolved / counts.total) * 100);
-                return (
-                  <div key={label} className="dash-workload-row">
-                    <span className="dash-workload-name" title={label}>{label}</span>
-                    <div className="dash-workload-bar-wrap">
-                      <div className="dash-workload-bar-track">
-                        <div
-                          className="dash-workload-bar-fill completed"
-                          style={{ width: `${(counts.resolved / maxTypeCount) * 100}%` }}
-                          title={`${counts.resolved} resolved`}
-                        />
-                        <div
-                          className="dash-workload-bar-fill active-fill"
-                          style={{ width: `${((counts.total - counts.resolved) / maxTypeCount) * 100}%`, background: "#ff4d4d" }}
-                          title={`${counts.total - counts.resolved} unresolved`}
-                        />
-                      </div>
-                    </div>
-                    <div className="dash-workload-stats">
-                      <span className="dash-workload-total">{counts.total}</span>
-                      <span className="dash-workload-pct">{pct}%</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="dash-workload-legend">
-              <span className="dash-legend-item">
-                <span className="dash-legend-dot" style={{ background: "var(--green)" }} />
-                Resolved
-              </span>
-              <span className="dash-legend-item">
-                <span className="dash-legend-dot" style={{ background: "#ff4d4d" }} />
-                Unresolved
-              </span>
-              <span className="dash-workload-legend-hint">
-                % = resolve rate
-              </span>
-            </div>
-          </div>
-        );
-      })()}
+      <FlagsDashboard
+        todos={todos}
+        projects={projects}
+        onSelectProject={onSelectProject}
+      />
 
       {/* Project cards */}
       <div className="dash-section">
