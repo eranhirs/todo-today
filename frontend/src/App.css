@@ -1180,6 +1180,27 @@ body {
   font-weight: 500;
 }
 
+.todo-plan-file {
+  display: block;
+  width: 100%;
+  font-size: 0.8em;
+  color: var(--text-dim);
+  margin-top: 4px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--accent);
+}
+
+.todo-plan-file-label {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.todo-plan-file-path {
+  font-family: monospace;
+  font-size: 0.95em;
+  user-select: all;
+}
+
 .todo-content {
   display: flex;
   align-items: center;
@@ -1930,6 +1951,22 @@ body {
   flex-shrink: 0;
 }
 .toast-dismiss:hover { color: var(--text); }
+.toast-undo {
+  background: none;
+  border: 1px solid var(--blue);
+  color: var(--blue);
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: background 0.15s, color 0.15s;
+}
+.toast-undo:hover {
+  background: var(--blue);
+  color: #fff;
+}
 .toast-info {
   border-left-color: var(--blue);
   background: var(--card-bg);

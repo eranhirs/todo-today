@@ -108,6 +108,9 @@ function App() {
           {toasts.map((t) => (
             <div key={t.id} className={`toast toast-${t.type}`}>
               <span className="toast-text">{t.text}</span>
+              {t.onUndo && (
+                <button className="toast-undo" onClick={() => { t.onUndo!(); dismissToast(t.id); }}>Undo</button>
+              )}
               <button className="toast-dismiss" onClick={() => dismissToast(t.id)}>&times;</button>
             </div>
           ))}
@@ -267,8 +270,8 @@ function App() {
             editingTodoId={editingTodoId}
             addInputRef={addInputRef}
             isOffline={isOffline}
-            completedTotal={state.completed_total}
-            hasMoreCompleted={state.has_more_completed}
+            completedTotal={selectedProject ? (state.completed_by_project?.[selectedProject] ?? 0) : state.completed_total}
+            hasMoreCompleted={selectedProject ? ((state.completed_by_project?.[selectedProject] ?? 0) > state.todos.filter(t => t.project_id === selectedProject && t.status === "completed").length) : state.has_more_completed}
             onLoadMoreCompleted={loadMoreCompleted}
             loadingMoreCompleted={loadingMore}
           />

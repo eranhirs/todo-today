@@ -204,6 +204,9 @@ async def full_state() -> FullState:
                 reverse=True,
             )
             completed_total = len(completed)
+            completed_by_project: dict[str, int] = {}
+            for t in completed:
+                completed_by_project[t.project_id] = completed_by_project.get(t.project_id, 0) + 1
             capped_completed = completed[:COMPLETED_PAGE_SIZE]
             return FullState(
                 projects=ctx.store.projects,
@@ -214,6 +217,7 @@ async def full_state() -> FullState:
                 autopilot_running=is_autopilot_running(),
                 completed_total=completed_total,
                 has_more_completed=completed_total > COMPLETED_PAGE_SIZE,
+                completed_by_project=completed_by_project,
             )
     return await run_in_thread(_do)
 

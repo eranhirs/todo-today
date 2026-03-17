@@ -632,6 +632,38 @@ def _tail_output_file(
 # ── Run orchestration ────────────────────────────────────────────
 
 
+def _start_pending_followup(todo_id: str, source_path: str, model: str, project_id: str) -> bool:
+    """Check for a pending follow-up on a todo and start it if present.
+
+    Returns True if a follow-up was started, False otherwise.
+    Called from the finally blocks of run threads after the main run finishes.
+    """
+    followup_msg = None
+    followup_images: list[str] = []
+    session_id = None
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            if t.id == todo_id:
+                if t.pending_followup:
+                    followup_msg = t.pending_followup
+                    followup_images = list(t.pending_followup_images)
+                    session_id = t.session_id
+                    t.pending_followup = None
+                    t.pending_followup_images = []
+                    t.run_status = "running"
+                    t.status = "in_progress"
+                    t.completed_at = None
+                break
+
+    if followup_msg and session_id:
+        process_manager.spawn_thread(
+            todo_id, _followup_claude_for_todo,
+            (todo_id, followup_msg, session_id, source_path, model, project_id, followup_images),
+        )
+        return True
+    return False
+
+
 def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "", plan_only: bool = False, images: list[str] | None = None) -> None:
     """Background thread: run claude -p, auto-accepting plan mode if needed."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
@@ -651,9 +683,11 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             )
         # Append image references so Claude can read them
         if images:
+            from .routers.todos import _get_image_dir
+            img_dir = _get_image_dir()
             prompt += "\n\nThis task has attached images. Read each one to see the visual context:"
             for img in images:
-                prompt += f"\n- /tmp/claude-todos-images/{img}"
+                prompt += f"\n- {img_dir / img}"
         session_header = f"Session: {session_id}\n\n"
         accumulated: list[str] = []
 
@@ -707,7 +741,10 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
         err_str = str(e)
-        if _is_quota_error(err_str):
+        if _is_already_stopped(todo_id):
+            log.info("Ignoring exception for todo %s — already stopped/paused by user", todo_id)
+            process_manager.cleanup_output_file(output_file)
+        elif _is_quota_error(err_str):
             _handle_quota_error(todo_id, err_str, output_file)
         else:
             with StorageContext() as ctx:
@@ -731,9 +768,11 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             log.debug("Could not queue run session analysis", exc_info=True)
 
         process_manager.unregister_thread(todo_id)
-        if project_id:
-            _process_queue(project_id)
-            autopilot_continue(project_id)
+        # Auto-start any pending follow-up queued while this run was active
+        if not _start_pending_followup(todo_id, source_path, model, project_id):
+            if project_id:
+                _process_queue(project_id)
+                autopilot_continue(project_id)
 
 
 def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "", images: list[str] | None = None) -> None:
@@ -754,9 +793,11 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
         # Append image references so Claude can read them
         prompt = message
         if images:
+            from .routers.todos import _get_image_dir
+            img_dir = _get_image_dir()
             prompt += "\n\nThis follow-up has attached images. Read each one to see the visual context:"
             for img in images:
-                prompt += f"\n- /tmp/claude-todos-images/{img}"
+                prompt += f"\n- {img_dir / img}"
 
         session_header = existing_output
         accumulated: list[str] = []
@@ -773,20 +814,34 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
 
     except Exception as e:
         log.exception("Claude follow-up error for todo %s", todo_id)
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_status = "error"
-                    t.run_output = (t.run_output or "") + f"\n\n--- Follow-up Error ---\n{e}"
-                    t.run_pid = None
-                    t.run_output_file = None
-                    break
+        if _is_already_stopped(todo_id):
+            log.info("Ignoring follow-up exception for todo %s — already stopped/paused by user", todo_id)
+        else:
+            with StorageContext() as ctx:
+                for t in ctx.store.todos:
+                    if t.id == todo_id:
+                        t.run_status = "error"
+                        t.run_output = (t.run_output or "") + f"\n\n--- Follow-up Error ---\n{e}"
+                        t.run_pid = None
+                        t.run_output_file = None
+                        break
         process_manager.cleanup_output_file(output_file)
     finally:
         process_manager.unregister_thread(todo_id)
-        if project_id:
-            _process_queue(project_id)
-            autopilot_continue(project_id)
+        # Auto-start any pending follow-up queued while this run was active
+        if not _start_pending_followup(todo_id, source_path, model, project_id):
+            if project_id:
+                _process_queue(project_id)
+                autopilot_continue(project_id)
+
+
+def _is_already_stopped(todo_id: str) -> bool:
+    """Check if a todo's run was already stopped/paused by the user."""
+    with StorageContext(read_only=True) as ctx:
+        for t in ctx.store.todos:
+            if t.id == todo_id:
+                return t.run_status == "stopped"
+    return False
 
 
 def _finalize_run(
@@ -800,6 +855,11 @@ def _finalize_run(
     stream_objects: Optional[list[dict]] = None,
 ) -> None:
     """Apply the final result of a claude run to the todo and clean up."""
+    # If the user already paused/stopped this run, don't overwrite the status
+    if _is_already_stopped(todo_id):
+        log.info("Skipping finalize for todo %s — already stopped/paused by user", todo_id)
+        process_manager.cleanup_output_file(output_file)
+        return
     # Detect plan file written during the run
     plan_file = _detect_plan_file(stream_objects or []) if plan_only else None
 
@@ -915,14 +975,17 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
 
         except Exception as e:
             log.exception("Reconnect error for todo %s", todo_id)
-            with StorageContext() as ctx:
-                for t in ctx.store.todos:
-                    if t.id == todo_id:
-                        t.run_status = "error"
-                        t.run_output = f"[Reconnect failed: {e}]"
-                        t.run_pid = None
-                        t.run_output_file = None
-                        break
+            if _is_already_stopped(todo_id):
+                log.info("Ignoring reconnect exception for todo %s — already stopped/paused by user", todo_id)
+            else:
+                with StorageContext() as ctx:
+                    for t in ctx.store.todos:
+                        if t.id == todo_id:
+                            t.run_status = "error"
+                            t.run_output = f"[Reconnect failed: {e}]"
+                            t.run_pid = None
+                            t.run_output_file = None
+                            break
             process_manager.cleanup_output_file(output_file)
         finally:
             process_manager.unregister_thread(todo_id)

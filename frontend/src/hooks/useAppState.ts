@@ -62,7 +62,7 @@ export function useAppState({
       const data = await api.getState();
       setIsOffline(false);
 
-      // If user had loaded more completed todos, reload those extra pages too
+      // If user had loaded more completed todos (global), reload those extra pages too
       const extraLoaded = completedLoadedRef.current;
       if (extraLoaded > COMPLETED_PAGE_SIZE && data.has_more_completed) {
         try {
@@ -77,7 +77,23 @@ export function useAppState({
         } catch { /* ignore — base state is still valid */ }
       }
 
-      setState(data);
+      // Use functional setState to preserve any extra completed todos loaded
+      // via project-specific pagination that aren't covered by the global re-fetch above.
+      // Without this, polling overwrites state and drops project-specific extras.
+      setState((prev) => {
+        if (!prev) return data;
+        const freshIds = new Set(data.todos.map((t) => t.id));
+        const extraProjectCompleted = prev.todos.filter(
+          (t) => t.status === "completed" && !freshIds.has(t.id)
+        );
+        if (extraProjectCompleted.length > 0) {
+          return {
+            ...data,
+            todos: [...data.todos, ...extraProjectCompleted],
+          };
+        }
+        return data;
+      });
       notifyNewWaitingTodos(data.todos);
       notifyRunCompletions(data.todos, data.projects);
       notifyHookEvents();
@@ -105,24 +121,41 @@ export function useAppState({
 
   // Load more completed todos (for infinite scroll)
   const loadMoreCompleted = useCallback(async (projectId?: string | null) => {
-    if (loadingMore || !state?.has_more_completed) return;
+    if (loadingMore) return;
+    // For project-specific loads, check if that project has more; for global, check global flag
+    if (projectId) {
+      const projTotal = state?.completed_by_project?.[projectId] ?? 0;
+      const projLoaded = state?.todos.filter(t => t.project_id === projectId && t.status === "completed").length ?? 0;
+      if (projLoaded >= projTotal) return;
+    } else {
+      if (!state?.has_more_completed) return;
+    }
     setLoadingMore(true);
     try {
-      const offset = completedLoadedRef.current;
+      // For project-specific loads, offset is how many of THAT project's completed are already loaded
+      const offset = projectId
+        ? (state?.todos.filter(t => t.project_id === projectId && t.status === "completed").length ?? 0)
+        : completedLoadedRef.current;
       const data = await api.loadMoreCompleted(offset, COMPLETED_PAGE_SIZE, projectId || undefined);
       if (data.todos.length > 0) {
-        completedLoadedRef.current = offset + data.todos.length;
+        if (!projectId) {
+          completedLoadedRef.current = offset + data.todos.length;
+        }
         setState((prev) => {
           if (!prev) return prev;
           // Merge new completed todos, deduplicating by id
           const existingIds = new Set(prev.todos.map((t) => t.id));
           const newTodos = data.todos.filter((t) => !existingIds.has(t.id));
-          return {
+          const updated: typeof prev = {
             ...prev,
             todos: [...prev.todos, ...newTodos],
-            has_more_completed: data.has_more,
-            completed_total: data.total,
+            has_more_completed: projectId ? prev.has_more_completed : data.has_more,
+            completed_total: projectId ? prev.completed_total : data.total,
           };
+          if (projectId) {
+            updated.completed_by_project = { ...prev.completed_by_project, [projectId]: data.total };
+          }
+          return updated;
         });
       }
     } catch (err) {
@@ -130,7 +163,7 @@ export function useAppState({
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, state?.has_more_completed]);
+  }, [loadingMore, state?.has_more_completed, state?.completed_by_project, state?.todos]);
 
   // Request browser notification permission
   useEffect(() => {

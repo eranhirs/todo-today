@@ -665,7 +665,7 @@ async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
-                    if t.run_status != "queued" or not t.pending_followup:
+                    if not t.pending_followup:
                         return {"error": "not_queued"}
                     old_msg = t.pending_followup
                     t.pending_followup = new_msg
@@ -690,16 +690,15 @@ async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
 
 @router.post("/{todo_id}/followup")
 async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
-    """Send a follow-up message to a completed Claude session.
+    """Send a follow-up message to a Claude session.
 
+    If this todo is currently running, the follow-up is stored as a pending
+    message and will auto-start when the current run finishes.
     If another todo in the same project is currently running, the follow-up
     is queued and will auto-start when the project becomes free.
     """
     if _DEMO_MODE:
         raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
-    if process_manager.is_todo_running(todo_id):
-        raise HTTPException(status_code=409, detail="This todo is already running")
 
     def _do():
         with StorageContext() as ctx:
@@ -715,8 +714,22 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 return {"error": "manual"}
             if not todo.session_id:
                 return {"error": "no_session"}
-            if todo.run_status == "running":
-                return {"error": "running"}
+
+            img_suffix = f" [+{len(body.images)} image{'s' if len(body.images) != 1 else ''}]" if body.images else ""
+
+            # If this todo is currently running, queue the follow-up to auto-start when it finishes
+            if todo.run_status == "running" or process_manager.is_todo_running(todo_id):
+                if todo.pending_followup:
+                    return {"error": "followup_already_queued"}
+                # Persist any new images on the todo
+                if body.images:
+                    new_attachments = [ImageAttachment(filename=f, source="followup") for f in body.images]
+                    todo.images = list(todo.images) + new_attachments
+                todo.pending_followup = body.message
+                todo.pending_followup_images = list(body.images)
+                # Show the queued follow-up in the output
+                todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n"
+                return {"status": "queued"}
 
             session_id = todo.session_id
 
@@ -741,8 +754,6 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
             if body.images:
                 new_attachments = [ImageAttachment(filename=f, source="followup") for f in body.images]
                 todo.images = list(todo.images) + new_attachments
-
-            img_suffix = f" [+{len(body.images)} image{'s' if len(body.images) != 1 else ''}]" if body.images else ""
 
             if project_busy:
                 # Queue the follow-up; store the pending message so _process_queue can use it
@@ -775,8 +786,8 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
         raise HTTPException(status_code=400, detail="This is a manual task — it can only be completed by a human")
     if info.get("error") == "no_session":
         raise HTTPException(status_code=400, detail="No session to follow up on — run the todo first")
-    if info.get("error") == "running":
-        raise HTTPException(status_code=409, detail="Todo is currently running")
+    if info.get("error") == "followup_already_queued":
+        raise HTTPException(status_code=409, detail="A follow-up is already queued — wait for the current run to finish")
     if info.get("error") == "no_source_path":
         raise HTTPException(status_code=400, detail="Project has no source_path configured")
 

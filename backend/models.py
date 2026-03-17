@@ -266,6 +266,7 @@ class FullState(BaseModel):
     autopilot_running: bool = False
     completed_total: int = 0
     has_more_completed: bool = False
+    completed_by_project: Dict[str, int] = {}
 
 
 # ── Claude analysis result (what Claude returns) ───────────────

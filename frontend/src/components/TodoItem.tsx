@@ -15,7 +15,7 @@ interface Props {
   allTodos?: Todo[];
   allCommands?: CommandInfo[];
   onRefresh: () => void;
-  addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
+  addToast: (text: string, type?: "info" | "warning" | "success" | "error", options?: { onUndo?: () => void; duration?: number }) => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   isFocused?: boolean;
   triggerEdit?: boolean;
@@ -119,7 +119,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
 
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isExpandable = !!(todo.run_output || todo.original_text || (todo.images && todo.images.length > 0));
+  const isExpandable = !!(todo.run_output || todo.original_text || todo.plan_file || (todo.images && todo.images.length > 0));
 
   const handleTextClick = async () => {
     if (clickTimer.current) {
@@ -179,19 +179,50 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     }
   };
 
-  const remove = async () => {
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const remove = () => {
     if (disabled) {
       addToast("You're offline — deleting items isn't available right now", "warning");
       return;
     }
+    // Optimistically hide the item immediately
+    const snapshot = { ...todo };
     onOptimisticUpdate((todos) => todos.filter((t) => t.id !== todo.id));
-    try {
-      await api.deleteTodo(todo.id);
-      onRefresh();
-    } catch {
-      onOptimisticUpdate((todos) => [...todos, todo]);
-      addToast(`Failed to delete "${todo.text}"`, "error");
-    }
+
+    let undone = false;
+    const UNDO_DELAY = 5_000;
+
+    const doDelete = async () => {
+      if (undone) return;
+      try {
+        await api.deleteTodo(snapshot.id);
+        onRefresh();
+      } catch {
+        onOptimisticUpdate((todos) => [...todos, snapshot]);
+        addToast(`Failed to delete "${snapshot.text}"`, "error");
+      }
+    };
+
+    // Schedule actual deletion after delay
+    deleteTimerRef.current = setTimeout(doDelete, UNDO_DELAY);
+
+    const displayText = stripCommandsFromText(stripTagsFromText(snapshot.text), commands).trim();
+    const label = displayText.length > 40 ? displayText.slice(0, 40) + "…" : displayText;
+
+    addToast(`Deleted "${label}"`, "info", {
+      duration: UNDO_DELAY,
+      onUndo: () => {
+        undone = true;
+        if (deleteTimerRef.current) {
+          clearTimeout(deleteTimerRef.current);
+          deleteTimerRef.current = null;
+        }
+        // Restore the item
+        onOptimisticUpdate((todos) => [...todos, snapshot]);
+        onRefresh();
+      },
+    });
   };
 
   const unpinOrder = async () => {
@@ -636,6 +667,11 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     {showOutput && todo.original_text && (
       <div className="todo-original-text">
         <span className="todo-original-label">Original:</span> {todo.original_text}
+      </div>
+    )}
+    {showOutput && todo.plan_file && (
+      <div className="todo-plan-file">
+        <span className="todo-plan-file-label">Plan:</span> <span className="todo-plan-file-path">{todo.plan_file}</span>
       </div>
     )}
     <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} />

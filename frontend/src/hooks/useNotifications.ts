@@ -29,6 +29,7 @@ export interface Toast {
   id: string;
   text: string;
   type: ToastType;
+  onUndo?: () => void;
 }
 
 export interface NotificationLogEntry {
@@ -83,16 +84,17 @@ export function useNotifications() {
     };
   }, []);
 
-  const addToast = useCallback((text: string, type: ToastType = "info") => {
+  const addToast = useCallback((text: string, type: ToastType = "info", options?: { onUndo?: () => void; duration?: number }) => {
     const id = Math.random().toString(36).slice(2);
-    setToasts((prev) => [...prev, { id, text, type }]);
+    setToasts((prev) => [...prev, { id, text, type, onUndo: options?.onUndo }]);
     setNotificationLog((prev) => [
       { id, text, type, timestamp: new Date().toLocaleTimeString() },
       ...prev,
     ].slice(0, 50));
     setTimeout(() => {
       setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, TOAST_DURATION);
+    }, options?.duration ?? TOAST_DURATION);
+    return id;
   }, []);
 
   const dismissToast = useCallback((id: string) => {

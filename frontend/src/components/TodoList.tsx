@@ -14,7 +14,7 @@ interface Props {
   selectedProjectId: string | null;
   projectSummaries: Record<string, string>;
   onRefresh: () => void;
-  addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
+  addToast: (text: string, type?: "info" | "warning" | "success" | "error", options?: { onUndo?: () => void; duration?: number }) => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   focusedTodoId?: string | null;
   editingTodoId?: string | null;

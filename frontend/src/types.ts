@@ -131,6 +131,7 @@ export interface FullState {
   autopilot_running: boolean;
   completed_total: number;
   has_more_completed: boolean;
+  completed_by_project: Record<string, number>;
 }
 
 export interface CompletedPage {

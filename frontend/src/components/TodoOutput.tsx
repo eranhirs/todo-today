@@ -132,7 +132,8 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const showBtw = isRunning;
   const hasBtwOutput = !!todo.btw_output;
   const isBtwRunning = todo.btw_status === "running";
-  const isQueuedFollowup = todo.run_status === "queued" && !!todo.pending_followup;
+  const hasQueuedFollowup = !!todo.pending_followup;
+  const isQueuedFollowup = (todo.run_status === "queued" || isRunning) && hasQueuedFollowup;
 
   // Reset edit state when the todo is no longer queued
   useEffect(() => {
@@ -276,22 +277,45 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     }
   };
 
-  const sendBtw = async () => {
+  const sendRunningMessage = async () => {
     if (disabled) {
-      addToast("You're offline — btw messages aren't available right now", "warning");
+      addToast("You're offline — messages aren't available right now", "warning");
       return;
     }
-    const msg = btwText.trim();
-    if (!msg) return;
-    try {
-      await api.btwTodo(todo.id, msg);
-      setBtwText("");
-      btwDrafts.delete(todo.id);
-      addToast("/btw started — running in parallel", "info");
-      onRefresh();
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : "Failed to send /btw";
-      addToast(detail, "error");
+    const raw = btwText.trim();
+    if (!raw) return;
+
+    // If message starts with /btw, send as a side-channel btw
+    const isBtwMessage = /^\/btw\b/i.test(raw);
+    if (isBtwMessage) {
+      const msg = raw.replace(/^\/btw\s*/i, "").trim();
+      if (!msg) return;
+      try {
+        await api.btwTodo(todo.id, msg);
+        setBtwText("");
+        btwDrafts.delete(todo.id);
+        addToast("/btw started — running in parallel", "info");
+        onRefresh();
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "Failed to send /btw";
+        addToast(detail, "error");
+      }
+    } else {
+      // Default: queue as a follow-up that runs after the current run finishes
+      try {
+        const result = await api.followupTodo(todo.id, raw);
+        setBtwText("");
+        btwDrafts.delete(todo.id);
+        if (result.status === "queued") {
+          addToast("Follow-up queued — will run when the current task finishes", "info");
+        } else {
+          addToast("Follow-up sent", "info");
+        }
+        onRefresh();
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : "Failed to queue follow-up";
+        addToast(detail, "error");
+      }
     }
   };
 
@@ -433,8 +457,8 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         </div>
       )}
 
-      {/* Edit bar for queued follow-ups */}
-      {(!showTabs || activeTab === "run") && isQueuedFollowup && (
+      {/* Edit bar for queued follow-ups (non-running state, e.g. queued behind another project todo) */}
+      {(!showTabs || activeTab === "run") && isQueuedFollowup && !isRunning && (
         <div className="followup-edit-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
           {editingFollowup ? (
             <div className="followup-edit-row">
@@ -489,23 +513,51 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         </div>
       )}
 
-      {/* BTW input bar — shown when main run is active */}
-      {showBtw && (
+      {/* Edit bar for follow-up queued on a running todo */}
+      {showBtw && isQueuedFollowup && (
+        <div className="followup-edit-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+          {editingFollowup ? (
+            <div className="followup-edit-row">
+              <input
+                ref={editFollowupRef}
+                className="followup-input"
+                value={editFollowupText}
+                onChange={(e) => setEditFollowupText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); saveEditFollowup(); }
+                  if (e.key === "Escape") { e.preventDefault(); cancelEditFollowup(); }
+                }}
+                placeholder="Edit queued follow-up..."
+              />
+              <button className="btn-icon btn-save" onClick={saveEditFollowup} title="Save edit">&#x2713;</button>
+              <button className="btn-icon btn-cancel" onClick={cancelEditFollowup} title="Cancel edit">&#x2717;</button>
+            </div>
+          ) : (
+            <div className="followup-edit-row">
+              <span className="followup-queued-label">Follow-up queued</span>
+              <button className="btn-icon btn-edit-followup" onClick={startEditFollowup} disabled={disabled} title="Edit queued follow-up">&#x270E;</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Message bar — shown when main run is active; default queues follow-up, /btw prefix sends side-channel */}
+      {showBtw && !hasQueuedFollowup && (
         <div className="followup-bar btw-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
           <input
             className="followup-input"
-            placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : "/btw — side-channel request (runs in parallel)..."}
+            placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
             value={btwText}
-            disabled={disabled || isBtwRunning}
+            disabled={disabled}
             onChange={(e) => setBtwText(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
-                sendBtw();
+                sendRunningMessage();
               }
             }}
           />
-          <button className="btn-icon btn-run" onClick={sendBtw} disabled={disabled || isBtwRunning} title="Send /btw">↵</button>
+          <button className="btn-icon btn-run" onClick={sendRunningMessage} disabled={disabled} title="Send message">↵</button>
         </div>
       )}
       {/* Output limit warning — shown near follow-up bar */}
