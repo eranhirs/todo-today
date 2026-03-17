@@ -31,11 +31,12 @@ export interface Todo {
   is_read: boolean;
   plan_only: boolean;
   manual: boolean;
+  is_command: boolean;
   sort_order: number;
   user_ordered: boolean;
   stale_reason: string | null;
   images: { filename: string; added_at: string; source: "creation" | "followup" }[];
-  red_flags: { label: string; explanation: string; excerpt: string }[];
+  red_flags: { label: string; explanation: string; excerpt: string; resolved: boolean; resolved_at?: string; source?: "pattern" | "ai" }[];
 }
 
 export interface Insight {
@@ -122,4 +123,12 @@ export interface FullState {
   settings: Settings;
   analysis_locked: boolean;
   autopilot_running: boolean;
+  completed_total: number;
+  has_more_completed: boolean;
+}
+
+export interface CompletedPage {
+  todos: Todo[];
+  total: number;
+  has_more: boolean;
 }

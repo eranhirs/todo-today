@@ -6,11 +6,13 @@ import DOMPurify from "dompurify";
 import { TodoRunControls } from "./TodoRunControls";
 import { TodoOutput } from "./TodoOutput";
 import { parseTags, stripTagsFromText } from "../utils/tags";
-import { COMMANDS, stripCommandsFromText } from "../utils/commands";
+import { BUILTIN_COMMANDS, type CommandInfo, stripCommandsFromText } from "../utils/commands";
 
 interface Props {
   todo: Todo;
   allTags?: string[];
+  allTodos?: Todo[];
+  allCommands?: CommandInfo[];
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
@@ -56,15 +58,16 @@ function timeAgo(iso: string): string {
   return `${weeks}w ago`;
 }
 
-export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, onOutputOpen }: Props) {
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, onOutputOpen }: Props) {
+  const commands = allCommands ?? BUILTIN_COMMANDS;
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
   const [showImages, setShowImages] = useState(false);
-  const [expandedImg, setExpandedImg] = useState<string | null>(null);
   const [pillsExpanded, setPillsExpanded] = useState(false);
   const [editTagSuggestions, setEditTagSuggestions] = useState<string[]>([]);
-  const [editCmdSuggestions, setEditCmdSuggestions] = useState<typeof COMMANDS>([]);
+  const [editCmdSuggestions, setEditCmdSuggestions] = useState<CommandInfo[]>([]);
+  const [editMentionSuggestions, setEditMentionSuggestions] = useState<Todo[]>([]);
   const [editSelectedSuggestion, setEditSelectedSuggestion] = useState(0);
   const pillBarRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -243,10 +246,10 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     setEditing(false);
   };
 
-  // Compute tag and command suggestions for edit mode
+  // Compute tag, command, and mention suggestions for edit mode
   const computeEditSuggestions = (value: string) => {
     const el = inputRef.current;
-    if (!el) { setEditTagSuggestions([]); setEditCmdSuggestions([]); return; }
+    if (!el) { setEditTagSuggestions([]); setEditCmdSuggestions([]); setEditMentionSuggestions([]); return; }
     const cursorPos = el.selectionStart ?? value.length;
     const beforeCursor = value.slice(0, cursorPos);
 
@@ -256,11 +259,33 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     const cmdFragment = cmdMatch ? cmdMatch[1].toLowerCase() : slashMatch ? "" : null;
     if (cmdFragment !== null) {
       setEditTagSuggestions([]);
-      setEditCmdSuggestions(COMMANDS.filter((c) => cmdFragment === "" || c.name.startsWith(cmdFragment)));
+      setEditMentionSuggestions([]);
+      setEditCmdSuggestions(commands.filter((c) => cmdFragment === "" || c.name.startsWith(cmdFragment)));
       setEditSelectedSuggestion(0);
       return;
     }
     setEditCmdSuggestions([]);
+
+    // Check for @ mention fragment
+    const mentionMatch = beforeCursor.match(/(?:^|\s)@(.+)$/);
+    const atMatch = beforeCursor.match(/(?:^|\s)@$/);
+    const mentionFragment = mentionMatch ? mentionMatch[1].toLowerCase() : atMatch ? "" : null;
+    if (mentionFragment !== null) {
+      setEditTagSuggestions([]);
+      let matches = allTodos.filter((t) => t.run_output && t.id !== todo.id);
+      if (mentionFragment !== "") {
+        const q = mentionFragment;
+        matches = matches.filter((t) =>
+          t.text.toLowerCase().includes(q) ||
+          (t.run_output && t.run_output.toLowerCase().includes(q))
+        );
+      }
+      matches.sort((a, b) => b.created_at.localeCompare(a.created_at));
+      setEditMentionSuggestions(matches.slice(0, 10));
+      setEditSelectedSuggestion(0);
+      return;
+    }
+    setEditMentionSuggestions([]);
 
     // Check for tag fragment
     if (allTags.length === 0) { setEditTagSuggestions([]); return; }
@@ -308,10 +333,29 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
     }, 0);
   };
 
+  const applyEditMentionSuggestion = (refTodo: Todo) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const cursorPos = el.selectionStart ?? editText.length;
+    const beforeCursor = editText.slice(0, cursorPos);
+    const afterCursor = editText.slice(cursorPos);
+    const atIdx = beforeCursor.lastIndexOf("@");
+    if (atIdx === -1) return;
+    const displayTitle = stripCommandsFromText(stripTagsFromText(refTodo.text), commands).trim();
+    const newText = beforeCursor.slice(0, atIdx) + `@[${displayTitle}](${refTodo.id}) ` + afterCursor;
+    setEditText(newText);
+    setEditMentionSuggestions([]);
+    setTimeout(() => {
+      el.focus();
+      const newPos = atIdx + `@[${displayTitle}](${refTodo.id}) `.length;
+      el.setSelectionRange(newPos, newPos);
+    }, 0);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Handle suggestion navigation in edit mode (tags or commands)
-    const hasEditSuggestions = editTagSuggestions.length > 0 || editCmdSuggestions.length > 0;
-    const editSuggestionCount = editTagSuggestions.length || editCmdSuggestions.length;
+    // Handle suggestion navigation in edit mode (tags, commands, or mentions)
+    const hasEditSuggestions = editTagSuggestions.length > 0 || editCmdSuggestions.length > 0 || editMentionSuggestions.length > 0;
+    const editSuggestionCount = editTagSuggestions.length || editCmdSuggestions.length || editMentionSuggestions.length;
     if (hasEditSuggestions) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -334,11 +378,17 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
           applyEditCmdSuggestion(editCmdSuggestions[editSelectedSuggestion].name);
           return;
         }
+        if (editMentionSuggestions.length > 0 && editMentionSuggestions[editSelectedSuggestion]) {
+          e.preventDefault();
+          applyEditMentionSuggestion(editMentionSuggestions[editSelectedSuggestion]);
+          return;
+        }
       }
       if (e.key === "Escape") {
         e.preventDefault();
         setEditTagSuggestions([]);
         setEditCmdSuggestions([]);
+        setEditMentionSuggestions([]);
         return;
       }
     }
@@ -356,10 +406,10 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
   const tags = useMemo(() => parseTags(todo.text), [todo.text]);
 
   const renderedText = useMemo(() => {
-    const displayText = stripCommandsFromText(stripTagsFromText(todo.text));
+    const displayText = stripCommandsFromText(stripTagsFromText(todo.text), commands);
     const raw = marked.parseInline(displayText) as string;
     return DOMPurify.sanitize(raw);
-  }, [todo.text]);
+  }, [todo.text, commands]);
 
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
@@ -402,7 +452,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
               value={editText}
               rows={Math.min(editText.split("\n").length, 6)}
               onChange={(e) => { setEditText(e.target.value); computeEditSuggestions(e.target.value); }}
-              onBlur={() => { if (editTagSuggestions.length === 0 && editCmdSuggestions.length === 0) saveEdit(); }}
+              onBlur={() => { if (editTagSuggestions.length === 0 && editCmdSuggestions.length === 0 && editMentionSuggestions.length === 0) saveEdit(); }}
               onKeyDown={handleKeyDown}
             />
             {editTagSuggestions.length > 0 && (
@@ -427,7 +477,22 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
                     onMouseDown={(e) => { e.preventDefault(); applyEditCmdSuggestion(cmd.name); }}
                   >
                     <span className="cmd-suggestion-name">/{cmd.name}</span>
+                    <span className={`cmd-suggestion-type cmd-type-${cmd.type}`}>{cmd.type}</span>
                     <span className="cmd-suggestion-desc">{cmd.description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {editMentionSuggestions.length > 0 && (
+              <div className="mention-suggestions">
+                {editMentionSuggestions.map((t, i) => (
+                  <button
+                    key={t.id}
+                    className={`mention-suggestion-item${i === editSelectedSuggestion ? " selected" : ""}`}
+                    onMouseDown={(e) => { e.preventDefault(); applyEditMentionSuggestion(t); }}
+                  >
+                    <span className="mention-suggestion-title">{stripCommandsFromText(stripTagsFromText(t.text), commands).trim()}</span>
+                    <span className="mention-suggestion-status">{t.run_status ?? t.status}</span>
                   </button>
                 ))}
               </div>
@@ -448,6 +513,7 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         )}
         {isPending && <span className="pending-badge" title="Not sent — added while offline">not sent</span>}
         {todo.manual && <span className="manual-badge" title="Manual task — for human execution, cannot be run by Claude">manual</span>}
+        {todo.is_command && <span className="command-badge" title="Skill/command execution">cmd</span>}
         {todo.plan_only && <span className="plan-only-badge" title="Plan only — agent will plan but not implement">plan</span>}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <span className="run-spinner" title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."}>⟳</span>}
@@ -515,15 +581,26 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
         )}
-        {todo.red_flags && todo.red_flags.length > 0 && (
-          <span
-            className="badge badge-red-flags"
-            title={todo.red_flags.map((f) => f.label).join(", ")}
-            onClick={(e) => { e.stopPropagation(); setShowOutput(true); }}
-          >
-            {todo.red_flags.length} red flag{todo.red_flags.length > 1 ? "s" : ""}
-          </span>
-        )}
+        {todo.red_flags && todo.red_flags.length > 0 && (() => {
+          const unresolved = todo.red_flags.filter((f) => !f.resolved).length;
+          const unresolvedAi = todo.red_flags.filter((f) => !f.resolved && f.source === "ai").length;
+          const unresolvedPattern = todo.red_flags.filter((f) => !f.resolved && f.source !== "ai").length;
+          const allResolved = unresolved === 0;
+          const parts: string[] = [];
+          if (unresolvedPattern > 0) parts.push(`${unresolvedPattern} red flag${unresolvedPattern > 1 ? "s" : ""}`);
+          if (unresolvedAi > 0) parts.push(`${unresolvedAi} AI flag${unresolvedAi > 1 ? "s" : ""}`);
+          return (
+            <span
+              className={`badge ${allResolved ? "badge-green-flags" : unresolvedAi > 0 && unresolvedPattern === 0 ? "badge-ai-flags" : "badge-red-flags"}`}
+              title={todo.red_flags.map((f) => `${f.resolved ? "✓ " : ""}${f.source === "ai" ? "🤖 " : ""}${f.label}`).join(", ")}
+              onClick={(e) => { e.stopPropagation(); setShowOutput(true); }}
+            >
+              {allResolved
+                ? `${todo.red_flags.length} resolved`
+                : parts.join(", ")}
+            </span>
+          );
+        })()}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
         {!todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} />}
         {todo.user_ordered && (
@@ -535,22 +612,14 @@ export function TodoItem({ todo, allTags = [], onRefresh, addToast, onOptimistic
         <span className="stale-reason">{todo.stale_reason}</span>
       )}
     </div>
-    {showImages && todo.images && todo.images.length > 0 && (() => {
+    {(showOutput || showImages) && todo.images && todo.images.length > 0 && (() => {
       const creationImages = todo.images.filter((img) => img.source === "creation");
       const followupImages = todo.images.filter((img) => img.source === "followup");
-      const renderThumb = (img: { filename: string; source: string }, idx: number, label: string) => {
-        const isExpanded = expandedImg === img.filename;
-        return (
-          <div
-            key={img.filename}
-            className={`todo-image-thumb${isExpanded ? " expanded" : ""}`}
-            onClick={() => setExpandedImg(isExpanded ? null : img.filename)}
-            title={isExpanded ? "Click to collapse" : "Click to expand"}
-          >
-            <img src={api.imageUrl(img.filename)} alt={`${label} ${idx + 1}`} />
-          </div>
-        );
-      };
+      const renderThumb = (img: { filename: string; source: string }, idx: number, label: string) => (
+        <a key={img.filename} href={api.imageUrl(img.filename)} target="_blank" rel="noopener noreferrer" className="todo-image-thumb">
+          <img src={api.imageUrl(img.filename)} alt={`${label} ${idx + 1}`} />
+        </a>
+      );
       return (
         <div className="todo-images-grouped">
           {creationImages.length > 0 && (

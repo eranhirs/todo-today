@@ -1,4 +1,4 @@
-import type { FullState, Project, SessionInfo, Settings, SettingsUpdate, Todo, TodoStatus } from "./types";
+import type { CompletedPage, FullState, Project, SessionInfo, Settings, SettingsUpdate, Todo, TodoStatus } from "./types";
 import { ApiError } from "./errors";
 
 // In demo mode, BASE_URL is "/~REDACTED_USER/claude-todos/" — derive API path from it
@@ -39,6 +39,12 @@ export const api = {
       ? Promise.resolve(_w.__DEMO_STATE__!)
       : request<FullState>("/state"),
 
+  loadMoreCompleted: (offset: number, limit = 50, projectId?: string): Promise<CompletedPage> =>
+    request<CompletedPage>(`/todos/completed?offset=${offset}&limit=${limit}${projectId ? `&project_id=${projectId}` : ""}`),
+
+  searchTodos: (q: string, projectId?: string): Promise<Todo[]> =>
+    request<Todo[]>(`/todos/search?q=${encodeURIComponent(q)}${projectId ? `&project_id=${projectId}` : ""}`),
+
   createProject: (name: string, source_path = "") =>
     request<Project>("/projects", {
       method: "POST",
@@ -49,6 +55,8 @@ export const api = {
     request<void>(`/projects/${id}`, { method: "DELETE" }),
 
   getTags: () => request<string[]>("/todos/tags"),
+
+  getCommands: () => request<{ name: string; description: string; type: "command" | "skill" }[]>("/todos/commands"),
 
   renameTag: (oldTag: string, newTag: string) =>
     request<{ status: string; updated: number }>("/todos/tags/rename", {
@@ -98,6 +106,12 @@ export const api = {
 
   deleteTodo: (id: string) =>
     request<void>(`/todos/${id}`, { method: "DELETE" }),
+
+  resolveRedFlag: (todoId: string, flagIndex: number, resolved: boolean) =>
+    request<Todo>(`/todos/${todoId}/red_flags/${flagIndex}`, {
+      method: "PUT",
+      body: JSON.stringify({ flag_index: flagIndex, resolved }),
+    }),
 
   reorderTodos: (todoIds: string[], movedId?: string) =>
     request<{ status: string }>("/todos/reorder", {

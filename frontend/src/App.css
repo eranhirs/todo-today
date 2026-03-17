@@ -207,7 +207,7 @@ body {
 .project-item.active { background: var(--accent); color: #fff; }
 .project-item.active .btn-delete { color: rgba(255,255,255,0.7); }
 
-.project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.project-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; max-width: 60%; }
 
 .project-count-badge {
   display: inline-flex;
@@ -278,33 +278,6 @@ body {
   50% { opacity: 0.3; }
 }
 
-.autopilot-select {
-  padding: 1px 2px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 0.7rem;
-  cursor: pointer;
-  margin-left: 4px;
-  flex-shrink: 0;
-}
-.autopilot-select:hover { border-color: var(--border); color: var(--text); }
-.autopilot-select.autopilot-active {
-  color: var(--accent-light);
-  border-color: var(--accent-light);
-  background: rgba(108, 92, 231, 0.1);
-}
-.autopilot-select.autopilot-active:hover {
-  background: rgba(108, 92, 231, 0.2);
-}
-.project-item.active .autopilot-select { color: rgba(255,255,255,0.8); }
-.project-item.active .autopilot-select.autopilot-active {
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.5);
-  background: rgba(255, 255, 255, 0.12);
-}
-.project-item.active .autopilot-select:hover { border-color: rgba(255,255,255,0.4); color: #fff; }
 
 /* Project settings bar (shown in main content area when a project is selected) */
 .project-settings-bar {
@@ -458,6 +431,42 @@ body {
   letter-spacing: 0.05em;
   font-weight: 600;
   margin-top: 4px;
+}
+
+.up-next-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.autopilot-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  cursor: default;
+}
+.autopilot-inline-label {
+  white-space: nowrap;
+}
+.autopilot-inline-select {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.autopilot-inline-select:hover {
+  border-color: var(--accent-light);
+  color: var(--text);
+}
+.autopilot-inline-select.autopilot-active {
+  color: var(--accent-light);
+  border-color: var(--accent-light);
+  background: rgba(108, 92, 231, 0.1);
 }
 
 /* Add forms */
@@ -644,9 +653,99 @@ body {
 .cmd-suggestion-item.selected .cmd-suggestion-name {
   color: #fff;
 }
+.cmd-suggestion-type {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.cmd-type-skill {
+  background: rgba(108, 92, 231, 0.2);
+  color: var(--accent-light);
+}
+.cmd-type-command {
+  background: rgba(209, 154, 102, 0.2);
+  color: var(--orange, #d19a66);
+}
+.cmd-suggestion-item:hover .cmd-suggestion-type,
+.cmd-suggestion-item.selected .cmd-suggestion-type {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
 .cmd-suggestion-desc {
   opacity: 0.7;
   font-size: 0.8rem;
+}
+
+/* Command filter pill */
+.command-filter {
+  font-weight: 500;
+}
+
+/* Todo mention (@) suggestions dropdown */
+.mention-suggestions {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  z-index: 100;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+}
+.mention-suggestion-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.mention-suggestion-item:last-child {
+  border-bottom: none;
+}
+.mention-suggestion-item:hover,
+.mention-suggestion-item.selected {
+  background: var(--accent);
+  color: #fff;
+}
+.mention-suggestion-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.mention-suggestion-status {
+  font-size: 0.75rem;
+  opacity: 0.6;
+  white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.mention-suggestion-item:hover .mention-suggestion-status,
+.mention-suggestion-item.selected .mention-suggestion-status {
+  opacity: 0.8;
+}
+.todo-edit-wrapper .mention-suggestions {
+  bottom: auto;
+  top: 100%;
+  margin-bottom: 0;
+  margin-top: 4px;
 }
 
 /* Image attachments — AddTodo */
@@ -843,6 +942,15 @@ body {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+.tag-filter-pill.excluded {
+  background: rgba(231, 76, 60, 0.15);
+  border-color: #e74c3c;
+  color: #e74c3c;
+  text-decoration: line-through;
+}
+.tag-filter-pill.excluded:hover {
+  background: rgba(231, 76, 60, 0.25);
 }
 .tag-filter-clear {
   background: none;
@@ -1225,6 +1333,16 @@ body {
   padding: 10px 0 4px 12px;
   border-bottom: 1px solid var(--border);
   margin-bottom: 2px;
+}
+
+.load-more-sentinel {
+  text-align: center;
+  padding: 16px 0;
+}
+
+.load-more-text {
+  font-size: 0.75rem;
+  color: var(--text-dim);
 }
 
 /* History */
@@ -2019,6 +2137,14 @@ body {
   letter-spacing: 0.03em;
   flex-shrink: 0;
 }
+.command-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--accent-light);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
 
 .todo-item.todo-manual .todo-text {
   opacity: 0.85;
@@ -2092,6 +2218,34 @@ body {
   background: rgba(255, 60, 60, 0.22);
 }
 
+.badge-ai-flags {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: #f0a030;
+  background: rgba(240, 160, 48, 0.12);
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.badge-ai-flags:hover {
+  background: rgba(240, 160, 48, 0.22);
+}
+
+.badge-green-flags {
+  font-size: 0.6rem;
+  font-weight: 600;
+  color: var(--green);
+  background: rgba(80, 200, 120, 0.12);
+  padding: 1px 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.badge-green-flags:hover {
+  background: rgba(80, 200, 120, 0.22);
+}
+
 /* ── Red flags (coping detector) ────────────────────────────── */
 
 .red-flags {
@@ -2103,12 +2257,30 @@ body {
   border-radius: 6px;
 }
 
+.red-flags.all-resolved {
+  background: rgba(80, 200, 120, 0.06);
+  border-color: rgba(80, 200, 120, 0.2);
+}
+
+.red-flags.ai-only {
+  background: rgba(240, 160, 48, 0.08);
+  border-color: rgba(240, 160, 48, 0.25);
+}
+
 .red-flags-header {
   font-size: 0.78rem;
   font-weight: 600;
   color: #ff4d4d;
   margin-bottom: 8px;
   letter-spacing: 0.02em;
+}
+
+.red-flags-header.resolved {
+  color: var(--green);
+}
+
+.red-flags-header.ai {
+  color: #f0a030;
 }
 
 .red-flag-item {
@@ -2119,15 +2291,70 @@ body {
   border-top: 1px solid rgba(255, 60, 60, 0.12);
 }
 
+.red-flag-item.resolved {
+  opacity: 0.6;
+  border-top-color: rgba(80, 200, 120, 0.12);
+}
+
+.red-flag-item.ai-flag {
+  border-top-color: rgba(240, 160, 48, 0.12);
+}
+
 .red-flag-item:first-of-type {
   border-top: none;
   padding-top: 0;
+}
+
+.red-flag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .red-flag-label {
   font-size: 0.76rem;
   font-weight: 600;
   color: #ff6b6b;
+}
+
+.red-flag-label.resolved {
+  color: var(--green);
+}
+
+.red-flag-label.ai {
+  color: #f0a030;
+}
+
+.red-flag-resolve-btn {
+  font-size: 0.65rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid rgba(255, 60, 60, 0.3);
+  background: rgba(255, 60, 60, 0.08);
+  color: #ff6b6b;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.red-flag-resolve-btn:hover {
+  background: rgba(255, 60, 60, 0.18);
+}
+.red-flag-resolve-btn.ai {
+  border-color: rgba(240, 160, 48, 0.3);
+  background: rgba(240, 160, 48, 0.08);
+  color: #f0a030;
+}
+.red-flag-resolve-btn.ai:hover {
+  background: rgba(240, 160, 48, 0.18);
+}
+
+.red-flag-resolve-btn.resolved {
+  border-color: rgba(80, 200, 120, 0.3);
+  background: rgba(80, 200, 120, 0.08);
+  color: var(--green);
+}
+.red-flag-resolve-btn.resolved:hover {
+  background: rgba(80, 200, 120, 0.18);
 }
 
 .red-flag-explanation {
@@ -3232,7 +3459,7 @@ body {
   /* Select elements */
   .interval-select,
   .model-select,
-  .autopilot-select {
+  .autopilot-inline-select {
     min-height: 36px;
     padding: 6px 8px;
     font-size: 0.8rem;

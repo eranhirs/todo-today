@@ -2,9 +2,14 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
-import { COMMANDS } from "../utils/commands";
+import { BUILTIN_COMMANDS, type CommandInfo } from "../utils/commands";
+import { stripTagsFromText } from "../utils/tags";
+import { stripCommandsFromText } from "../utils/commands";
 
 type AddMode = "add" | "add-run" | "add-plan";
+
+// Module-level draft storage: persists textarea content per project across tab switches
+const addTodoDrafts = new Map<string, string>();
 
 interface PendingImage {
   filename: string;  // server-side filename after upload
@@ -15,6 +20,8 @@ interface Props {
   projectId?: string;
   projects?: Project[];
   allTags?: string[];
+  allTodos?: Todo[];
+  allCommands?: CommandInfo[];
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
@@ -23,13 +30,66 @@ interface Props {
   isOffline?: boolean;
 }
 
-export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false }: Props) {
-  const [text, setText] = useState("");
+/** Extract the last Claude response from a todo's run_output (after the last follow-up separator, if any) */
+function getLastClaudeMessage(todo: Todo): string | null {
+  const output = todo.run_output;
+  if (!output) return null;
+
+  // Split by follow-up/btw separators to find the last section
+  const separatorRe = /\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* .+\n/g;
+  let lastSepEnd = 0;
+  let match: RegExpExecArray | null;
+  while ((match = separatorRe.exec(output)) !== null) {
+    lastSepEnd = match.index + match[0].length;
+  }
+
+  const lastSection = output.slice(lastSepEnd).trim();
+  if (!lastSection) return null;
+
+  // Truncate to a reasonable length for context
+  const maxLen = 2000;
+  if (lastSection.length > maxLen) {
+    return lastSection.slice(lastSection.length - maxLen) + "\n[...truncated]";
+  }
+  return lastSection;
+}
+
+/** Get a clean display title for a todo (strip tags and commands) */
+function getTodoDisplayTitle(todo: Todo): string {
+  return stripCommandsFromText(stripTagsFromText(todo.text)).trim();
+}
+
+export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false }: Props) {
+  const commands = allCommands ?? BUILTIN_COMMANDS;
+  const draftKey = projectId ?? "__all__";
+  const [text, setText] = useState(() => addTodoDrafts.get(draftKey) ?? "");
   const [selectedProject, setSelectedProject] = useState(projectId ?? "");
+
+  // Keep refs for draft save without stale closures
+  const textValueRef = useRef(text);
+  textValueRef.current = text;
+  const prevDraftKeyRef = useRef(draftKey);
+
+  // On project switch (same component instance): save old draft, restore new
+  useEffect(() => {
+    if (prevDraftKeyRef.current !== draftKey) {
+      addTodoDrafts.set(prevDraftKeyRef.current, textValueRef.current);
+      setText(addTodoDrafts.get(draftKey) ?? "");
+      prevDraftKeyRef.current = draftKey;
+    }
+  }, [draftKey]);
+
+  // Save draft on unmount (covers branch switches, e.g. "All Projects" ↔ specific project)
+  useEffect(() => {
+    return () => {
+      addTodoDrafts.set(prevDraftKeyRef.current, textValueRef.current);
+    };
+  }, []);
   const [mode, setMode] = useState<AddMode>("add");
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [tagSuggestions, setTagSuggestions] = useState<string[]>([]);
-  const [cmdSuggestions, setCmdSuggestions] = useState<typeof COMMANDS>([]);
+  const [cmdSuggestions, setCmdSuggestions] = useState<CommandInfo[]>([]);
+  const [todoSuggestions, setTodoSuggestions] = useState<Todo[]>([]);
   const [selectedSuggestion, setSelectedSuggestion] = useState(0);
   const localRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = inputRef ?? localRef;
@@ -119,6 +179,21 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     return null;
   }, [text, textareaRef]);
 
+  // Compute @ todo mention suggestions based on cursor position
+  const mentionFragment = useMemo(() => {
+    const el = textareaRef.current;
+    if (!el) return null;
+    const cursorPos = el.selectionStart ?? text.length;
+    const beforeCursor = text.slice(0, cursorPos);
+    // Look for @ followed by search text
+    const match = beforeCursor.match(/(?:^|\s)@(.+)$/);
+    if (match) return match[1].toLowerCase();
+    // Just typed @
+    const atMatch = beforeCursor.match(/(?:^|\s)@$/);
+    if (atMatch) return "";
+    return null;
+  }, [text, textareaRef]);
+
   useEffect(() => {
     if (tagFragment === null) {
       setTagSuggestions([]);
@@ -135,15 +210,44 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
   useEffect(() => {
     if (cmdFragment === null) {
       setCmdSuggestions([]);
-      if (tagFragment === null) setSelectedSuggestion(0);
+      if (tagFragment === null && mentionFragment === null) setSelectedSuggestion(0);
       return;
     }
-    const matches = COMMANDS.filter((c) =>
+    const matches = commands.filter((c) =>
       cmdFragment === "" || c.name.startsWith(cmdFragment)
     );
     setCmdSuggestions(matches);
     setSelectedSuggestion(0);
-  }, [cmdFragment, tagFragment]);
+  }, [cmdFragment, tagFragment, mentionFragment, commands]);
+
+  // Compute todo mention suggestions
+  useEffect(() => {
+    if (mentionFragment === null) {
+      setTodoSuggestions([]);
+      if (tagFragment === null && cmdFragment === null) setSelectedSuggestion(0);
+      return;
+    }
+    // Filter todos that have run_output (i.e. Claude has responded)
+    let matches = allTodos.filter((t) => t.run_output);
+    if (mentionFragment !== "") {
+      const q = mentionFragment.toLowerCase();
+      matches = matches.filter((t) =>
+        t.text.toLowerCase().includes(q) ||
+        (t.run_output && t.run_output.toLowerCase().includes(q))
+      );
+    }
+    // Sort: running/done first, then by created_at descending
+    const statusPriority: Record<string, number> = { running: 0, done: 1, stopped: 2, error: 3, queued: 4 };
+    matches.sort((a, b) => {
+      const pa = statusPriority[a.run_status ?? ""] ?? 5;
+      const pb = statusPriority[b.run_status ?? ""] ?? 5;
+      if (pa !== pb) return pa - pb;
+      return b.created_at.localeCompare(a.created_at);
+    });
+    // Limit to 10 suggestions
+    setTodoSuggestions(matches.slice(0, 10));
+    setSelectedSuggestion(0);
+  }, [mentionFragment, allTodos, tagFragment, cmdFragment]);
 
   const applyCmdSuggestion = (cmdName: string) => {
     const el = textareaRef.current;
@@ -159,6 +263,27 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     setTimeout(() => {
       el.focus();
       const newCursorPos = slashIdx + 1 + cmdName.length + 1;
+      el.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  };
+
+  const applyMentionSuggestion = (todo: Todo) => {
+    const el = textareaRef.current;
+    if (!el) return;
+    const cursorPos = el.selectionStart ?? text.length;
+    const beforeCursor = text.slice(0, cursorPos);
+    const afterCursor = text.slice(cursorPos);
+    // Find where the @ starts
+    const atIdx = beforeCursor.lastIndexOf("@");
+    if (atIdx === -1) return;
+    const displayTitle = getTodoDisplayTitle(todo);
+    // Replace @fragment with the todo reference marker
+    const newText = beforeCursor.slice(0, atIdx) + `@[${displayTitle}](${todo.id}) ` + afterCursor;
+    setText(newText);
+    setTodoSuggestions([]);
+    setTimeout(() => {
+      el.focus();
+      const newCursorPos = atIdx + `@[${displayTitle}](${todo.id}) `.length;
       el.setSelectionRange(newCursorPos, newCursorPos);
     }, 0);
   };
@@ -252,12 +377,38 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
 
     const imageFilenames = pendingImages.map((img) => img.filename);
 
+    // Process @[title](id) references: extract context from referenced todos
+    const mentionRe = /@\[([^\]]+)\]\(([^)]+)\)/g;
+    let todoText = trimmed;
+    const contextBlocks: string[] = [];
+    let mentionMatch: RegExpExecArray | null;
+    while ((mentionMatch = mentionRe.exec(trimmed)) !== null) {
+      const refTitle = mentionMatch[1];
+      const refId = mentionMatch[2];
+      const refTodo = allTodos.find((t) => t.id === refId);
+      if (refTodo) {
+        const lastMsg = getLastClaudeMessage(refTodo);
+        if (lastMsg) {
+          contextBlocks.push(
+            `--- Referenced todo: "${refTitle}" ---\n${lastMsg}\n--- End reference ---`
+          );
+        }
+      }
+      // Replace the @[title](id) with just @title in the displayed text
+      todoText = todoText.replace(mentionMatch[0], `@${refTitle}`);
+    }
+
+    // Prepend context blocks if any references were found
+    const finalText = contextBlocks.length > 0
+      ? contextBlocks.join("\n\n") + "\n\n" + todoText
+      : todoText;
+
     // Optimistic placeholder
     const tempId = `temp-${Date.now()}`;
     const placeholder: Todo = {
       id: tempId,
       project_id: pid,
-      text: trimmed || "(image attached)",
+      text: finalText || "(image attached)",
       status: "next",
       source: "user",
       completed_by_run: false,
@@ -275,6 +426,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       is_read: true,
       plan_only: planOnly,
       manual: false,
+      is_command: false,
       sort_order: -Infinity,
       user_ordered: false,
       stale_reason: null,
@@ -284,6 +436,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     };
     onOptimisticUpdate((todos) => [placeholder, ...todos]);
     setText("");
+    addTodoDrafts.delete(draftKey);
     // Clean up preview URLs (server has the files now)
     pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
     setPendingImages([]);
@@ -295,14 +448,14 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     }
 
     try {
-      const created = await api.createTodo(pid, trimmed || "(image attached)", planOnly, imageFilenames);
+      const created = await api.createTodo(pid, finalText || "(image attached)", planOnly, imageFilenames);
       if (shouldRun) {
         try {
           const result = await api.runTodo(created.id);
           if (result.status === "queued") {
-            addToast(`Added & queued "${trimmed}"${planOnly ? " (plan only)" : ""}`, "info");
+            addToast(`Added & queued "${todoText}"${planOnly ? " (plan only)" : ""}`, "info");
           } else {
-            addToast(`Added & ${planOnly ? "planning" : "running"} "${trimmed}"`, "info");
+            addToast(`Added & ${planOnly ? "planning" : "running"} "${todoText}"`, "info");
           }
         } catch (err) {
           addToast(`Added todo but failed to run: ${apiErrorMessage(err)}`, "error");
@@ -312,7 +465,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
     } catch {
       onOptimisticUpdate((todos) => todos.filter((t) => t.id !== tempId));
       setText(trimmed);
-      addToast(`Failed to add "${trimmed}"`, "error");
+      addToast(`Failed to add "${todoText}"`, "error");
     }
   };
 
@@ -341,7 +494,7 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
       )}
       <div className="add-todo-input-wrapper">
         <textarea
-          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Ctrl+Enter to add & run, # for tags, paste images)"}
+          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Ctrl+Enter to add & run, # for tags, @ to reference, paste images)"}
           value={text}
           rows={1}
           disabled={disabled && !isOffline}
@@ -349,9 +502,9 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
           ref={textareaRef}
           onPaste={handlePaste}
           onKeyDown={(e) => {
-            // Handle suggestion navigation (tags or commands)
-            const hasSuggestions = tagSuggestions.length > 0 || cmdSuggestions.length > 0;
-            const suggestionCount = tagSuggestions.length || cmdSuggestions.length;
+            // Handle suggestion navigation (tags, commands, or todo mentions)
+            const hasSuggestions = tagSuggestions.length > 0 || cmdSuggestions.length > 0 || todoSuggestions.length > 0;
+            const suggestionCount = tagSuggestions.length || cmdSuggestions.length || todoSuggestions.length;
             if (hasSuggestions) {
               if (e.key === "ArrowDown") {
                 e.preventDefault();
@@ -374,11 +527,17 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
                   applyCmdSuggestion(cmdSuggestions[selectedSuggestion].name);
                   return;
                 }
+                if (todoSuggestions.length > 0 && todoSuggestions[selectedSuggestion]) {
+                  e.preventDefault();
+                  applyMentionSuggestion(todoSuggestions[selectedSuggestion]);
+                  return;
+                }
               }
               if (e.key === "Escape") {
                 e.preventDefault();
                 setTagSuggestions([]);
                 setCmdSuggestions([]);
+                setTodoSuggestions([]);
                 return;
               }
             }
@@ -444,7 +603,25 @@ export function AddTodo({ projectId, projects, allTags = [], onRefresh, addToast
                 }}
               >
                 <span className="cmd-suggestion-name">/{cmd.name}</span>
+                <span className={`cmd-suggestion-type cmd-type-${cmd.type}`}>{cmd.type}</span>
                 <span className="cmd-suggestion-desc">{cmd.description}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {todoSuggestions.length > 0 && (
+          <div className="mention-suggestions" ref={suggestionsRef}>
+            {todoSuggestions.map((todo, i) => (
+              <button
+                key={todo.id}
+                className={`mention-suggestion-item${i === selectedSuggestion ? " selected" : ""}`}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  applyMentionSuggestion(todo);
+                }}
+              >
+                <span className="mention-suggestion-title">{getTodoDisplayTitle(todo)}</span>
+                <span className="mention-suggestion-status">{todo.run_status ?? todo.status}</span>
               </button>
             ))}
           </div>

@@ -64,13 +64,14 @@ class Todo(BaseModel):
     is_read: bool = True  # Whether the user has seen the run output
     plan_only: bool = False  # When True, agent plans but cannot implement
     manual: bool = False  # When True, task is for human execution — cannot be run by Claude
+    is_command: bool = False  # When True, todo is a skill/command execution (contains /skill or /command token)
     sort_order: int = 0
     user_ordered: bool = False
     original_text: Optional[str] = None  # Preserved when analyzer renames a user-created todo text
     stale_reason: Optional[str] = None
     rejected_at: Optional[str] = None
     images: List[ImageAttachment] = []  # Image attachments with metadata
-    red_flags: List[Dict[str, str]] = []  # Coping-phrase red flags detected in run output
+    red_flags: List[Dict[str, Any]] = []  # Coping-phrase red flags detected in run output
 
     @model_validator(mode="before")
     @classmethod
@@ -84,6 +85,14 @@ class Todo(BaseModel):
         if isinstance(data, dict) and data.get("source") == "claude_run":
             data["source"] = "claude"
             data.setdefault("completed_by_run", True)
+        # Migrate red_flags: ensure each flag has 'resolved' and 'source' fields
+        if isinstance(data, dict) and "red_flags" in data:
+            for flag in data["red_flags"]:
+                if isinstance(flag, dict):
+                    if "resolved" not in flag:
+                        flag["resolved"] = False
+                    if "source" not in flag:
+                        flag["source"] = "pattern"
         # Migrate legacy string-only images to ImageAttachment format
         if isinstance(data, dict) and "images" in data:
             imgs = data["images"]
@@ -248,6 +257,8 @@ class FullState(BaseModel):
     settings: Settings = Settings()
     analysis_locked: bool = False
     autopilot_running: bool = False
+    completed_total: int = 0
+    has_more_completed: bool = False
 
 
 # ── Claude analysis result (what Claude returns) ───────────────
@@ -294,6 +305,12 @@ class ClaudeTodoUpdate(BaseModel):
     status: Optional[TodoStatus] = None
 
 
+class ClaudeRedFlag(BaseModel):
+    todo_id: str
+    label: str
+    explanation: str
+
+
 class ClaudeAnalysisResult(BaseModel):
     completed_todo_ids: List[str] = []
     status_updates: List[ClaudeTodoStatusUpdate] = []
@@ -303,3 +320,4 @@ class ClaudeAnalysisResult(BaseModel):
     new_projects: List[ClaudeNewProject] = []
     insights: List[ClaudeInsight] = []
     dismiss_insight_ids: List[str] = []
+    red_flags: List[ClaudeRedFlag] = []
