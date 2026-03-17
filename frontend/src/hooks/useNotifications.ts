@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Todo } from "../types";
+import type { Project, Todo } from "../types";
 import { api } from "../api";
 
 const TOAST_DURATION = 12_000;
@@ -183,7 +183,7 @@ export function useNotifications() {
     }
   }, [notify]);
 
-  const notifyRunCompletions = useCallback((todos: Todo[]) => {
+  const notifyRunCompletions = useCallback((todos: Todo[], projects: Project[]) => {
     const prev = knownRunningIds.current;
     const nowRunning = new Set(
       todos.filter((t) => t.run_status === "running").map((t) => t.id)
@@ -194,7 +194,9 @@ export function useNotifications() {
         const todo = todos.find((t) => t.id === id);
         if (todo) {
           const isError = todo.run_status === "error";
-          const msg = isError ? `Run failed: ${todo.text}` : `Run completed: ${todo.text}`;
+          const project = projects.find((p) => p.id === todo.project_id);
+          const projectLabel = project ? ` [${project.name}]` : "";
+          const msg = isError ? `Run failed${projectLabel}: ${todo.text}` : `Run completed${projectLabel}: ${todo.text}`;
           notify(msg, isError ? "error" : "success", isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success);
         }
       }

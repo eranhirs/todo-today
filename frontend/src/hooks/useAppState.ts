@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FullState, Todo } from "../types";
+import type { FullState, Project, Todo } from "../types";
 import { api, isStaticDemo } from "../api";
 import { ApiError } from "../errors";
 
@@ -8,7 +8,7 @@ const COMPLETED_PAGE_SIZE = 50;
 
 interface UseAppStateOptions {
   notifyNewWaitingTodos: (todos: Todo[]) => void;
-  notifyRunCompletions: (todos: Todo[]) => void;
+  notifyRunCompletions: (todos: Todo[], projects: Project[]) => void;
   notifyHookEvents: () => void;
 }
 
@@ -79,7 +79,7 @@ export function useAppState({
 
       setState(data);
       notifyNewWaitingTodos(data.todos);
-      notifyRunCompletions(data.todos);
+      notifyRunCompletions(data.todos, data.projects);
       notifyHookEvents();
       const waitingCount = data.todos.filter((t) => t.status === "waiting").length;
       document.title = waitingCount > 0 ? `(${waitingCount}) Claude Todos` : "Claude Todos";
