@@ -1887,6 +1887,19 @@ body {
   color: var(--red);
 }
 
+.usage-unavailable {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.usage-stale-banner {
+  font-size: 0.65rem;
+  color: var(--amber);
+  font-style: italic;
+  margin-bottom: 4px;
+}
+
 .usage-extra {
   font-size: 0.7rem;
   color: var(--text-dim);

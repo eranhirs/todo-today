@@ -1,7 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { Metadata } from "../types";
 import { api } from "../api";
 import type { ClaudeUsageLimit, ClaudeUsageResponse } from "../api";
+
+const BASE_POLL_MS = 60_000;
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 interface Props {
   metadata: Metadata;
@@ -56,31 +59,56 @@ export function TokenTracker({ metadata, onRefresh: _ }: Props) {
   const [usage, setUsage] = useState<ClaudeUsageResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [stale, setStale] = useState(false);
+  const failCount = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const usageRef = useRef(usage);
+  usageRef.current = usage;
 
-  const fetchUsage = async () => {
+  const fetchUsageRef = useRef<(manual?: boolean) => Promise<void>>(undefined!);
+
+  const scheduleNext = useCallback((failures: number) => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (failures >= MAX_CONSECUTIVE_FAILURES) return; // stop polling
+    const delay = BASE_POLL_MS * Math.pow(2, failures);
+    timerRef.current = setTimeout(() => fetchUsageRef.current?.(), delay);
+  }, []);
+
+  const fetchUsage = useCallback(async (manual = false) => {
+    if (manual) failCount.current = 0;
     setLoading(true);
-    setError(null);
+    if (manual) { setError(null); setStale(false); }
     try {
       const data = await api.getClaudeUsage();
       if (data.error) {
+        failCount.current += 1;
+        if (usageRef.current) setStale(true);
         setError(data.error);
       } else {
+        failCount.current = 0;
         setUsage(data);
+        setError(null);
+        setStale(false);
       }
     } catch {
-      setError("Failed to fetch");
+      failCount.current += 1;
+      if (usageRef.current) setStale(true);
+      setError("Failed to fetch usage data");
     } finally {
       setLoading(false);
+      scheduleNext(failCount.current);
     }
-  };
+  }, [scheduleNext]);
+
+  fetchUsageRef.current = fetchUsage;
 
   useEffect(() => {
     fetchUsage();
-    const id = setInterval(fetchUsage, 60_000);
-    return () => clearInterval(id);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, []);
 
-  const hasUsage = usage && !error;
+  const persistentlyUnavailable = failCount.current >= MAX_CONSECUTIVE_FAILURES;
+  const hasUsage = usage !== null;
   const sessionPct = hasUsage && usage.five_hour?.utilization != null
     ? Math.floor(usage.five_hour.utilization) : null;
 
@@ -95,8 +123,10 @@ export function TokenTracker({ metadata, onRefresh: _ }: Props) {
         </span>
         <span className="token-tracker-summary">
           {loading && !usage ? "..." :
-           error ? "unavailable" :
-           sessionPct !== null ? `Session: ${sessionPct}%` : ""}
+           persistentlyUnavailable && !hasUsage ? "unavailable" :
+           stale && sessionPct !== null ? `Session: ${sessionPct}% (stale)` :
+           sessionPct !== null ? `Session: ${sessionPct}%` :
+           error ? "unavailable" : ""}
         </span>
       </button>
 
@@ -107,9 +137,19 @@ export function TokenTracker({ metadata, onRefresh: _ }: Props) {
           )}
 
           {error && (
-            <div className="usage-error">
-              {error}
-              <button className="btn-link" onClick={fetchUsage} style={{ marginLeft: 8 }}>Retry</button>
+            <div className={persistentlyUnavailable ? "usage-unavailable" : "usage-error"}>
+              {persistentlyUnavailable
+                ? "Usage endpoint is unavailable — polling paused."
+                : error}
+              <button className="btn-link" onClick={() => fetchUsage(true)} style={{ marginLeft: 8 }}>
+                Retry
+              </button>
+            </div>
+          )}
+
+          {stale && hasUsage && (
+            <div className="usage-stale-banner">
+              Showing last known data — live updates failed.
             </div>
           )}
 
