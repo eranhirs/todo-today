@@ -233,4 +233,26 @@ export const api = {
 
   getEventBusStatus: () =>
     request<{ subscribers: number; recent_events: number }>("/events/status"),
+
+  getClaudeUsage: () =>
+    request<ClaudeUsageResponse>("/claude/usage"),
 };
+
+export interface ClaudeUsageLimit {
+  utilization: number | null;
+  resets_at: string | null;
+}
+
+export interface ClaudeUsageResponse {
+  five_hour?: ClaudeUsageLimit | null;
+  seven_day?: ClaudeUsageLimit | null;
+  seven_day_sonnet?: ClaudeUsageLimit | null;
+  seven_day_opus?: ClaudeUsageLimit | null;
+  extra_usage?: {
+    is_enabled: boolean;
+    monthly_limit: number | null;
+    used_credits: number | null;
+    utilization: number | null;
+  } | null;
+  error?: string;
+}

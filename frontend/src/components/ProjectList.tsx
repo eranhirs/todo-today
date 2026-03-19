@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { isUnread, type Project, type Todo } from "../types";
+import { type Project, type Todo } from "../types";
 import { api } from "../api";
 import { getDisplayName, setDisplayName } from "../utils/displayNames";
 
@@ -9,6 +9,7 @@ interface Props {
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onRefresh: () => void;
+  unreadCounts: Record<string, number>;
 }
 
 interface ProjectCounts {
@@ -20,7 +21,7 @@ interface ProjectCounts {
   unreadRuns: number;
 }
 
-export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }: Props) {
+export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh, unreadCounts }: Props) {
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
@@ -47,11 +48,6 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
   const countsByProject = useMemo(() => {
     const counts: Record<string, ProjectCounts> = {};
     for (const t of todos) {
-      // Count unread runs across ALL todos (including completed)
-      if (isUnread(t)) {
-        if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
-        counts[t.project_id].unreadRuns++;
-      }
       if (t.status === "completed" || t.status === "rejected") continue;
       if (!counts[t.project_id]) counts[t.project_id] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
       const c = counts[t.project_id];
@@ -61,8 +57,14 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
       if (t.run_status === "running") c.running++;
       if (t.status === "next") c.next++;
     }
+    // Use backend-provided unread counts (covers ALL todos, not just loaded page)
+    for (const [projectId, count] of Object.entries(unreadCounts)) {
+      if (projectId === "_total") continue;
+      if (!counts[projectId]) counts[projectId] = { total: 0, inProgress: 0, waiting: 0, running: 0, next: 0, unreadRuns: 0 };
+      counts[projectId].unreadRuns = count;
+    }
     return counts;
-  }, [todos]);
+  }, [todos, unreadCounts]);
 
   // Map of project_id -> { resetMs, runsInWindow } for projects with a quota
   const quotaInfoByProject = useMemo(() => {
@@ -114,15 +116,13 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh }
 
   const globalCounts = useMemo(() => {
     let next = 0;
-    let unreadRuns = 0;
     for (const t of todos) {
-      // Unread runs count across all statuses
-      if (isUnread(t)) unreadRuns++;
       if (t.status === "completed" || t.status === "rejected") continue;
       if (t.status === "next") next++;
     }
-    return { next, unreadRuns };
-  }, [todos]);
+    // Use backend-provided total unread count (covers ALL todos, not just loaded page)
+    return { next, unreadRuns: unreadCounts["_total"] ?? 0 };
+  }, [todos, unreadCounts]);
 
   const handleAdd = async () => {
     if (!name.trim()) return;

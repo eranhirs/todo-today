@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
-import { BUILTIN_COMMANDS, type CommandInfo, stripCommandsFromText } from "../utils/commands";
+import { type CommandInfo, stripCommandsFromText } from "../utils/commands";
 import { stripTagsFromText } from "../utils/tags";
 import { filterMentionSuggestions } from "../utils/todoSearch";
 
@@ -60,7 +60,7 @@ function getTodoDisplayTitle(todo: Todo): string {
 }
 
 export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false }: Props) {
-  const commands = allCommands ?? BUILTIN_COMMANDS;
+  const commands = allCommands ?? [];
   const draftKey = projectId ?? "__all__";
   const [text, setText] = useState(() => addTodoDrafts.get(draftKey) ?? "");
   const [selectedProject, setSelectedProject] = useState(projectId ?? "");
@@ -427,7 +427,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
 
     // If offline, keep the placeholder visible but don't try the API
     if (isOffline) {
-      addToast("You're offline — item saved locally but not sent to server", "warning");
+      addToast("You're offline — item shown but not saved (will be lost on refresh)", "warning");
       return;
     }
 
@@ -456,8 +456,9 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
   const needsProjectSelector = !projectId && projects && projects.length > 0;
 
   const effectiveMode = modifierHeld ? "add-run" : mode;
+  const modeIcons: Record<AddMode, string> = { "add": "+", "add-run": "▶", "add-plan": "📋" };
   const modeLabels: Record<AddMode, string> = { "add": "Add", "add-run": "Add & Run", "add-plan": "Add & Plan" };
-  const label = modeLabels[effectiveMode];
+  const icon = modeIcons[effectiveMode];
   // Show the other two modes in the dropdown
   const altModes = (["add", "add-run", "add-plan"] as AddMode[]).filter((m) => m !== effectiveMode);
 
@@ -478,7 +479,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       )}
       <div className="add-todo-input-wrapper">
         <textarea
-          placeholder={isOffline ? "Add a todo (offline — will be saved locally)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Ctrl+Enter to add & run, # for tags, @ to reference, paste images)"}
+          placeholder={isOffline ? "Add a todo (offline — not saved, will be lost on refresh)" : disabled ? "Server offline — changes disabled" : "Add a todo... (Ctrl+Enter to add & run, # for tags, @ to reference, paste images)"}
           value={text}
           rows={1}
           disabled={disabled && !isOffline}
@@ -612,7 +613,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
         )}
       </div>
       <div className="add-todo-split-btn" ref={dropdownRef}>
-        <button className="add-todo-main-btn" onClick={() => handleAdd(effectiveMode)} disabled={disabled && !isOffline}>{label}</button>
+        <button className="add-todo-main-btn" onClick={() => handleAdd(effectiveMode)} disabled={disabled && !isOffline} title={modeLabels[effectiveMode]}>{icon}</button>
         <button
           className="add-todo-drop-toggle"
           onClick={() => setDropdownOpen((o) => !o)}
@@ -624,7 +625,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
         {dropdownOpen && (
           <div className="add-todo-dropdown">
             {altModes.map((m) => (
-              <button key={m} onClick={() => switchMode(m)}>{modeLabels[m]}</button>
+              <button key={m} onClick={() => switchMode(m)}><span className="add-todo-dropdown-icon">{modeIcons[m]}</span> {modeLabels[m]}</button>
             ))}
           </div>
         )}

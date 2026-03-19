@@ -58,10 +58,7 @@ _MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/todos", tags=["todos"])
 
-# ── Hardcoded commands (always available) ─────────────────────
-_BUILTIN_COMMANDS = [
-    {"name": "manual", "description": "Human-only task — cannot be run by Claude", "type": "command"},
-]
+from ..command_registry import get_all_registry_commands
 
 
 def _parse_skill_frontmatter(path: Path) -> dict | None:
@@ -132,8 +129,9 @@ def _scan_claude_dir(claude_dir: Path, results: list[dict], seen_names: set[str]
 
 def _discover_commands(project_id: str | None = None) -> list[dict]:
     """Discover skills and commands scoped to one project (+ user-level ~/.claude)."""
-    results: list[dict] = list(_BUILTIN_COMMANDS)
-    seen_names: set[str] = {c["name"] for c in _BUILTIN_COMMANDS}
+    registry_cmds = get_all_registry_commands()
+    results: list[dict] = list(registry_cmds)
+    seen_names: set[str] = {c["name"] for c in registry_cmds}
 
     # If a project_id is given, only scan that project's source_path
     if project_id:
@@ -162,10 +160,19 @@ def _discover_commands(project_id: str | None = None) -> list[dict]:
 
 
 def _is_command_todo(text: str, project_id: str | None = None) -> bool:
-    """Check if text contains any recognized skill/command slash token (excluding /manual)."""
-    command_names = {c["name"] for c in _discover_commands(project_id)} - {"manual"}
-    matches = re.findall(r'(?:^|\s)/([A-Za-z][A-Za-z0-9_-]*)(?:\s|$)', text)
-    return any(m.lower() in command_names for m in matches)
+    """Check if text contains any /command token (excluding /manual).
+
+    Any /word is treated as a command — it will be proxied to Claude CLI.
+    """
+    from ..command_registry import get_command
+    # Any slash token counts, unless it's /manual (noop)
+    for m in re.finditer(r'(?:^|\s)/([A-Za-z][A-Za-z0-9_-]*)(?=\s|$)', text):
+        cmd_name = m.group(1).lower()
+        registered = get_command(cmd_name)
+        if registered and registered.strategy == "noop":
+            continue
+        return True
+    return False
 
 
 @router.get("/commands")
@@ -727,8 +734,6 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                     todo.images = list(todo.images) + new_attachments
                 todo.pending_followup = body.message
                 todo.pending_followup_images = list(body.images)
-                # Show the queued follow-up in the output
-                todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n"
                 return {"status": "queued"}
 
             session_id = todo.session_id

@@ -155,6 +155,7 @@ class Settings(BaseModel):
     heartbeat_enabled: bool = True
     hook_analysis_enabled: bool = True
     local_image_storage: bool = False
+    token_budget_usd: float = 0.0
 
 
 class SettingsUpdate(BaseModel):
@@ -164,6 +165,7 @@ class SettingsUpdate(BaseModel):
     heartbeat_enabled: Optional[bool] = None
     hook_analysis_enabled: Optional[bool] = None
     local_image_storage: Optional[bool] = None
+    token_budget_usd: Optional[float] = None
 
 
 class Metadata(BaseModel):
@@ -186,6 +188,7 @@ class Metadata(BaseModel):
     heartbeat_enabled: bool = True
     hook_analysis_enabled: bool = True
     local_image_storage: bool = False
+    token_budget_usd: float = 0.0
 
     def get_settings(self) -> Settings:
         """Extract the settings subset from metadata."""
@@ -196,6 +199,7 @@ class Metadata(BaseModel):
             heartbeat_enabled=self.heartbeat_enabled,
             hook_analysis_enabled=self.hook_analysis_enabled,
             local_image_storage=self.local_image_storage,
+            token_budget_usd=self.token_budget_usd,
         )
 
     def apply_settings(self, update: SettingsUpdate) -> Settings:
@@ -210,6 +214,8 @@ class Metadata(BaseModel):
             self.hook_analysis_enabled = update.hook_analysis_enabled
         if update.local_image_storage is not None:
             self.local_image_storage = update.local_image_storage
+        if update.token_budget_usd is not None:
+            self.token_budget_usd = update.token_budget_usd
         return self.get_settings()
 
 
@@ -267,6 +273,7 @@ class FullState(BaseModel):
     completed_total: int = 0
     has_more_completed: bool = False
     completed_by_project: Dict[str, int] = {}
+    unread_counts: Dict[str, int] = {}  # {"_total": N, "<project_id>": N, ...}
 
 
 # ── Claude analysis result (what Claude returns) ───────────────

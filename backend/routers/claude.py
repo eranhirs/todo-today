@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
@@ -275,3 +276,47 @@ async def uninstall_hooks() -> dict:
         log.info("Uninstalled hooks for events: %s", removed or "(none found)")
         return {"status": "ok", "removed_events": removed}
     return await run_in_thread(_do)
+
+
+# ── Claude Code usage / rate limits ───────────────────────────
+# WARNING: This endpoint calls a private Anthropic API (`/api/oauth/usage`)
+# reverse-engineered from the Claude Code binary.  No public contract exists;
+# any Claude Code update could silently change or remove this endpoint,
+# breaking the usage widget without notice.
+
+_CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+_USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
+_OAUTH_BETA = "oauth-2025-04-20"
+
+
+@router.get("/usage")
+async def get_usage() -> dict:
+    """Fetch Claude Code subscription usage (rate limits) from Anthropic API.
+
+    Uses a private, undocumented endpoint discovered by inspecting the Claude
+    Code binary.  May break without warning on CLI updates.
+    """
+    if not _CREDENTIALS_PATH.exists():
+        return {"error": "No Claude credentials found"}
+    try:
+        with open(_CREDENTIALS_PATH) as f:
+            creds = json.load(f)
+        oauth = creds.get("claudeAiOauth", {})
+        token = oauth.get("accessToken")
+        if not token:
+            return {"error": "No OAuth access token"}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                _USAGE_API_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "anthropic-beta": _OAUTH_BETA,
+                },
+            )
+            if resp.status_code != 200:
+                return {"error": f"API returned {resp.status_code}"}
+            return resp.json()
+    except Exception as e:
+        log.warning("Failed to fetch Claude usage: %s", e)
+        return {"error": str(e)}

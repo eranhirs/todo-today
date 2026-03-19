@@ -653,6 +653,10 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
                     t.run_status = "running"
                     t.status = "in_progress"
                     t.completed_at = None
+                    # Append the follow-up message to output now that it's actually starting
+                    n_imgs = len(followup_images)
+                    img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+                    t.run_output = (t.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {followup_msg}{img_suffix}\n"
                 break
 
     if followup_msg and session_id:
@@ -670,7 +674,18 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         session_id = str(uuid.uuid4())
-        if plan_only:
+        # Strategy-based dispatch: registered commands get special prompts
+        from .command_registry import resolve_execution
+        strategy, cmd_prompt = resolve_execution(todo_text)
+
+        if strategy == "noop":
+            # Should not reach here (/manual blocked upstream), but safety
+            return
+
+        if strategy == "proxy":
+            # Proxy the slash command directly to Claude CLI
+            prompt = cmd_prompt
+        elif plan_only:
             prompt = (
                 f"Plan this task — explore the codebase, understand the requirements, "
                 f"and create a detailed step-by-step implementation plan. "
@@ -861,7 +876,7 @@ def _finalize_run(
         process_manager.cleanup_output_file(output_file)
         return
     # Detect plan file written during the run
-    plan_file = _detect_plan_file(stream_objects or []) if plan_only else None
+    plan_file = _detect_plan_file(stream_objects or [])
 
     # For plan_only runs that successfully wrote a plan file, suppress errors —
     # Claude may exit non-zero after writing the plan (e.g. permission denials
@@ -887,6 +902,12 @@ def _finalize_run(
         return
 
     output_text = "\n".join(accumulated)
+
+    # If no assistant text was produced but the result has a text payload,
+    # use it (e.g. slash commands that return immediately like "Unknown skill: X").
+    if not output_text and final_result and final_result.get("result"):
+        output_text = final_result["result"]
+
     had_errors = False
     if final_result and not suppress_error:
         if final_result.get("is_error"):

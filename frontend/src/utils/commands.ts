@@ -1,6 +1,10 @@
 /**
  * Slash-command parsing utilities for todo text.
- * Commands are /word tokens (e.g. "Fix the deploy /manual").
+ * Commands are /word tokens (e.g. "Fix the deploy /commit").
+ *
+ * Any /word is treated as a command — it will be proxied to Claude CLI.
+ * Only /manual has special behavior (noop). The autocomplete dropdown
+ * shows commands discovered from the API, but any /word is accepted.
  */
 
 export interface CommandInfo {
@@ -14,27 +18,18 @@ export const BUILTIN_COMMANDS: CommandInfo[] = [
   { name: "manual", description: "Human-only task — cannot be run by Claude", type: "command" },
 ];
 
-/** @deprecated Use BUILTIN_COMMANDS — kept for backward compat in stripCommandsFromText */
+/** @deprecated Use BUILTIN_COMMANDS — kept for backward compat */
 export const COMMANDS = BUILTIN_COMMANDS;
 
 const COMMAND_RE = /(?:^|\s)(\/([A-Za-z][A-Za-z0-9_-]*))(?=\s|$)/g;
 
-/**
- * Build a set of known command names for stripping.
- * Accepts an optional full list; falls back to builtins.
- */
-function knownNames(allCommands?: CommandInfo[]): Set<string> {
-  return new Set((allCommands ?? BUILTIN_COMMANDS).map((c) => c.name));
-}
-
-/** Parse recognized commands from text, returning deduplicated list. */
-export function parseCommands(text: string, allCommands?: CommandInfo[]): string[] {
-  const names = knownNames(allCommands);
+/** Parse all /command tokens from text, returning deduplicated list. */
+export function parseCommands(text: string): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
   for (const m of text.matchAll(COMMAND_RE)) {
     const cmd = m[2].toLowerCase();
-    if (names.has(cmd) && !seen.has(cmd)) {
+    if (!seen.has(cmd)) {
       seen.add(cmd);
       result.push(cmd);
     }
@@ -42,13 +37,10 @@ export function parseCommands(text: string, allCommands?: CommandInfo[]): string
   return result;
 }
 
-/** Remove recognized /command tokens from text for display purposes. */
-export function stripCommandsFromText(text: string, allCommands?: CommandInfo[]): string {
-  const names = knownNames(allCommands);
+/** Remove all /command tokens from text for display purposes. */
+export function stripCommandsFromText(text: string): string {
   return text
-    .replace(COMMAND_RE, (match, _full, cmd) =>
-      names.has(cmd.toLowerCase()) ? "" : match
-    )
+    .replace(COMMAND_RE, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }

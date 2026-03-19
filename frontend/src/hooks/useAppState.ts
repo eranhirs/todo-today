@@ -19,6 +19,11 @@ export function useAppState({
 }: UseAppStateOptions) {
   const [state, setState] = useState<FullState | null>(null);
   const [isOffline, setIsOffline] = useState(false);
+  // IDs of todos pending deletion (undo window active) — polling should hide these
+  const pendingDeleteIds = useRef<Set<string>>(new Set());
+  // In-flight optimistic field overrides — re-applied on top of polled data so
+  // polling doesn't flash stale values before the API call resolves.
+  const optimisticOverrides = useRef<Map<string, Partial<Todo>>>(new Map());
   // Track how many completed todos we've loaded so far (for infinite scroll)
   const completedLoadedRef = useRef(COMPLETED_PAGE_SIZE);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -77,6 +82,21 @@ export function useAppState({
         } catch { /* ignore — base state is still valid */ }
       }
 
+      // Filter out todos that are pending deletion (undo window still open)
+      const pendingIds = pendingDeleteIds.current;
+      if (pendingIds.size > 0) {
+        data.todos = data.todos.filter((t) => !pendingIds.has(t.id));
+      }
+
+      // Re-apply in-flight optimistic overrides so polling doesn't flash stale values
+      const overrides = optimisticOverrides.current;
+      if (overrides.size > 0) {
+        data.todos = data.todos.map((t) => {
+          const ov = overrides.get(t.id);
+          return ov ? { ...t, ...ov } : t;
+        });
+      }
+
       // Use functional setState to preserve any extra completed todos loaded
       // via project-specific pagination that aren't covered by the global re-fetch above.
       // Without this, polling overwrites state and drops project-specific extras.
@@ -118,6 +138,22 @@ export function useAppState({
       setState((prev) => (prev ? { ...prev, todos: fn(prev.todos) } : prev)),
     []
   );
+
+  const addOptimisticOverride = useCallback((id: string, fields: Partial<Todo>) => {
+    optimisticOverrides.current.set(id, { ...optimisticOverrides.current.get(id), ...fields });
+  }, []);
+
+  const removeOptimisticOverride = useCallback((id: string) => {
+    optimisticOverrides.current.delete(id);
+  }, []);
+
+  const addPendingDelete = useCallback((id: string) => {
+    pendingDeleteIds.current.add(id);
+  }, []);
+
+  const removePendingDelete = useCallback((id: string) => {
+    pendingDeleteIds.current.delete(id);
+  }, []);
 
   // Load more completed todos (for infinite scroll)
   const loadMoreCompleted = useCallback(async (projectId?: string | null) => {
@@ -225,5 +261,9 @@ export function useAppState({
     isOffline,
     loadMoreCompleted,
     loadingMore,
+    addPendingDelete,
+    removePendingDelete,
+    addOptimisticOverride,
+    removeOptimisticOverride,
   };
 }

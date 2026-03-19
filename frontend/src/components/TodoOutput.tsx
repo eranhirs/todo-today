@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import type { Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
+import { type CommandInfo } from "../utils/commands";
 
 interface Props {
   todo: Todo;
@@ -9,6 +10,7 @@ interface Props {
   onRefresh: () => void;
   addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   disabled?: boolean;
+  allCommands?: CommandInfo[];
 }
 
 /** Must match backend OUTPUT_MAX_CHARS in run_manager.py */
@@ -93,7 +95,8 @@ type OutputTab = "run" | "btw";
 const followupDrafts = new Map<string, string>();
 const btwDrafts = new Map<string, string>();
 
-export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = false }: Props) {
+export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = false, allCommands }: Props) {
+  const commands = allCommands ?? [];
   const [followupText, setFollowupText] = useState(() => followupDrafts.get(todo.id) ?? "");
   const [btwText, setBtwText] = useState(() => btwDrafts.get(todo.id) ?? "");
 
@@ -119,16 +122,24 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const [uploading, setUploading] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
   const btwOutputRef = useRef<HTMLPreElement>(null);
-  const followupRef = useRef<HTMLInputElement>(null);
+  const followupRef = useRef<HTMLTextAreaElement>(null);
+  const btwInputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const [editingFollowup, setEditingFollowup] = useState(false);
   const [editFollowupText, setEditFollowupText] = useState("");
-  const editFollowupRef = useRef<HTMLInputElement>(null);
+  const editFollowupRef = useRef<HTMLTextAreaElement>(null);
+
+  // Command autocomplete state (shared — only one input visible at a time)
+  const [cmdSuggestions, setCmdSuggestions] = useState<CommandInfo[]>([]);
+  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const suggestionsRef = useRef<HTMLDivElement>(null);
 
   const isRunning = todo.run_status === "running";
   const showFollowup = todo.session_id && !isRunning &&
     (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped");
+  // Track which input is "active" for suggestions: the text value that's currently being edited
+  const activeInputText = showFollowup ? followupText : btwText;
   const showBtw = isRunning;
   const hasBtwOutput = !!todo.btw_output;
   const isBtwRunning = todo.btw_status === "running";
@@ -196,6 +207,97 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
       followupRef.current.focus();
     }
   }, [showOutput, showFollowup]);
+
+  // Command autocomplete: compute fragment from active input text
+  const cmdFragment = useMemo(() => {
+    const text = activeInputText;
+    if (!text) return null;
+    // Match / at start or after whitespace, followed by partial command name
+    const match = text.match(/(?:^|\s)\/([A-Za-z][A-Za-z0-9_-]*)$/);
+    if (match) return match[1].toLowerCase();
+    // Just typed /
+    const slashMatch = text.match(/(?:^|\s)\/$/);
+    if (slashMatch) return "";
+    return null;
+  }, [activeInputText]);
+
+  // Filter command suggestions when fragment changes
+  useEffect(() => {
+    if (cmdFragment === null) {
+      setCmdSuggestions([]);
+      setSelectedSuggestion(0);
+      return;
+    }
+    const matches = commands.filter((c) =>
+      cmdFragment === "" || c.name.startsWith(cmdFragment)
+    );
+    setCmdSuggestions(matches);
+    setSelectedSuggestion(0);
+  }, [cmdFragment, commands]);
+
+  // Auto-resize helper for textarea elements
+  const autoResize = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = "auto";
+    const maxH = 150;
+    const clamped = Math.min(el.scrollHeight, maxH);
+    el.style.height = clamped + "px";
+    el.style.overflowY = el.scrollHeight > maxH ? "auto" : "hidden";
+  }, []);
+
+  // Auto-resize follow-up textarea
+  useEffect(() => { autoResize(followupRef.current); }, [followupText, autoResize]);
+  // Auto-resize btw textarea
+  useEffect(() => { autoResize(btwInputRef.current); }, [btwText, autoResize]);
+  // Auto-resize edit follow-up textarea
+  useEffect(() => { autoResize(editFollowupRef.current); }, [editFollowupText, autoResize]);
+
+  type InputOrTextArea = HTMLInputElement | HTMLTextAreaElement;
+
+  const applyCmdSuggestion = (cmdName: string, inputRef: React.RefObject<InputOrTextArea | null>, setText: (v: string) => void, text: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const cursorPos = el.selectionStart ?? text.length;
+    const beforeCursor = text.slice(0, cursorPos);
+    const afterCursor = text.slice(cursorPos);
+    const slashIdx = beforeCursor.lastIndexOf("/");
+    if (slashIdx === -1) return;
+    const newText = beforeCursor.slice(0, slashIdx) + "/" + cmdName + " " + afterCursor;
+    setText(newText);
+    setCmdSuggestions([]);
+    setTimeout(() => {
+      el.focus();
+      const newCursorPos = slashIdx + 1 + cmdName.length + 1;
+      el.setSelectionRange(newCursorPos, newCursorPos);
+    }, 0);
+  };
+
+  const handleCmdKeyDown = (e: React.KeyboardEvent, inputRef: React.RefObject<InputOrTextArea | null>, setText: (v: string) => void, text: string): boolean => {
+    if (cmdSuggestions.length === 0) return false;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setSelectedSuggestion((s) => Math.min(s + 1, cmdSuggestions.length - 1));
+      return true;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setSelectedSuggestion((s) => Math.max(s - 1, 0));
+      return true;
+    }
+    if (e.key === "Tab" || e.key === "Enter") {
+      if (cmdSuggestions[selectedSuggestion]) {
+        e.preventDefault();
+        applyCmdSuggestion(cmdSuggestions[selectedSuggestion].name, inputRef, setText, text);
+        return true;
+      }
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setCmdSuggestions([]);
+      return true;
+    }
+    return false;
+  };
 
   // Clean up blob URLs on unmount
   useEffect(() => {
@@ -462,13 +564,14 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         <div className="followup-edit-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
           {editingFollowup ? (
             <div className="followup-edit-row">
-              <input
+              <textarea
                 ref={editFollowupRef}
                 className="followup-input"
+                rows={1}
                 value={editFollowupText}
                 onChange={(e) => setEditFollowupText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); saveEditFollowup(); }
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEditFollowup(); }
                   if (e.key === "Escape") { e.preventDefault(); cancelEditFollowup(); }
                 }}
                 placeholder="Edit queued follow-up..."
@@ -518,13 +621,14 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         <div className="followup-edit-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
           {editingFollowup ? (
             <div className="followup-edit-row">
-              <input
+              <textarea
                 ref={editFollowupRef}
                 className="followup-input"
+                rows={1}
                 value={editFollowupText}
                 onChange={(e) => setEditFollowupText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") { e.preventDefault(); saveEditFollowup(); }
+                  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEditFollowup(); }
                   if (e.key === "Escape") { e.preventDefault(); cancelEditFollowup(); }
                 }}
                 placeholder="Edit queued follow-up..."
@@ -544,19 +648,42 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
       {/* Message bar — shown when main run is active; default queues follow-up, /btw prefix sends side-channel */}
       {showBtw && !hasQueuedFollowup && (
         <div className="followup-bar btw-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-          <input
-            className="followup-input"
-            placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
-            value={btwText}
-            disabled={disabled}
-            onChange={(e) => setBtwText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                sendRunningMessage();
-              }
-            }}
-          />
+          <div className="followup-input-wrapper">
+            <textarea
+              ref={btwInputRef}
+              className="followup-input"
+              rows={1}
+              placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
+              value={btwText}
+              disabled={disabled}
+              onChange={(e) => setBtwText(e.target.value)}
+              onKeyDown={(e) => {
+                if (handleCmdKeyDown(e, btwInputRef, setBtwText, btwText)) return;
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  sendRunningMessage();
+                }
+              }}
+            />
+            {!showFollowup && cmdSuggestions.length > 0 && (
+              <div className="cmd-suggestions" ref={suggestionsRef}>
+                {cmdSuggestions.map((cmd, i) => (
+                  <button
+                    key={cmd.name}
+                    className={`cmd-suggestion-item${i === selectedSuggestion ? " selected" : ""}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      applyCmdSuggestion(cmd.name, btwInputRef, setBtwText, btwText);
+                    }}
+                  >
+                    <span className="cmd-suggestion-name">/{cmd.name}</span>
+                    <span className={`cmd-suggestion-type cmd-type-${cmd.type}`}>{cmd.type}</span>
+                    <span className="cmd-suggestion-desc">{cmd.description}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button className="btn-icon btn-run" onClick={sendRunningMessage} disabled={disabled} title="Send message">↵</button>
         </div>
       )}
@@ -599,21 +726,43 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
                 e.target.value = "";
               }}
             />
-            <input
-              ref={followupRef}
-              className="followup-input"
-              placeholder={disabled ? "Server offline — changes disabled" : todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
-              value={followupText}
-              disabled={disabled}
-              onChange={(e) => setFollowupText(e.target.value)}
-              onPaste={handleFollowupPaste}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  sendFollowup();
-                }
-              }}
-            />
+            <div className="followup-input-wrapper">
+              <textarea
+                ref={followupRef}
+                className="followup-input"
+                rows={1}
+                placeholder={disabled ? "Server offline — changes disabled" : todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
+                value={followupText}
+                disabled={disabled}
+                onChange={(e) => setFollowupText(e.target.value)}
+                onPaste={handleFollowupPaste}
+                onKeyDown={(e) => {
+                  if (handleCmdKeyDown(e, followupRef, setFollowupText, followupText)) return;
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendFollowup();
+                  }
+                }}
+              />
+              {showFollowup && cmdSuggestions.length > 0 && (
+                <div className="cmd-suggestions" ref={suggestionsRef}>
+                  {cmdSuggestions.map((cmd, i) => (
+                    <button
+                      key={cmd.name}
+                      className={`cmd-suggestion-item${i === selectedSuggestion ? " selected" : ""}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyCmdSuggestion(cmd.name, followupRef, setFollowupText, followupText);
+                      }}
+                    >
+                      <span className="cmd-suggestion-name">/{cmd.name}</span>
+                      <span className={`cmd-suggestion-type cmd-type-${cmd.type}`}>{cmd.type}</span>
+                      <span className="cmd-suggestion-desc">{cmd.description}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button className="btn-icon btn-run" onClick={sendFollowup} disabled={disabled} title="Send follow-up">↵</button>
           </div>
         </div>

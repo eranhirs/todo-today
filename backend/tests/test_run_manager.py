@@ -241,6 +241,54 @@ class TestProcessQueue:
         assert args[2] == "sess_abc"
 
 
+class TestCommandProxyDispatch:
+    """Verify that command todos pass the correct prompt to _run_claude_for_todo."""
+
+    @patch("backend.run_manager._run_claude_for_todo")
+    def test_proxy_command_passes_slash_prompt(self, mock_run):
+        """A /checkpoint todo should invoke _run_claude_for_todo with the slash command as the text."""
+        from backend.run_manager import process_manager, start_todo_run
+
+        todo = Todo(id="todo_cmd1", project_id="proj_q", text="/checkpoint", status="next")
+        _seed(todos=[todo])
+
+        result = start_todo_run("todo_cmd1")
+        assert result is None
+
+        process_manager._running_tasks["todo_cmd1"].join(timeout=5)
+        mock_run.assert_called_once()
+        # The second positional arg is todo_text — it should be the raw text
+        args = mock_run.call_args[0]
+        assert args[0] == "todo_cmd1"
+        assert args[1] == "/checkpoint"  # todo_text passed through
+
+    @patch("backend.run_manager._run_claude_for_todo")
+    def test_proxy_unknown_command_still_starts(self, mock_run):
+        """An unknown /whatever command should still start a run (generic proxy)."""
+        from backend.run_manager import process_manager, start_todo_run
+
+        todo = Todo(id="todo_cmd2", project_id="proj_q", text="Do it /some-new-feature", status="next")
+        _seed(todos=[todo])
+
+        result = start_todo_run("todo_cmd2")
+        assert result is None
+
+        process_manager._running_tasks["todo_cmd2"].join(timeout=5)
+        mock_run.assert_called_once()
+
+    @patch("backend.run_manager._run_claude_for_todo")
+    def test_manual_command_blocked(self, mock_run):
+        """A /manual todo should not start a run."""
+        from backend.run_manager import start_todo_run
+
+        todo = Todo(id="todo_man", project_id="proj_q", text="Human task /manual", status="next", manual=True)
+        _seed(todos=[todo])
+
+        result = start_todo_run("todo_man")
+        assert result == "manual task"
+        mock_run.assert_not_called()
+
+
 class TestDequeueTodoRun:
     def test_dequeues_successfully(self):
         from backend.run_manager import dequeue_todo_run

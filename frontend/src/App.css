@@ -97,6 +97,7 @@ body {
 
 .sidebar.sidebar-minimized .app-title,
 .sidebar.sidebar-minimized .claude-status,
+.sidebar.sidebar-minimized .token-tracker,
 .sidebar.sidebar-minimized .project-list,
 .sidebar.sidebar-minimized .update-history,
 .sidebar.sidebar-minimized .autopilot-history,
@@ -516,8 +517,8 @@ body {
 }
 .add-todo-project-select:focus { border-color: var(--accent); }
 
-.add-form button, .add-todo button {
-  padding: 8px 14px;
+.add-form button, .add-todo > .add-todo-split-btn button {
+  padding: 0;
   border: none;
   border-radius: 6px;
   background: var(--accent);
@@ -525,49 +526,72 @@ body {
   cursor: pointer;
   font-size: 0.85rem;
 }
-.add-form button:hover, .add-todo button:hover { background: var(--accent-light); }
+.add-form button:hover, .add-todo > .add-todo-split-btn button:hover { background: var(--accent-light); }
 
-/* Split button for Add / Add & Run */
+/* Split button — compact Slack-style icon buttons */
 .add-todo-split-btn {
   display: flex;
   position: relative;
   flex-shrink: 0;
+  border-radius: 8px;
+  overflow: visible;
 }
 .add-todo-split-btn .add-todo-main-btn {
-  border-radius: 6px 0 0 6px;
-  white-space: nowrap;
+  border-radius: 8px 0 0 8px;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1;
 }
 .add-todo-split-btn .add-todo-drop-toggle {
-  border-radius: 0 6px 6px 0;
-  padding: 8px 6px;
-  border-left: 1px solid rgba(255,255,255,0.25);
-  font-size: 0.7rem;
-  min-width: 24px;
+  border-radius: 0 8px 8px 0;
+  width: 22px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-left: 1px solid rgba(255,255,255,0.2);
+  font-size: 0.6rem;
+  padding: 0;
 }
 .add-todo-dropdown {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 6px);
   right: 0;
-  margin-top: 4px;
   z-index: 20;
-  background: var(--card-bg);
+  background: #1a1d2e;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
   overflow: hidden;
+  min-width: 140px;
 }
-.add-todo-dropdown button {
+.add-todo .add-todo-split-btn .add-todo-dropdown button {
   width: 100%;
   text-align: left;
   border-radius: 0;
   background: transparent;
   color: var(--text);
   white-space: nowrap;
-  padding: 8px 16px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.add-todo-dropdown button:hover {
-  background: var(--accent);
+.add-todo .add-todo-split-btn .add-todo-dropdown button:hover {
+  background: rgba(108, 92, 231, 0.2);
   color: #fff;
+}
+.add-todo-dropdown-icon {
+  width: 18px;
+  text-align: center;
+  font-size: 0.75rem;
+  opacity: 0.7;
 }
 
 .add-todo-input-wrapper {
@@ -1000,6 +1024,16 @@ body {
   padding: 1px 7px;
   border-radius: 10px;
   font-size: 0.72rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.todo-mention {
+  background: rgba(52, 152, 219, 0.15);
+  color: #5dade2;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 0.82em;
   font-weight: 500;
   white-space: nowrap;
 }
@@ -1750,6 +1784,134 @@ body {
   font-size: 0.7rem;
   color: var(--text-dim);
   text-align: center;
+}
+
+/* Token Tracker */
+.token-tracker {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0;
+}
+
+.token-tracker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 38px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  text-align: left;
+}
+
+.token-tracker-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+}
+
+.token-tracker-title {
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+
+.token-tracker-summary {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+.token-tracker-body {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Usage bar sections */
+.usage-bar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-bar-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.usage-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.usage-bar-track {
+  flex: 1;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.usage-bar-pct {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  min-width: 28px;
+  text-align: right;
+}
+
+.usage-bar-reset {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+}
+
+.usage-loading,
+.usage-error {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.usage-error {
+  color: var(--red);
+}
+
+.usage-extra {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  padding-top: 4px;
+  border-top: 1px solid var(--border);
+}
+
+.usage-app-stats {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.usage-app-stats-label {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+
+.usage-app-stats-row {
+  display: flex;
+  gap: 12px;
+  font-size: 0.7rem;
+  color: var(--text);
 }
 
 /* Session state badges */
@@ -2849,6 +3011,8 @@ body {
 
 .followup-input {
   flex: 1;
+  min-width: 0;
+  width: 100%;
   background: #161926;
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -2856,6 +3020,10 @@ body {
   padding: 4px 8px;
   font-size: 0.8rem;
   font-family: inherit;
+  box-sizing: border-box;
+  resize: none;
+  overflow-y: hidden;
+  line-height: 1.4;
 }
 
 .btw-bar .followup-input {
@@ -2869,6 +3037,17 @@ body {
 .followup-input:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.followup-input-wrapper {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.followup-input-wrapper .cmd-suggestions {
+  bottom: 100%;
+  margin-bottom: 4px;
 }
 
 .followup-bar-with-images {

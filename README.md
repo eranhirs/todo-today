@@ -19,20 +19,6 @@ A self-managing todo app powered by Claude. It watches your [Claude Code](https:
 
 **Prerequisites:** Python 3.9+, Node.js 20.19+, [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
 
-### Option 1: Let Claude do it
-
-Clone the repo and open Claude Code inside it:
-
-```bash
-git clone https://github.com/eranhirs/claude-todos.git
-cd claude-todos
-claude
-```
-
-Then just ask Claude to install and run the project. It has all the context it needs.
-
-### Option 2: Run it yourself
-
 ```bash
 git clone https://github.com/eranhirs/claude-todos.git
 cd claude-todos

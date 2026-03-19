@@ -208,6 +208,12 @@ async def full_state() -> FullState:
             for t in completed:
                 completed_by_project[t.project_id] = completed_by_project.get(t.project_id, 0) + 1
             capped_completed = completed[:COMPLETED_PAGE_SIZE]
+            # Compute unread counts from ALL todos (not just the paginated subset)
+            unread_counts: dict[str, int] = {"_total": 0}
+            for t in all_todos:
+                if t.completed_by_run and not t.is_read:
+                    unread_counts["_total"] += 1
+                    unread_counts[t.project_id] = unread_counts.get(t.project_id, 0) + 1
             return FullState(
                 projects=ctx.store.projects,
                 todos=non_completed + capped_completed,
@@ -218,6 +224,7 @@ async def full_state() -> FullState:
                 completed_total=completed_total,
                 has_more_completed=completed_total > COMPLETED_PAGE_SIZE,
                 completed_by_project=completed_by_project,
+                unread_counts=unread_counts,
             )
     return await run_in_thread(_do)
 

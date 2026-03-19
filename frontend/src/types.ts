@@ -88,6 +88,7 @@ export interface Settings {
   run_model: string;
   heartbeat_enabled: boolean;
   hook_analysis_enabled: boolean;
+  token_budget_usd: number;
 }
 
 export type SettingsUpdate = Partial<Omit<Settings, "run_model">>;
@@ -132,6 +133,7 @@ export interface FullState {
   completed_total: number;
   has_more_completed: boolean;
   completed_by_project: Record<string, number>;
+  unread_counts: Record<string, number>;  // {"_total": N, "<project_id>": N}
 }
 
 export interface CompletedPage {

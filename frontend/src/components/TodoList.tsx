@@ -24,9 +24,14 @@ interface Props {
   hasMoreCompleted?: boolean;
   onLoadMoreCompleted?: (projectId?: string | null) => void;
   loadingMoreCompleted?: boolean;
+  unreadCounts?: Record<string, number>;
+  addPendingDelete?: (id: string) => void;
+  removePendingDelete?: (id: string) => void;
+  addOptimisticOverride?: (id: string, fields: Partial<Todo>) => void;
+  removeOptimisticOverride?: (id: string) => void;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef, isOffline = false, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef, isOffline = false, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride }: Props) {
   const [showUpNext, setShowUpNext] = useState(true);
   const [showBacklog, setShowBacklog] = useState(true);
   const [showDone, setShowDone] = useState(true);
@@ -225,11 +230,11 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     if (filterUnread) setStickyTodoId(todoId);
   }, [filterUnread]);
 
-  // Count unread todos
-  const unreadCount = useMemo(() =>
-    projectFiltered.filter(isUnread).length,
-    [projectFiltered]
-  );
+  // Count unread todos — use backend-provided counts for accuracy across all pages
+  const unreadCount = useMemo(() => {
+    if (selectedProjectId) return unreadCounts[selectedProjectId] ?? 0;
+    return unreadCounts["_total"] ?? 0;
+  }, [selectedProjectId, unreadCounts]);
 
   // Count command/skill todos
   const commandCount = useMemo(() =>
@@ -449,7 +454,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       >
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} />
+        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
       </div>
     ));
 
@@ -675,7 +680,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                     {items.map((t) => (
                       <div key={t.id}>
                         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} />
+                        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
                       </div>
                     ))}
                   </div>

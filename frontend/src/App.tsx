@@ -6,6 +6,7 @@ import { ClaudeStatus } from "./components/ClaudeStatus";
 import { UpdateHistory } from "./components/UpdateHistory";
 import { AutopilotHistory } from "./components/AutopilotHistory";
 import { HookDebug } from "./components/HookDebug";
+import { TokenTracker } from "./components/TokenTracker";
 import { KeyboardShortcutsOverlay } from "./components/KeyboardShortcutsOverlay";
 import { Insights } from "./components/Insights";
 import { useNotifications, NOTIF_ICONS } from "./hooks/useNotifications";
@@ -44,6 +45,10 @@ function App() {
     isOffline,
     loadMoreCompleted,
     loadingMore,
+    addPendingDelete,
+    removePendingDelete,
+    addOptimisticOverride,
+    removeOptimisticOverride,
   } = useAppState({
     notifyNewWaitingTodos,
     notifyRunCompletions,
@@ -137,12 +142,14 @@ function App() {
           </button>
         </div>
         <ClaudeStatus metadata={state.metadata} settings={state.settings} analysisLocked={state.analysis_locked} autopilotRunning={state.autopilot_running} onRefresh={refresh} />
+        <TokenTracker metadata={state.metadata} onRefresh={refresh} />
         <ProjectList
           projects={state.projects}
           todos={state.todos}
           selectedId={selectedProject}
           onSelect={(id) => { selectProject(id); setSidebarOpen(false); }}
           onRefresh={refresh}
+          unreadCounts={state.unread_counts ?? {}}
         />
         <UpdateHistory history={state.metadata.history} />
         <AutopilotHistory
@@ -274,6 +281,11 @@ function App() {
             hasMoreCompleted={selectedProject ? ((state.completed_by_project?.[selectedProject] ?? 0) > state.todos.filter(t => t.project_id === selectedProject && t.status === "completed").length) : state.has_more_completed}
             onLoadMoreCompleted={loadMoreCompleted}
             loadingMoreCompleted={loadingMore}
+            unreadCounts={state.unread_counts ?? {}}
+            addPendingDelete={addPendingDelete}
+            removePendingDelete={removePendingDelete}
+            addOptimisticOverride={addOptimisticOverride}
+            removeOptimisticOverride={removeOptimisticOverride}
           />
         )}
       </main>

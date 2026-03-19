@@ -6,7 +6,7 @@ import DOMPurify from "dompurify";
 import { TodoRunControls } from "./TodoRunControls";
 import { TodoOutput } from "./TodoOutput";
 import { parseTags, stripTagsFromText } from "../utils/tags";
-import { BUILTIN_COMMANDS, type CommandInfo, stripCommandsFromText } from "../utils/commands";
+import { type CommandInfo, stripCommandsFromText } from "../utils/commands";
 import { filterMentionSuggestions } from "../utils/todoSearch";
 
 interface Props {
@@ -24,6 +24,10 @@ interface Props {
   quotaCountdown?: string;
   disabled?: boolean;
   onOutputOpen?: (todoId: string) => void;
+  addPendingDelete?: (id: string) => void;
+  removePendingDelete?: (id: string) => void;
+  addOptimisticOverride?: (id: string, fields: Partial<Todo>) => void;
+  removeOptimisticOverride?: (id: string) => void;
 }
 
 const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
@@ -59,8 +63,8 @@ function timeAgo(iso: string): string {
   return `${weeks}w ago`;
 }
 
-export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, onOutputOpen }: Props) {
-  const commands = allCommands ?? BUILTIN_COMMANDS;
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, onOutputOpen, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride }: Props) {
+  const commands = allCommands ?? [];
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
   const [showOutput, setShowOutput] = useState(false);
@@ -165,13 +169,17 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     }
     const prevStatus = todo.status;
     const prevReason = todo.stale_reason;
+    const override = { status: newStatus, stale_reason: newStatus === "stale" ? todo.stale_reason : null } as Partial<Todo>;
+    addOptimisticOverride?.(todo.id, override);
     onOptimisticUpdate((todos) =>
-      todos.map((t) => t.id === todo.id ? { ...t, status: newStatus, stale_reason: newStatus === "stale" ? t.stale_reason : null } : t)
+      todos.map((t) => t.id === todo.id ? { ...t, ...override } : t)
     );
     try {
       await api.updateTodo(todo.id, { status: newStatus });
+      removeOptimisticOverride?.(todo.id);
       onRefresh();
     } catch {
+      removeOptimisticOverride?.(todo.id);
       onOptimisticUpdate((todos) =>
         todos.map((t) => t.id === todo.id ? { ...t, status: prevStatus, stale_reason: prevReason } : t)
       );
@@ -186,8 +194,10 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
       addToast("You're offline — deleting items isn't available right now", "warning");
       return;
     }
-    // Optimistically hide the item immediately
+    // Optimistically hide the item immediately and mark as pending delete
+    // so polling doesn't bring it back during the undo window
     const snapshot = { ...todo };
+    addPendingDelete?.(snapshot.id);
     onOptimisticUpdate((todos) => todos.filter((t) => t.id !== todo.id));
 
     let undone = false;
@@ -195,6 +205,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
 
     const doDelete = async () => {
       if (undone) return;
+      removePendingDelete?.(snapshot.id);
       try {
         await api.deleteTodo(snapshot.id);
         onRefresh();
@@ -207,7 +218,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     // Schedule actual deletion after delay
     deleteTimerRef.current = setTimeout(doDelete, UNDO_DELAY);
 
-    const displayText = stripCommandsFromText(stripTagsFromText(snapshot.text), commands).trim();
+    const displayText = stripCommandsFromText(stripTagsFromText(snapshot.text)).trim();
     const label = displayText.length > 40 ? displayText.slice(0, 40) + "…" : displayText;
 
     addToast(`Deleted "${label}"`, "info", {
@@ -218,7 +229,8 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
           clearTimeout(deleteTimerRef.current);
           deleteTimerRef.current = null;
         }
-        // Restore the item
+        // Remove from pending deletes and restore the item
+        removePendingDelete?.(snapshot.id);
         onOptimisticUpdate((todos) => [...todos, snapshot]);
         onRefresh();
       },
@@ -230,13 +242,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
       addToast("You're offline — changes aren't available right now", "warning");
       return;
     }
+    addOptimisticOverride?.(todo.id, { user_ordered: false });
     onOptimisticUpdate((todos) =>
       todos.map((t) => t.id === todo.id ? { ...t, user_ordered: false } : t)
     );
     try {
       await api.updateTodo(todo.id, { user_ordered: false });
+      removeOptimisticOverride?.(todo.id);
       onRefresh();
     } catch {
+      removeOptimisticOverride?.(todo.id);
       onOptimisticUpdate((todos) =>
         todos.map((t) => t.id === todo.id ? { ...t, user_ordered: true } : t)
       );
@@ -257,13 +272,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     const trimmed = editText.trim();
     if (trimmed && trimmed !== todo.text) {
       const prevText = todo.text;
+      addOptimisticOverride?.(todo.id, { text: trimmed });
       onOptimisticUpdate((todos) =>
         todos.map((t) => t.id === todo.id ? { ...t, text: trimmed } : t)
       );
       try {
         await api.updateTodo(todo.id, { text: trimmed, source: "user" });
+        removeOptimisticOverride?.(todo.id);
         onRefresh();
       } catch {
+        removeOptimisticOverride?.(todo.id);
         onOptimisticUpdate((todos) =>
           todos.map((t) => t.id === todo.id ? { ...t, text: prevText } : t)
         );
@@ -364,7 +382,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     const afterCursor = editText.slice(cursorPos);
     const atIdx = beforeCursor.lastIndexOf("@");
     if (atIdx === -1) return;
-    const displayTitle = stripCommandsFromText(stripTagsFromText(refTodo.text), commands).trim();
+    const displayTitle = stripCommandsFromText(stripTagsFromText(refTodo.text)).trim();
     const newText = beforeCursor.slice(0, atIdx) + `@[${displayTitle}](${refTodo.id}) ` + afterCursor;
     setEditText(newText);
     setEditMentionSuggestions([]);
@@ -429,7 +447,18 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
   const tags = useMemo(() => parseTags(todo.text), [todo.text]);
 
   const renderedText = useMemo(() => {
-    const displayText = stripCommandsFromText(stripTagsFromText(todo.text), commands);
+    let displayText = stripCommandsFromText(stripTagsFromText(todo.text));
+    // Convert @[title](id) mention references to HTML before markdown parsing,
+    // so marked doesn't misinterpret them as markdown links (which breaks if
+    // the title contains ] or other special chars).
+    displayText = displayText.replace(
+      /@\[([^\]]*)\]\(([^)]+)\)/g,
+      (_match, title: string) => {
+        const truncated = title.length > 50 ? title.slice(0, 47) + "…" : title;
+        const escaped = truncated.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        return `<span class="todo-mention" title="${escaped}">@${escaped}</span>`;
+      }
+    );
     const raw = marked.parseInline(displayText) as string;
     return DOMPurify.sanitize(raw);
   }, [todo.text, commands]);
@@ -514,7 +543,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
                     className={`mention-suggestion-item${i === editSelectedSuggestion ? " selected" : ""}`}
                     onMouseDown={(e) => { e.preventDefault(); applyEditMentionSuggestion(t); }}
                   >
-                    <span className="mention-suggestion-title">{stripCommandsFromText(stripTagsFromText(t.text), commands).trim()}</span>
+                    <span className="mention-suggestion-title">{stripCommandsFromText(stripTagsFromText(t.text)).trim()}</span>
                     <span className="mention-suggestion-status">{t.run_status ?? t.status}</span>
                   </button>
                 ))}
@@ -586,13 +615,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
             onClick={async (e) => {
               e.stopPropagation();
               const newVal = !todo.is_read;
+              addOptimisticOverride?.(todo.id, { is_read: newVal });
               onOptimisticUpdate((todos) =>
                 todos.map((t) => t.id === todo.id ? { ...t, is_read: newVal } : t)
               );
               try {
                 await api.updateTodo(todo.id, { is_read: newVal });
+                removeOptimisticOverride?.(todo.id);
                 onRefresh();
               } catch {
+                removeOptimisticOverride?.(todo.id);
                 onOptimisticUpdate((todos) =>
                   todos.map((t) => t.id === todo.id ? { ...t, is_read: !newVal } : t)
                 );
@@ -674,7 +706,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
         <span className="todo-plan-file-label">Plan:</span> <span className="todo-plan-file-path">{todo.plan_file}</span>
       </div>
     )}
-    <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} />
+    <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} allCommands={allCommands} />
     </>
   );
 }
