@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .claude_analyzer import run_analysis
 from .event_bus import EventType, bus
+from .git_checker import check_for_updates, skips_remaining as git_skips_remaining
 from .models import _now
 from .run_manager import is_todo_running, start_todo_run
 from .storage import StorageContext
@@ -143,6 +144,30 @@ async def _auto_run_todos_inner() -> bool:
                     log.info("Autopilot: started todo, decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
                     break
     return started_any
+
+
+_git_check_skip_counter = 0
+
+
+async def _git_update_check_job() -> None:
+    """Periodic job: check if there are new commits to pull from origin/main.
+
+    Respects backoff from consecutive failures — skips ticks rather than
+    hammering a broken remote every 30 seconds.
+    """
+    global _git_check_skip_counter
+    if DEMO_MODE:
+        return
+    # Backoff: skip ticks when previous fetches have been failing
+    skips = git_skips_remaining()
+    if _git_check_skip_counter < skips:
+        _git_check_skip_counter += 1
+        return
+    _git_check_skip_counter = 0
+    try:
+        await asyncio.to_thread(check_for_updates)
+    except Exception:
+        log.exception("Git update check failed")
 
 
 async def _analysis_job() -> None:
@@ -294,7 +319,13 @@ async def _drain_hook_queue() -> None:
             return
 
     await bus.emit_event(EventType.QUEUE_DRAIN_COMPLETED, queue_type="hook_analysis")
-    # Autopilot only runs after scheduled (heartbeat) analysis, not hooks
+
+    # Run autopilot after hook analysis — hooks replace the heartbeat, so
+    # autopilot must trigger here too (picks up manually-created "next" todos).
+    try:
+        await _auto_run_todos()
+    except Exception:
+        log.exception("Autopilot failed after hook analysis")
 
 
 def get_missed_hook_sessions() -> list[str]:
@@ -358,6 +389,14 @@ def start_scheduler() -> None:
         "interval",
         minutes=minutes,
         id="claude_analysis",
+        max_instances=1,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _git_update_check_job,
+        "interval",
+        seconds=30,
+        id="git_update_check",
         max_instances=1,
         replace_existing=True,
     )

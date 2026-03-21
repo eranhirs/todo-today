@@ -1324,7 +1324,7 @@ def cancel_pending_followup(todo_id: str) -> str | None:
 
                 # If the todo was only queued for this follow-up, un-queue it
                 if t.run_status == "queued":
-                    t.run_status = None
+                    t.run_status = "done"
                     t.run_trigger = None
                     t.queued_at = None
 

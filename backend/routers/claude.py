@@ -250,6 +250,11 @@ async def install_hooks() -> dict:
                 installed.append(event)
         _save_settings(settings)
         log.info("Installed hooks for events: %s", installed or "(already installed)")
+        # Hooks replace the heartbeat — disable it to avoid redundant analysis
+        with StorageContext() as ctx:
+            if ctx.metadata.heartbeat_enabled:
+                ctx.metadata.heartbeat_enabled = False
+                log.info("Auto-disabled heartbeat (hooks installed)")
         return {"status": "ok", "installed_events": installed}
     return await run_in_thread(_do)
 
@@ -274,6 +279,11 @@ async def uninstall_hooks() -> dict:
             settings.pop("hooks", None)
         _save_settings(settings)
         log.info("Uninstalled hooks for events: %s", removed or "(none found)")
+        # Re-enable heartbeat as fallback when hooks are removed
+        with StorageContext() as ctx:
+            if not ctx.metadata.heartbeat_enabled:
+                ctx.metadata.heartbeat_enabled = True
+                log.info("Auto-enabled heartbeat (hooks uninstalled)")
         return {"status": "ok", "removed_events": removed}
     return await run_in_thread(_do)
 

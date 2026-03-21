@@ -137,7 +137,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
 
   const isRunning = todo.run_status === "running";
   const showFollowup = todo.session_id && !isRunning &&
-    (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped");
+    (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped" || !todo.run_status);
   // Track which input is "active" for suggestions: the text value that's currently being edited
   const activeInputText = showFollowup ? followupText : btwText;
   const showBtw = isRunning;

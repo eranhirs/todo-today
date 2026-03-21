@@ -6,7 +6,7 @@ Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hook
 
 ## Design Principles
 
-- **Opt-in**: hooks are off by default — zero behavior change until explicitly installed
+- **Auto-installed**: hooks are installed automatically by `start-local.sh` on server startup
 - **Additive**: hook entries are merged into existing `~/.claude/settings.json`, never clobbering user hooks
 - **Graceful fallback**: sessions without hook data use the existing JSONL heuristic
 - **Visible**: session state badges in the UI show a green dot when sourced from hooks vs estimated from JSONL
@@ -14,7 +14,7 @@ Claude Code supports [hooks](https://docs.anthropic.com/en/docs/claude-code/hook
 
 ## How It Works
 
-1. User clicks **Install** in the Hooks section of the Claude Status panel (or calls `POST /api/claude/hooks/install`)
+1. Hooks are installed automatically on server startup via `start-local.sh` (or manually via the UI / `POST /api/claude/hooks/install`)
 2. The app adds entries to `~/.claude/settings.json` for four events: `PermissionRequest`, `Stop`, `SessionStart`, `SessionEnd`
 3. Each event pipes JSON to `hooks/claude-todos-hook.py`, which writes state to `data/hook_states.json` atomically (flock + temp file + rename)
 4. The analyzer's `_detect_session_state()` checks hook state first, falling back to JSONL parsing only when no hook data exists
@@ -209,19 +209,24 @@ Returns the last N hook events (default 100, max 500) from the event log, most r
 
 ## Event → Action Summary
 
-Each hook event can trigger two independent actions: a **notification** (toast + browser alert) and a **Claude analysis** (auto-analyze the session). This table shows what each event does:
+Each hook event can trigger three independent actions: a **notification** (toast + browser alert), a **Claude analysis** (auto-analyze the session), and **autopilot** (auto-start eligible "next" todos). This table shows what each event does:
 
-| Hook Event | Condition | Notification | Analysis |
-|---|---|---|---|
-| `PermissionRequest` | Always | Yes (amber warning) | No |
-| `Stop` | `last_assistant_message` ends with `?` | Yes (amber warning) | Yes |
-| `Stop` | Does not end with `?` | Yes (green success) | Yes |
-| `SessionStart` | Always | No (clears stale state) | No |
-| `SessionEnd` | Always | Yes (green success) | Yes |
+| Hook Event | Condition | Notification | Analysis | Autopilot |
+|---|---|---|---|---|
+| `PermissionRequest` | Always | Yes (amber warning) | No | No |
+| `Stop` | `last_assistant_message` ends with `?` | Yes (amber warning) | Yes | Yes (after analysis) |
+| `Stop` | Does not end with `?` | Yes (green success) | Yes | Yes (after analysis) |
+| `SessionStart` | Always | No (clears stale state) | No | No |
+| `SessionEnd` | Always | Yes (green success) | Yes | Yes (after analysis) |
 
 - **Notifications** are driven by the frontend polling `GET /api/claude/hooks/events` every 3 seconds and detecting state transitions.
 - **Analysis** is triggered by the hook script itself, which fires a background `POST /api/claude/hooks/analyze` request on `Stop` and `SessionEnd` events.
-- Both can be independently paused via the sidebar toggles (hook-triggered analysis toggle does not affect notifications, and vice versa).
+- **Autopilot** runs after hook-triggered analysis completes, picking up eligible "next" todos. This replaces the heartbeat's role as autopilot trigger.
+- All three can be independently paused via the sidebar toggles.
+
+### Heartbeat Auto-Disable
+
+When hooks are installed, the periodic heartbeat is automatically disabled — hooks provide real-time analysis and autopilot triggers, making the heartbeat redundant. If hooks are uninstalled, the heartbeat is re-enabled as a fallback.
 
 ## Notifications
 

@@ -316,6 +316,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
 
   const projectName = (id: string) => getDisplayName(id) ?? projects.find((p) => p.id === id)?.name ?? "Unknown";
+  const projectSourcePath = (id: string) => projects.find((p) => p.id === id)?.source_path ?? "";
 
   const summary = selectedProjectId ? projectSummaries[selectedProjectId] : null;
 
@@ -454,7 +455,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       >
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
+        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
       </div>
     ));
 
@@ -680,7 +681,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                     {items.map((t) => (
                       <div key={t.id}>
                         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
+                        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
                       </div>
                     ))}
                   </div>

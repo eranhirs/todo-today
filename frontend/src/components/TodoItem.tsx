@@ -23,6 +23,7 @@ interface Props {
   atRunQuotaLimit?: boolean;
   quotaCountdown?: string;
   disabled?: boolean;
+  sourcePath?: string;
   onOutputOpen?: (todoId: string) => void;
   addPendingDelete?: (id: string) => void;
   removePendingDelete?: (id: string) => void;
@@ -63,7 +64,7 @@ function timeAgo(iso: string): string {
   return `${weeks}w ago`;
 }
 
-export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, onOutputOpen, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride }: Props) {
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride }: Props) {
   const commands = allCommands ?? [];
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
@@ -704,6 +705,30 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     {showOutput && todo.plan_file && (
       <div className="todo-plan-file">
         <span className="todo-plan-file-label">Plan:</span> <span className="todo-plan-file-path">{todo.plan_file}</span>
+      </div>
+    )}
+    {showOutput && todo.session_id && (
+      <div className="todo-session-info">
+        <span className="todo-session-label">Session:</span>{" "}
+        <span
+          className="todo-session-id clickable"
+          onClick={() => {
+            navigator.clipboard.writeText(todo.session_id!);
+            addToast("Session ID copied", "info");
+          }}
+          title="Click to copy session ID"
+        >{todo.session_id}</span>
+        {sourcePath && (
+          <button
+            className="btn-cli-resume"
+            onClick={() => {
+              const cmd = `cd ${sourcePath} && claude --resume ${todo.session_id}`;
+              navigator.clipboard.writeText(cmd);
+              addToast("CLI resume command copied to clipboard", "success");
+            }}
+            title={`Resume in CLI — copies: cd ${sourcePath} && claude --resume ${todo.session_id}`}
+          >Resume in CLI</button>
+        )}
       </div>
     )}
     <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} allCommands={allCommands} />
