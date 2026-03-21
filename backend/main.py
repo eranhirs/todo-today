@@ -107,6 +107,15 @@ def _cleanup_stale_runs() -> None:
                             t.status = "next"
                         break
 
+    # Clear orphaned pending_followups on todos that are no longer running/queued.
+    # These can linger if the server died while a run was active with a queued followup.
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            if t.pending_followup and t.run_status not in ("running", "queued"):
+                log.info("Clearing orphaned pending_followup on todo %s (run_status=%s)", t.id, t.run_status)
+                t.pending_followup = None
+                t.pending_followup_images = []
+
     # Drain the queue for any project that has queued items (they may have been
     # orphaned if the previously-running todo finished while the server was down).
     with StorageContext(read_only=True) as ctx:

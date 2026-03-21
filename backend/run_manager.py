@@ -1198,10 +1198,16 @@ def _process_queue(project_id: str) -> None:
         followup_msg = candidate.pending_followup
         followup_session = candidate.session_id if followup_msg else None
         followup_images = list(candidate.pending_followup_images) if followup_msg else None
-        if followup_msg:
+        if followup_msg and followup_session:
             candidate.pending_followup = None
             candidate.pending_followup_images = []
         else:
+            # Clear any orphaned pending_followup (no session to resume into)
+            if candidate.pending_followup:
+                log.warning("Queue: clearing orphaned pending_followup on todo %s (no session_id)", candidate.id)
+                candidate.pending_followup = None
+                candidate.pending_followup_images = []
+                followup_msg = None
             candidate.run_output = None
 
     bus.emit_event_sync(EventType.QUEUE_DRAIN_STARTED, queue_type="project_run", project_id=project_id, todo_id=todo_id)
