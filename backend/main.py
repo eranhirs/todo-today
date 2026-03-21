@@ -19,6 +19,7 @@ from .event_bus import bus
 from .models import ErrorResponse, FullState, _now
 from .routers import claude, projects, todos
 from .run_manager import (
+    _process_queue,
     autopilot_continue,
     cap_output,
     parse_output_file_result,
@@ -106,10 +107,18 @@ def _cleanup_stale_runs() -> None:
                             t.status = "next"
                         break
 
-    # After cleanup, try autopilot continuation for all projects with quota
+    # Drain the queue for any project that has queued items (they may have been
+    # orphaned if the previously-running todo finished while the server was down).
     with StorageContext(read_only=True) as ctx:
-        project_ids = [p.id for p in ctx.store.projects if p.auto_run_quota > 0]
-    for pid in project_ids:
+        queued_project_ids = list({
+            t.project_id for t in ctx.store.todos
+            if t.run_status == "queued" and t.project_id
+        })
+        autopilot_project_ids = [p.id for p in ctx.store.projects if p.auto_run_quota > 0]
+    for pid in queued_project_ids:
+        _process_queue(pid)
+    # After cleanup, try autopilot continuation for all projects with quota
+    for pid in autopilot_project_ids:
         autopilot_continue(pid)
 
 

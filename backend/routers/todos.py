@@ -21,6 +21,7 @@ from ..run_manager import (
     OUTPUT_MAX_CHARS,
     _followup_claude_for_todo,
     _process_queue,
+    cancel_pending_followup,
     cap_output,
     dequeue_todo_run,
     is_btw_running,
@@ -693,6 +694,20 @@ async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
     if info.get("error") == "not_queued":
         raise HTTPException(status_code=409, detail="Follow-up is not queued or has already started")
     return info
+
+
+@router.delete("/{todo_id}/followup")
+async def cancel_followup(todo_id: str) -> dict:
+    """Cancel a queued follow-up message."""
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    err = cancel_pending_followup(todo_id)
+    if err == "todo not found":
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if err == "no pending followup":
+        raise HTTPException(status_code=409, detail="No pending follow-up to cancel")
+    return {"status": "cancelled"}
 
 
 @router.post("/{todo_id}/followup")

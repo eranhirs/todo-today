@@ -148,6 +148,9 @@ export const api = {
       body: JSON.stringify({ message }),
     }),
 
+  cancelFollowup: (id: string) =>
+    request<{ status: string }>(`/todos/${id}/followup`, { method: "DELETE" }),
+
   btwTodo: (id: string, message: string) =>
     request<{ status: string }>(`/todos/${id}/btw`, {
       method: "POST",

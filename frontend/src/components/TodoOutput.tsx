@@ -137,7 +137,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
 
   const isRunning = todo.run_status === "running";
   const showFollowup = todo.session_id && !isRunning &&
-    (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped");
+    (todo.run_status === "done" || todo.run_status === "error" || todo.run_status === "stopped" || !todo.run_status);
   // Track which input is "active" for suggestions: the text value that's currently being edited
   const activeInputText = showFollowup ? followupText : btwText;
   const showBtw = isRunning;
@@ -178,6 +178,17 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
 
   const cancelEditFollowup = () => {
     setEditingFollowup(false);
+  };
+
+  const deleteQueuedFollowup = async () => {
+    try {
+      await api.cancelFollowup(todo.id);
+      setEditingFollowup(false);
+      addToast("Queued follow-up removed", "success");
+      onRefresh();
+    } catch {
+      addToast("Failed to remove queued follow-up", "error");
+    }
   };
 
   // Auto-switch to btw tab when a new btw starts
@@ -583,6 +594,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
             <div className="followup-edit-row">
               <span className="followup-queued-label">Queued follow-up</span>
               <button className="btn-icon btn-edit-followup" onClick={startEditFollowup} disabled={disabled} title="Edit queued follow-up">&#x270E;</button>
+              <button className="btn-icon btn-cancel" onClick={deleteQueuedFollowup} disabled={disabled} title="Remove queued follow-up">&#x2717;</button>
             </div>
           )}
         </div>
@@ -640,6 +652,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
             <div className="followup-edit-row">
               <span className="followup-queued-label">Follow-up queued</span>
               <button className="btn-icon btn-edit-followup" onClick={startEditFollowup} disabled={disabled} title="Edit queued follow-up">&#x270E;</button>
+              <button className="btn-icon btn-cancel" onClick={deleteQueuedFollowup} disabled={disabled} title="Remove queued follow-up">&#x2717;</button>
             </div>
           )}
         </div>

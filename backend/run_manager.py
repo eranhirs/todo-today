@@ -1175,6 +1175,8 @@ def _process_queue(project_id: str) -> None:
                 t.run_status = None
                 t.run_trigger = None
                 t.queued_at = None
+                t.pending_followup = None
+                t.pending_followup_images = []
             return
 
         # NOTE: No quota check here — items already in the queue were approved
@@ -1284,5 +1286,41 @@ def dequeue_todo_run(todo_id: str) -> str | None:
                 t.run_trigger = None
                 t.queued_at = None
                 t.pending_followup = None
+                t.pending_followup_images = []
+                return None
+    return "todo not found"
+
+
+def cancel_pending_followup(todo_id: str) -> str | None:
+    """Cancel a pending/queued follow-up message. Returns None on success, or an error string."""
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            if t.id == todo_id:
+                if not t.pending_followup:
+                    return "no pending followup"
+
+                msg = t.pending_followup
+                n_imgs = len(t.pending_followup_images)
+                img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+
+                # Remove followup images from todo's image list
+                followup_fnames = set(t.pending_followup_images)
+                if followup_fnames:
+                    t.images = [img for img in t.images if not (img.source == "followup" and img.filename in followup_fnames)]
+
+                t.pending_followup = None
+                t.pending_followup_images = []
+
+                # Remove the queued follow-up line from run_output
+                if t.run_output:
+                    queued_line = f"\n\n--- Follow-up (queued) ---\n**You:** {msg}{img_suffix}\n"
+                    t.run_output = t.run_output.replace(queued_line, "")
+
+                # If the todo was only queued for this follow-up, un-queue it
+                if t.run_status == "queued":
+                    t.run_status = None
+                    t.run_trigger = None
+                    t.queued_at = None
+
                 return None
     return "todo not found"
