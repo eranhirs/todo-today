@@ -116,6 +116,14 @@ def _cleanup_stale_runs() -> None:
                 t.pending_followup = None
                 t.pending_followup_images = []
 
+    # Fix todos with a session but null run_status — they should be "done" so
+    # the follow-up bar remains available.
+    with StorageContext() as ctx:
+        for t in ctx.store.todos:
+            if t.session_id and t.run_status is None:
+                log.info("Fixing null run_status on todo %s (has session_id) → done", t.id)
+                t.run_status = "done"
+
     # Drain the queue for any project that has queued items (they may have been
     # orphaned if the previously-running todo finished while the server was down).
     with StorageContext(read_only=True) as ctx:

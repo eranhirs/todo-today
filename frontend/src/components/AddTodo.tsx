@@ -30,29 +30,6 @@ interface Props {
   isOffline?: boolean;
 }
 
-/** Extract the last Claude response from a todo's run_output (after the last follow-up separator, if any) */
-function getLastClaudeMessage(todo: Todo): string | null {
-  const output = todo.run_output;
-  if (!output) return null;
-
-  // Split by follow-up/btw separators to find the last section
-  const separatorRe = /\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* .+\n/g;
-  let lastSepEnd = 0;
-  let match: RegExpExecArray | null;
-  while ((match = separatorRe.exec(output)) !== null) {
-    lastSepEnd = match.index + match[0].length;
-  }
-
-  const lastSection = output.slice(lastSepEnd).trim();
-  if (!lastSection) return null;
-
-  // Truncate to a reasonable length for context
-  const maxLen = 2000;
-  if (lastSection.length > maxLen) {
-    return lastSection.slice(lastSection.length - maxLen) + "\n[...truncated]";
-  }
-  return lastSection;
-}
 
 /** Get a clean display title for a todo (strip tags and commands) */
 function getTodoDisplayTitle(todo: Todo): string {
@@ -359,31 +336,11 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
 
     const imageFilenames = pendingImages.map((img) => img.filename);
 
-    // Process @[title](id) references: extract context from referenced todos
-    const mentionRe = /@\[([^\]]+)\]\(([^)]+)\)/g;
-    let todoText = trimmed;
-    const contextBlocks: string[] = [];
-    let mentionMatch: RegExpExecArray | null;
-    while ((mentionMatch = mentionRe.exec(trimmed)) !== null) {
-      const refTitle = mentionMatch[1];
-      const refId = mentionMatch[2];
-      const refTodo = allTodos.find((t) => t.id === refId);
-      if (refTodo) {
-        const lastMsg = getLastClaudeMessage(refTodo);
-        if (lastMsg) {
-          contextBlocks.push(
-            `--- Referenced todo: "${refTitle}" ---\n${lastMsg}\n--- End reference ---`
-          );
-        }
-      }
-      // Replace the @[title](id) with just @title in the displayed text
-      todoText = todoText.replace(mentionMatch[0], `@${refTitle}`);
-    }
-
-    // Prepend context blocks if any references were found
-    const finalText = contextBlocks.length > 0
-      ? contextBlocks.join("\n\n") + "\n\n" + todoText
-      : todoText;
+    // Keep @[title](id) references as-is in todo text;
+    // context from referenced todos is injected at run time by the backend
+    const finalText = trimmed;
+    // Display-friendly version for toasts: @[title](id) → @title
+    const todoText = trimmed.replace(/@\[([^\]]+)\]\([^)]+\)/g, "@$1");
 
     // Optimistic placeholder
     const tempId = `temp-${Date.now()}`;

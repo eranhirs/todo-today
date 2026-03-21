@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -94,7 +95,7 @@ class ProcessManager:
                 for line in f:
                     if line.startswith("State:"):
                         return "Z" not in line  # Z = zombie
-        except (FileNotFoundError, PermissionError):
+        except (FileNotFoundError, PermissionError, OSError):
             pass
         return True
 
@@ -124,8 +125,8 @@ class ProcessManager:
         try:
             _, returncode_raw = os.waitpid(pid, 0)
             return os.WEXITSTATUS(returncode_raw) if os.WIFEXITED(returncode_raw) else 1
-        except ChildProcessError:
-            # Not our child process (detached) — cannot get real exit code
+        except (ChildProcessError, OSError):
+            # Not our child process (detached) or already reaped — cannot get real exit code
             return 0
 
     # ── Output file cleanup ──────────────────────────────────────
@@ -668,6 +669,49 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
     return False
 
 
+def _resolve_todo_references(todo_text: str) -> str:
+    """Resolve @[title](id) references in todo text, injecting context from referenced todos.
+
+    Returns the prompt text with context blocks prepended and inline mentions
+    replaced with plain @title for readability in the prompt.
+    """
+    mention_re = re.compile(r'@\[([^\]]+)\]\(([^)]+)\)')
+    matches = list(mention_re.finditer(todo_text))
+    if not matches:
+        return todo_text
+
+    context_blocks: list[str] = []
+    result_text = todo_text
+
+    with StorageContext(read_only=True) as ctx:
+        for m in matches:
+            ref_title = m.group(1)
+            ref_id = m.group(2)
+            ref_todo = next((t for t in ctx.store.todos if t.id == ref_id), None)
+            if ref_todo and ref_todo.run_output:
+                # Extract the last Claude response (after the last follow-up separator)
+                sep_re = re.compile(
+                    r'\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* .+\n'
+                )
+                last_sep_end = 0
+                for sep_m in sep_re.finditer(ref_todo.run_output):
+                    last_sep_end = sep_m.end()
+                last_section = ref_todo.run_output[last_sep_end:].strip()
+                if last_section:
+                    max_len = 2000
+                    if len(last_section) > max_len:
+                        last_section = last_section[-max_len:] + "\n[...truncated]"
+                    context_blocks.append(
+                        f'--- Referenced todo: "{ref_title}" ---\n{last_section}\n--- End reference ---'
+                    )
+            # Replace @[title](id) with plain @title in the prompt text
+            result_text = result_text.replace(m.group(0), f'@{ref_title}')
+
+    if context_blocks:
+        return '\n\n'.join(context_blocks) + '\n\n' + result_text
+    return result_text
+
+
 def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "", plan_only: bool = False, images: list[str] | None = None) -> None:
     """Background thread: run claude -p, auto-accepting plan mode if needed."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
@@ -685,17 +729,20 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         if strategy == "proxy":
             # Proxy the slash command directly to Claude CLI
             prompt = cmd_prompt
-        elif plan_only:
-            prompt = (
-                f"Plan this task — explore the codebase, understand the requirements, "
-                f"and create a detailed step-by-step implementation plan. "
-                f"Do NOT write any code or make any changes. Only plan: {todo_text}"
-            )
         else:
-            prompt = (
-                f"Implement this task fully — write all the code, make all the changes, "
-                f"do not stop to ask for feedback or approval: {todo_text}"
-            )
+            # Resolve @[title](id) references → inject context from referenced todos
+            resolved_text = _resolve_todo_references(todo_text)
+            if plan_only:
+                prompt = (
+                    f"Plan this task — explore the codebase, understand the requirements, "
+                    f"and create a detailed step-by-step implementation plan. "
+                    f"Do NOT write any code or make any changes. Only plan: {resolved_text}"
+                )
+            else:
+                prompt = (
+                    f"Implement this task fully — write all the code, make all the changes, "
+                    f"do not stop to ask for feedback or approval: {resolved_text}"
+                )
         # Append image references so Claude can read them
         if images:
             from .routers.todos import _get_image_dir
@@ -1003,7 +1050,8 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
                     for t in ctx.store.todos:
                         if t.id == todo_id:
                             t.run_status = "error"
-                            t.run_output = f"[Reconnect failed: {e}]"
+                            existing = t.run_output or ""
+                            t.run_output = cap_output(existing + f"\n\n[Reconnect failed: {e}]") if existing else f"[Reconnect failed: {e}]"
                             t.run_pid = None
                             t.run_output_file = None
                             break
@@ -1172,7 +1220,7 @@ def _process_queue(project_id: str) -> None:
         if not source_path:
             # Can't run — clear all queued items for this project
             for t in queued:
-                t.run_status = None
+                t.run_status = "done" if t.session_id else None
                 t.run_trigger = None
                 t.queued_at = None
                 t.pending_followup = None
@@ -1288,7 +1336,7 @@ def dequeue_todo_run(todo_id: str) -> str | None:
             if t.id == todo_id:
                 if t.run_status != "queued":
                     return "not queued"
-                t.run_status = None
+                t.run_status = "done" if t.session_id else None
                 t.run_trigger = None
                 t.queued_at = None
                 t.pending_followup = None

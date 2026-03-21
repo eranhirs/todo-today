@@ -161,7 +161,7 @@ def _apply_result(
         # Dequeue if the todo was queued to run
         if su.status == "stale" and t.run_status == "queued":
             log.info("Dequeuing stale todo %s", su.id)
-            t.run_status = None
+            t.run_status = "done" if t.session_id else None
             t.run_trigger = None
             t.queued_at = None
             t.pending_followup = None
@@ -263,7 +263,7 @@ def _apply_result(
         # Dequeue if the todo was queued to run
         if t.status == "stale" and t.run_status == "queued":
             log.info("Dequeuing stale todo %s", mod.id)
-            t.run_status = None
+            t.run_status = "done" if t.session_id else None
             t.run_trigger = None
             t.queued_at = None
             t.pending_followup = None
