@@ -279,16 +279,37 @@ def _detect_plan_file(stream_objects: list[dict]) -> Optional[str]:
 
 
 def _detect_exit_plan_mode(stream_lines: list[dict]) -> bool:
-    """Check if the session ended by calling ExitPlanMode."""
-    for obj in reversed(stream_lines):
+    """Check if any assistant message called ExitPlanMode.
+
+    Previously only checked the last assistant message, but after Claude calls
+    ExitPlanMode the CLI returns a tool_result (is_error) and Claude often
+    writes another assistant message responding to it — burying the
+    ExitPlanMode call in an earlier turn.
+    """
+    for obj in stream_lines:
         if obj.get("type") != "assistant":
             continue
         for block in obj.get("message", {}).get("content", []):
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 if block.get("name") == "ExitPlanMode":
                     return True
-        # Only check the last assistant message
-        break
+    return False
+
+
+def _detect_plan_mode(stream_lines: list[dict]) -> bool:
+    """Check if any assistant message called EnterPlanMode.
+
+    Serves as a fallback signal: if Claude entered plan mode but never called
+    ExitPlanMode (e.g. the CLI exited before it could), we still know a plan
+    was written and should auto-accept.
+    """
+    for obj in stream_lines:
+        if obj.get("type") != "assistant":
+            continue
+        for block in obj.get("message", {}).get("content", []):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                if block.get("name") == "EnterPlanMode":
+                    return True
     return False
 
 
@@ -768,6 +789,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
 
         final_result = None
         returncode = 0
+        all_stream_objects: list[dict] = []  # accumulate across retries for plan detection
 
         max_retries = 0 if plan_only else _MAX_PLAN_RETRIES
         for attempt in range(max_retries + 1):
@@ -782,13 +804,19 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 accumulated, session_header, output_file, resume=is_resume,
                 plan_only=plan_only,
             )
+            all_stream_objects.extend(stream_objects)
+
+            # Check for plan mode BEFORE checking returncode — the CLI may
+            # exit non-zero when ExitPlanMode is called (tool_result is_error),
+            # but this is expected and should trigger auto-accept, not an error.
+            # Also detect EnterPlanMode as a fallback: if Claude entered plan
+            # mode but never explicitly exited, we still auto-accept.
+            entered_plan = _detect_exit_plan_mode(stream_objects) or _detect_plan_mode(stream_objects)
+            if not plan_only and entered_plan and attempt < max_retries:
+                continue
 
             if returncode != 0:
                 break
-
-            # If Claude exited plan mode, auto-accept and continue (unless plan_only)
-            if not plan_only and _detect_exit_plan_mode(stream_objects) and attempt < max_retries:
-                continue
 
             # Otherwise we're done
             break
@@ -798,7 +826,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         if returncode != 0 and _is_quota_error(all_output):
             _handle_quota_error(todo_id, all_output, output_file)
         else:
-            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, stream_objects=stream_objects)
+            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, stream_objects=all_stream_objects)
 
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
@@ -971,6 +999,9 @@ def _finalize_run(
                     t.run_output = cap_output(session_header + stderr_msg)
                     t.run_pid = None
                     t.run_output_file = None
+                    # Still save plan_file even on error — the plan may be valid
+                    if plan_file:
+                        t.plan_file = plan_file
                     break
         bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id, exit_code=returncode)
         process_manager.cleanup_output_file(output_file)
@@ -983,12 +1014,36 @@ def _finalize_run(
     if not output_text and final_result and final_result.get("result"):
         output_text = final_result["result"]
 
+    # Tools that produce permission_denials as normal behavior, not real errors
+    _BENIGN_DENIAL_TOOLS = {"ExitPlanMode", "EnterPlanMode"}
+
     had_errors = False
+    error_details: list[str] = []
     if final_result and not suppress_error:
         if final_result.get("is_error"):
             had_errors = True
+            result_text = final_result.get("result", "")
+            error_details.append(f"is_error: {result_text[:500]}" if result_text else "is_error: true (no details)")
         if final_result.get("permission_denials"):
-            had_errors = True
+            denials = final_result["permission_denials"]
+            if isinstance(denials, list):
+                real_denials = [
+                    d for d in denials
+                    if not (isinstance(d, dict) and d.get("tool_name") in _BENIGN_DENIAL_TOOLS)
+                ]
+            else:
+                real_denials = denials  # unexpected format, treat as real
+            if real_denials:
+                had_errors = True
+                if isinstance(real_denials, list):
+                    error_details.append(f"permission_denials: {', '.join(str(d) for d in real_denials[:10])}")
+                else:
+                    error_details.append(f"permission_denials: {str(real_denials)[:500]}")
+
+    if had_errors:
+        error_summary = "; ".join(error_details)
+        log.warning("Claude run had errors for todo %s: %s", todo_id, error_summary)
+        output_text += f"\n\n--- RUN ERROR ---\n{error_summary}"
 
     # Scan output for coping phrases
     red_flags = detect_coping_phrases(output_text)

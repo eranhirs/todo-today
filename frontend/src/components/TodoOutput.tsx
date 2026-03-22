@@ -712,6 +712,16 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
                     e.preventDefault();
                     sendRunningMessage();
                   }
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    (e.target as HTMLElement).blur();
+                    api.stopTodo(todo.id).then(() => {
+                      addToast(`Paused "${todo.text}" — use follow-up to continue`, "info");
+                      onRefresh();
+                    }).catch(() => {
+                      addToast(`Failed to pause "${todo.text}"`, "error");
+                    });
+                  }
                 }}
               />
               {!showFollowup && cmdSuggestions.length > 0 && (

@@ -20,6 +20,10 @@ interface UseKeyboardShortcutsOptions {
   refresh: () => Promise<void>;
   addToast: (text: string, type?: ToastType) => void;
   isOffline?: boolean;
+  addOptimisticOverride?: (id: string, fields: Partial<Todo>) => void;
+  removeOptimisticOverride?: (id: string) => void;
+  addPendingDelete?: (id: string) => void;
+  removePendingDelete?: (id: string) => void;
 }
 
 export function useKeyboardShortcuts({
@@ -30,11 +34,21 @@ export function useKeyboardShortcuts({
   refresh,
   addToast,
   isOffline = false,
+  addOptimisticOverride,
+  removeOptimisticOverride,
+  addPendingDelete,
+  removePendingDelete,
 }: UseKeyboardShortcutsOptions) {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [focusedTodoId, setFocusedTodoId] = useState<string | null>(null);
   const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
   const addInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Clear focus when the selected project changes (e.g., sidebar click)
+  useEffect(() => {
+    setFocusedTodoId(null);
+    setEditingTodoId(null);
+  }, [selectedProject]);
 
   // Build flat ordered list of visible todos (mirrors TodoList render order)
   const getVisibleTodos = useCallback((): Todo[] => {
@@ -44,7 +58,8 @@ export function useKeyboardShortcuts({
       : state.todos;
 
     const sortByOrder = (a: Todo, b: Todo) => {
-      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+      if (a.user_ordered !== b.user_ordered) return a.user_ordered ? -1 : 1;
+      if (a.user_ordered) return a.sort_order - b.sort_order;
       return b.created_at.localeCompare(a.created_at);
     };
 
@@ -159,16 +174,24 @@ export function useKeyboardShortcuts({
       if (STATUS_KEYS[e.key] && focusedTodoId) {
         e.preventDefault();
         const newStatus = STATUS_KEYS[e.key];
+        const override = { status: newStatus } as Partial<Todo>;
+        addOptimisticOverride?.(focusedTodoId, override);
         setState((prev) => {
           if (!prev) return prev;
           return {
             ...prev,
             todos: prev.todos.map((t) =>
-              t.id === focusedTodoId ? { ...t, status: newStatus } : t
+              t.id === focusedTodoId ? { ...t, ...override } : t
             ),
           };
         });
-        api.updateTodo(focusedTodoId, { status: newStatus }).then(() => refresh());
+        api.updateTodo(focusedTodoId, { status: newStatus }).then(() => {
+          removeOptimisticOverride?.(focusedTodoId);
+          refresh();
+        }).catch(() => {
+          removeOptimisticOverride?.(focusedTodoId);
+          refresh();
+        });
         return;
       }
 
@@ -185,11 +208,18 @@ export function useKeyboardShortcuts({
         const idx = todos.findIndex((t) => t.id === idToDelete);
         const nextId = idx < todos.length - 1 ? todos[idx + 1].id : (idx > 0 ? todos[idx - 1].id : null);
         setFocusedTodoId(nextId);
+        addPendingDelete?.(idToDelete);
         setState((prev) => {
           if (!prev) return prev;
           return { ...prev, todos: prev.todos.filter((t) => t.id !== idToDelete) };
         });
-        api.deleteTodo(idToDelete).then(() => refresh());
+        api.deleteTodo(idToDelete).then(() => {
+          removePendingDelete?.(idToDelete);
+          refresh();
+        }).catch(() => {
+          removePendingDelete?.(idToDelete);
+          refresh();
+        });
         return;
       }
 
@@ -205,7 +235,7 @@ export function useKeyboardShortcuts({
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast, setState, isOffline]);
+  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast, setState, isOffline, addOptimisticOverride, removeOptimisticOverride, addPendingDelete, removePendingDelete]);
 
   return {
     showShortcuts,

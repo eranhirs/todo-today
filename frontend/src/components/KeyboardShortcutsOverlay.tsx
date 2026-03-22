@@ -15,7 +15,7 @@ const SHORTCUTS: { key: string; description: string }[] = [
   { key: "e", description: "Edit focused todo" },
   { key: "x", description: "Delete focused todo" },
   { key: "r", description: "Run focused todo with Claude" },
-  { key: "Esc", description: "Clear focus / close overlay" },
+  { key: "Esc", description: "Clear focus / close overlay / pause running todo (when in follow-up input)" },
   { key: "Cmd+Enter", description: "Submit new todo (while typing)" },
 ];
 

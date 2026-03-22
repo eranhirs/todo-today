@@ -121,10 +121,11 @@ async def _auto_run_todos_inner() -> bool:
         if remaining_quota <= 0:
             continue
 
-        # Sort using same prioritization as the UI's "Up Next" section:
-        # sort_order ascending, then created_at descending as tiebreaker
-        candidates.sort(key=lambda t: t.created_at, reverse=True)
-        candidates.sort(key=lambda t: t.sort_order)
+        # Sort matching UI: pinned (user_ordered) first by sort_order,
+        # then unpinned by created_at descending (newest first)
+        pinned = sorted([t for t in candidates if t.user_ordered], key=lambda t: t.sort_order)
+        unpinned = sorted([t for t in candidates if not t.user_ordered], key=lambda t: t.created_at, reverse=True)
+        candidates = pinned + unpinned
 
         # Start only the top candidate — skip if project is busy
         todo = candidates[0]

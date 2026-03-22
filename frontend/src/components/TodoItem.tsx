@@ -88,8 +88,14 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     return () => clearInterval(id);
   }, [isActive]);
 
-  // Auto-show output while running or when interrupted (so follow-up bar is visible)
+  // Auto-show output when a todo transitions to running or stopped (so follow-up bar
+  // is visible), but NOT on initial mount — avoids completed/stopped todos re-expanding
+  // their output every time the component mounts (e.g., when switching projects).
+  const prevRunStatusRef = useRef(todo.run_status);
   useEffect(() => {
+    const prev = prevRunStatusRef.current;
+    prevRunStatusRef.current = todo.run_status;
+    if (prev === todo.run_status) return; // no transition
     if ((todo.run_status === "running" || todo.run_status === "stopped") && todo.run_output) {
       setShowOutput(true);
     }
@@ -141,13 +147,18 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
       if (willShow) {
         onOutputOpen?.(todo.id);
         if (isUnread(todo)) {
+          addOptimisticOverride?.(todo.id, { is_read: true });
           onOptimisticUpdate((todos) =>
             todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
           );
           try {
             await api.updateTodo(todo.id, { is_read: true });
+            removeOptimisticOverride?.(todo.id);
             onRefresh();
-          } catch { /* silent — not critical */ }
+          } catch {
+            removeOptimisticOverride?.(todo.id);
+            /* silent — not critical */
+          }
         }
       }
     }, 250);

@@ -119,6 +119,56 @@ When the backend is unreachable (polling fails with a network error), the fronte
 - **Banner**: A red banner at the top indicates the server is unreachable.
 - **Recovery**: When polling succeeds again, the offline flag clears and all controls re-enable. Pending items remain visible but won't be synced — the user should re-add them.
 
+## Run Lifecycle
+
+When a todo is executed via the play button or autopilot, `run_manager.py` manages the full subprocess lifecycle.
+
+### Execution Flow
+
+1. Todo status → `in_progress`, `run_status` → `running`
+2. A background thread spawns `claude -p --output-format stream-json --dangerously-skip-permissions`
+3. Output is tailed from a JSONL file in `data/runs/` and flushed to the todo store every 5 seconds
+4. On completion, `_finalize_run` applies the result: sets `run_status`, detects plan files, scans for coping phrases
+
+### Plan Mode Auto-Accept
+
+Claude may enter plan mode during a run. When it calls `ExitPlanMode`, the auto-accept loop detects this and resumes with "Plan accepted. Now implement it fully." This repeats up to 3 times (`_MAX_PLAN_RETRIES`).
+
+**ExitPlanMode and permission denials**: In headless (`-p`) mode, `ExitPlanMode` requires user confirmation that can't be obtained. The CLI returns the tool result with `is_error: true` and records it as a `permission_denial`. This is **expected behavior**, not a real error — it's simply the CLI's way of signaling that plan mode exit needs acknowledgment. The auto-accept loop handles this by resuming the session. `ExitPlanMode` and `EnterPlanMode` denials are filtered out of the error check so they don't incorrectly mark runs as failed.
+
+### Plan File Detection
+
+When Claude writes a file to `.claude/plans/` during a run, `_detect_plan_file` scans the stream objects for `Write` tool calls targeting that path. The detected path is stored in `todo.plan_file`. Stream objects are accumulated across all auto-accept retry iterations so the plan file isn't lost when the second invocation replaces `stream_objects`. Plan files are also preserved on the todo even when the run ends in error — the plan itself may still be valid.
+
+### Error Detection
+
+Runs can fail in several ways, each producing different user-visible output:
+
+| Condition | `run_status` | Output contains |
+|-----------|-------------|-----------------|
+| Non-zero exit code | `error` | `--- ERROR ---\nExit code N` |
+| `final_result.is_error` is true | `error` | `--- RUN ERROR ---\nis_error: <details>` |
+| Real `permission_denials` (not ExitPlanMode/EnterPlanMode) | `error` | `--- RUN ERROR ---\npermission_denials: <list>` |
+| Quota/rate-limit patterns in output | reset to `next` | `[Quota/rate-limit error — will retry]` |
+| Python exception in run thread | `error` | Exception string |
+
+### Plan-Only Runs
+
+When `plan_only: true`, the run restricts tools (disallows `Edit`, `Bash`, `NotebookEdit`) and prefixes the prompt with planning instructions. On success, `run_status` → `done` but `status` stays `next` (not completed). Non-zero exit codes are suppressed if a plan file was successfully written.
+
+## Todo Sorting
+
+Todos are sorted within their section (Up Next, Backlog, Completed) using a two-tier scheme:
+
+1. **Pinned items first** — todos with `user_ordered=true` (set by drag-and-drop) sort by `sort_order` ascending
+2. **Unpinned items second** — todos with `user_ordered=false` sort by `created_at` descending (newest first)
+
+This logic is applied consistently in three places: `TodoList.tsx` (UI rendering), `useKeyboardShortcuts.ts` (arrow key navigation), and `scheduler.py` (autopilot candidate selection).
+
+Within each section, todos are further grouped by status priority (e.g., Up Next: waiting → in_progress → next; Backlog: consider → stale → rejected).
+
+When a todo is **unpinned** (via the pin toggle), the backend recalculates `sort_order` for all unpinned siblings by `created_at`, slotting them around pinned items that keep their positions.
+
 ## Hooks Integration
 
 Optional real-time session state detection via Claude Code hooks. See [hooks.md](hooks.md) for full details, event payloads, and testing instructions.

@@ -73,6 +73,10 @@ function App() {
     refresh,
     addToast,
     isOffline,
+    addOptimisticOverride,
+    removeOptimisticOverride,
+    addPendingDelete,
+    removePendingDelete,
   });
 
   const [showInsightsDropdown, setShowInsightsDropdown] = useState(false);

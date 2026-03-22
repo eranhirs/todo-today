@@ -284,9 +284,11 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     return result;
   }, [projectFiltered, searchQuery, searchResults, selectedProjectId, selectedTags, excludedTags, filterUnread, stickyTodoId, filterCommands]);
 
-  // Sort helper: sort_order ascending, then created_at descending as tiebreaker
+  // Sort helper: pinned (user_ordered) items first by sort_order,
+  // then unpinned items by created_at descending (newest first)
   const sortByOrder = (a: Todo, b: Todo) => {
-    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+    if (a.user_ordered !== b.user_ordered) return a.user_ordered ? -1 : 1;
+    if (a.user_ordered) return a.sort_order - b.sort_order;
     return b.created_at.localeCompare(a.created_at);
   };
 
@@ -415,23 +417,39 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     // Insert at new position
     ids.splice(toIdx, 0, dragId);
 
-    // Optimistic update: assign new sort_order values, pin only the moved item
+    // Optimistic update: assign new sort_order values, pin only the moved item.
+    // Also register overrides so polling doesn't flash old order back.
+    const reorderOverrides: Array<[string, Partial<Todo>]> = [];
     onOptimisticUpdate((allTodos) =>
       allTodos.map((t) => {
         const newIdx = ids.indexOf(t.id);
         if (newIdx !== -1) {
-          return { ...t, sort_order: newIdx, ...(t.id === dragId ? { user_ordered: true } : {}) };
+          const fields: Partial<Todo> = { sort_order: newIdx, ...(t.id === dragId ? { user_ordered: true } : {}) };
+          reorderOverrides.push([t.id, fields]);
+          return { ...t, ...fields };
         }
         return t;
       })
     );
+    for (const [id, fields] of reorderOverrides) {
+      addOptimisticOverride?.(id, fields);
+    }
 
     // Persist to backend
-    api.reorderTodos(ids, dragId).then(() => onRefresh()).catch(() => {
+    const clearOverrides = () => {
+      for (const [id] of reorderOverrides) {
+        removeOptimisticOverride?.(id);
+      }
+    };
+    api.reorderTodos(ids, dragId).then(() => {
+      clearOverrides();
+      onRefresh();
+    }).catch(() => {
+      clearOverrides();
       addToast("Failed to reorder todos", "error");
       onRefresh();
     });
-  }, [dropTargetId, dropPosition, onOptimisticUpdate, onRefresh, addToast]);
+  }, [dropTargetId, dropPosition, onOptimisticUpdate, onRefresh, addToast, addOptimisticOverride, removeOptimisticOverride]);
 
   const handleDragEnd = useCallback(() => {
     dragItemId.current = null;
