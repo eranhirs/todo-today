@@ -1,7 +1,7 @@
 import type { CompletedPage, FullState, Project, SessionInfo, Settings, SettingsUpdate, Todo, TodoStatus } from "./types";
 import { ApiError } from "./errors";
 
-// In demo mode, BASE_URL is "/~REDACTED_USER/claude-todos/" — derive API path from it
+// In demo mode, BASE_URL is set via DEMO_BASE_URL — derive API path from it
 // so requests stay on the same HTTPS origin and get proxied by Apache.
 const BASE = import.meta.env.VITE_API_URL || `${import.meta.env.BASE_URL}api`.replace(/\/\/+/g, "/");
 
