@@ -49,6 +49,8 @@ function App() {
     removePendingDelete,
     addOptimisticOverride,
     removeOptimisticOverride,
+    addPendingNewTodo,
+    removePendingNewTodo,
   } = useAppState({
     notifyNewWaitingTodos,
     notifyRunCompletions,
@@ -286,6 +288,8 @@ function App() {
             removePendingDelete={removePendingDelete}
             addOptimisticOverride={addOptimisticOverride}
             removeOptimisticOverride={removeOptimisticOverride}
+            addPendingNewTodo={addPendingNewTodo}
+            removePendingNewTodo={removePendingNewTodo}
           />
         )}
       </main>

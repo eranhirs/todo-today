@@ -3,7 +3,7 @@ import type { Metadata } from "../types";
 import { api } from "../api";
 import type { ClaudeUsageLimit, ClaudeUsageResponse } from "../api";
 
-const BASE_POLL_MS = 60_000;
+const BASE_POLL_MS = 120_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 
 interface Props {

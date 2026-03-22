@@ -13,7 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.responses import StreamingResponse
+from starlette.responses import Response as StarletteResponse, StreamingResponse
 
 from .event_bus import bus
 from .models import ErrorResponse, FullState, _now
@@ -34,7 +34,7 @@ from .scheduler import (
     start_scheduler,
     stop_scheduler,
 )
-from .storage import StorageContext, run_in_thread
+from .storage import StorageContext, get_state_version, run_in_thread
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -218,8 +218,14 @@ COMPLETED_PAGE_SIZE = 50  # Number of completed todos to load per page
 
 
 @app.get("/api/state")
-async def full_state() -> FullState:
-    def _do():
+async def full_state(request: Request):
+    # ETag: if the client already has the current version, skip all work
+    current_version = str(get_state_version())
+    client_etag = request.headers.get("if-none-match", "").strip('"')
+    if client_etag and client_etag == current_version:
+        return StarletteResponse(status_code=304, headers={"ETag": f'"{current_version}"'})
+
+    def _do() -> FullState:
         with StorageContext(read_only=True) as ctx:
             all_todos = ctx.store.todos
             # Split: keep all non-completed, cap completed to first page
@@ -252,7 +258,15 @@ async def full_state() -> FullState:
                 completed_by_project=completed_by_project,
                 unread_counts=unread_counts,
             )
-    return await run_in_thread(_do)
+
+    result = await run_in_thread(_do)
+    # Grab version again — it may have bumped during _do(), but that's fine;
+    # the next poll will catch up.
+    version_after = str(get_state_version())
+    return JSONResponse(
+        content=result.model_dump(mode="json"),
+        headers={"ETag": f'"{version_after}"'},
+    )
 
 
 @app.get("/api/events")

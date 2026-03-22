@@ -9,6 +9,9 @@ const BASE = import.meta.env.VITE_API_URL || `${import.meta.env.BASE_URL}api`.re
 const _w = window as unknown as { __DEMO_STATE__?: FullState };
 export const isStaticDemo = !!_w.__DEMO_STATE__;
 
+/** ETag tracking for /api/state — enables 304 Not Modified responses */
+let _stateETag: string | null = null;
+
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -34,10 +37,31 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getState: (): Promise<FullState> =>
-    isStaticDemo
-      ? Promise.resolve(_w.__DEMO_STATE__!)
-      : request<FullState>("/state"),
+  /** Fetch full state with ETag support. Returns null on 304 (no changes). */
+  getState: async (): Promise<FullState | null> => {
+    if (isStaticDemo) return _w.__DEMO_STATE__!;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (_stateETag) headers["If-None-Match"] = _stateETag;
+    let res: Response;
+    try {
+      res = await fetch(`${BASE}/state`, { headers });
+    } catch (err) {
+      throw ApiError.networkError(err);
+    }
+    if (res.status === 304) return null; // no changes since last fetch
+    if (!res.ok) {
+      let detail = `${res.status} ${res.statusText}`;
+      let errorCode: string | null = null;
+      try {
+        const body = await res.json();
+        if (body.detail) detail = body.detail;
+        if (body.error_code) errorCode = body.error_code;
+      } catch { /* ignore */ }
+      throw ApiError.fromResponse(res.status, detail, errorCode);
+    }
+    _stateETag = res.headers.get("ETag");
+    return res.json();
+  },
 
   loadMoreCompleted: (offset: number, limit = 50, projectId?: string): Promise<CompletedPage> =>
     request<CompletedPage>(`/todos/completed?offset=${offset}&limit=${limit}${projectId ? `&project_id=${projectId}` : ""}`),

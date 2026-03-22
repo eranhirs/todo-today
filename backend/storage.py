@@ -27,6 +27,14 @@ DATA_DIR = Path(os.environ.get("TODO_DATA_DIR", Path(__file__).resolve().parent.
 
 _lock = threading.Lock()
 
+# Monotonic version counter — bumped on every write, used for ETag/304 on /api/state.
+# This lets the frontend skip re-processing unchanged responses.
+_state_version = 0
+
+
+def get_state_version() -> int:
+    return _state_version
+
 
 def _ensure_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -59,8 +67,10 @@ def load_store() -> TodoStore:
 
 
 def save_store(store: TodoStore) -> None:
+    global _state_version
     _ensure_dir()
     _atomic_write(DATA_DIR / "todos.json", store.model_dump_json(indent=2))
+    _state_version += 1
 
 
 def load_metadata() -> Metadata:
@@ -77,8 +87,10 @@ def load_metadata() -> Metadata:
 
 
 def save_metadata(meta: Metadata) -> None:
+    global _state_version
     _ensure_dir()
     _atomic_write(DATA_DIR / "metadata.json", meta.model_dump_json(indent=2))
+    _state_version += 1
 
 
 class StorageContext:

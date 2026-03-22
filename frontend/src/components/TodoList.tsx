@@ -29,9 +29,11 @@ interface Props {
   removePendingDelete?: (id: string) => void;
   addOptimisticOverride?: (id: string, fields: Partial<Todo>) => void;
   removeOptimisticOverride?: (id: string) => void;
+  addPendingNewTodo?: (todo: Todo) => void;
+  removePendingNewTodo?: (id: string) => void;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef, isOffline = false, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef, isOffline = false, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride, addPendingNewTodo, removePendingNewTodo }: Props) {
   const [showUpNext, setShowUpNext] = useState(true);
   const [showBacklog, setShowBacklog] = useState(true);
   const [showDone, setShowDone] = useState(true);
@@ -528,9 +530,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       )}
 
       {selectedProjectId ? (
-        <AddTodo projectId={selectedProjectId} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} />
+        <AddTodo projectId={selectedProjectId} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} addPendingNewTodo={addPendingNewTodo} removePendingNewTodo={removePendingNewTodo} />
       ) : (
-        <AddTodo projects={projects} allTags={allTags} allTodos={todos} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} />
+        <AddTodo projects={projects} allTags={allTags} allTodos={todos} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} addPendingNewTodo={addPendingNewTodo} removePendingNewTodo={removePendingNewTodo} />
       )}
 
       <div className="search-bar">

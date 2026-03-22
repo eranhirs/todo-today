@@ -28,6 +28,8 @@ interface Props {
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   disabled?: boolean;
   isOffline?: boolean;
+  addPendingNewTodo?: (todo: Todo) => void;
+  removePendingNewTodo?: (id: string) => void;
 }
 
 
@@ -36,7 +38,7 @@ function getTodoDisplayTitle(todo: Todo): string {
   return stripCommandsFromText(stripTagsFromText(todo.text)).trim();
 }
 
-export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false }: Props) {
+export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false, addPendingNewTodo, removePendingNewTodo }: Props) {
   const commands = allCommands ?? [];
   const draftKey = projectId ?? "__all__";
   const [text, setText] = useState(() => addTodoDrafts.get(draftKey) ?? "");
@@ -375,6 +377,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       pending_followup: null,
       red_flags: [],
     };
+    addPendingNewTodo?.(placeholder);
     onOptimisticUpdate((todos) => [placeholder, ...todos]);
     setText("");
     addTodoDrafts.delete(draftKey);
@@ -402,8 +405,10 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
           addToast(`Added todo but failed to run: ${apiErrorMessage(err)}`, "error");
         }
       }
+      removePendingNewTodo?.(tempId);
       onRefresh();
     } catch {
+      removePendingNewTodo?.(tempId);
       onOptimisticUpdate((todos) => todos.filter((t) => t.id !== tempId));
       setText(trimmed);
       addToast(`Failed to add "${todoText}"`, "error");

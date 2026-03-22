@@ -73,6 +73,7 @@ class Todo(BaseModel):
     images: List[ImageAttachment] = []  # Image attachments with metadata
     red_flags: List[Dict[str, Any]] = []  # Coping-phrase red flags detected in run output
     plan_file: Optional[str] = None  # Path to .claude/plans/ file written during plan_only run
+    session_msg_count: Optional[int] = None  # JSONL user/assistant message count at last sync
 
     @model_validator(mode="before")
     @classmethod

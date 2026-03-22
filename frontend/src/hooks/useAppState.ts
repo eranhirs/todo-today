@@ -3,7 +3,8 @@ import type { FullState, Project, Todo } from "../types";
 import { api, isStaticDemo } from "../api";
 import { ApiError } from "../errors";
 
-const POLL_INTERVAL = 3_000;
+// Slow fallback poll — SSE events drive real-time updates, this is just a safety net
+const POLL_INTERVAL = 30_000;
 const COMPLETED_PAGE_SIZE = 50;
 
 interface UseAppStateOptions {
@@ -24,6 +25,9 @@ export function useAppState({
   // In-flight optimistic field overrides — re-applied on top of polled data so
   // polling doesn't flash stale values before the API call resolves.
   const optimisticOverrides = useRef<Map<string, Partial<Todo>>>(new Map());
+  // Optimistic placeholder todos for in-flight creates — re-prepended on refresh
+  // so they don't vanish while the API call is still in progress.
+  const pendingNewTodos = useRef<Map<string, Todo>>(new Map());
   // Track how many completed todos we've loaded so far (for infinite scroll)
   const completedLoadedRef = useRef(COMPLETED_PAGE_SIZE);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -67,6 +71,9 @@ export function useAppState({
       const data = await api.getState();
       setIsOffline(false);
 
+      // 304 Not Modified — nothing changed, skip all processing
+      if (data === null) return;
+
       // If user had loaded more completed todos (global), reload those extra pages too
       const extraLoaded = completedLoadedRef.current;
       if (extraLoaded > COMPLETED_PAGE_SIZE && data.has_more_completed) {
@@ -95,6 +102,16 @@ export function useAppState({
           const ov = overrides.get(t.id);
           return ov ? { ...t, ...ov } : t;
         });
+      }
+
+      // Re-prepend in-flight optimistic new todos so they don't vanish during create
+      const pending = pendingNewTodos.current;
+      if (pending.size > 0) {
+        const serverIds = new Set(data.todos.map((t) => t.id));
+        const stillPending = [...pending.values()].filter((t) => !serverIds.has(t.id));
+        if (stillPending.length > 0) {
+          data.todos = [...stillPending, ...data.todos];
+        }
       }
 
       // Use functional setState to preserve any extra completed todos loaded
@@ -145,6 +162,14 @@ export function useAppState({
 
   const removeOptimisticOverride = useCallback((id: string) => {
     optimisticOverrides.current.delete(id);
+  }, []);
+
+  const addPendingNewTodo = useCallback((todo: Todo) => {
+    pendingNewTodos.current.set(todo.id, todo);
+  }, []);
+
+  const removePendingNewTodo = useCallback((id: string) => {
+    pendingNewTodos.current.delete(id);
   }, []);
 
   const addPendingDelete = useCallback((id: string) => {
@@ -265,5 +290,7 @@ export function useAppState({
     removePendingDelete,
     addOptimisticOverride,
     removeOptimisticOverride,
+    addPendingNewTodo,
+    removePendingNewTodo,
   };
 }

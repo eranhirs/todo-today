@@ -16,6 +16,7 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from .claude_analyzer import run_analysis
+from .cli_sync import sync_cli_sessions
 from .event_bus import EventType, bus
 from .git_checker import check_for_updates, skips_remaining as git_skips_remaining
 from .models import _now
@@ -203,6 +204,12 @@ async def _analysis_job() -> None:
             todos_completed=entry.todos_completed,
         )
 
+    # Sync CLI-resumed sessions
+    try:
+        await asyncio.to_thread(sync_cli_sessions)
+    except Exception:
+        log.debug("CLI session sync failed after scheduled analysis", exc_info=True)
+
     # Auto-run eligible todos after analysis (outside the lock)
     try:
         await _auto_run_todos()
@@ -319,6 +326,12 @@ async def _drain_hook_queue() -> None:
             return
 
     await bus.emit_event(EventType.QUEUE_DRAIN_COMPLETED, queue_type="hook_analysis")
+
+    # Sync CLI-resumed sessions
+    try:
+        await asyncio.to_thread(sync_cli_sessions)
+    except Exception:
+        log.debug("CLI session sync failed after hook analysis", exc_info=True)
 
     # Run autopilot after hook analysis — hooks replace the heartbeat, so
     # autopilot must trigger here too (picks up manually-created "next" todos).

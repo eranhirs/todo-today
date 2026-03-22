@@ -44,8 +44,10 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [hooksInstalled, setHooksInstalled] = useState<boolean | null>(null);
   const [hooksLoading, setHooksLoading] = useState(false);
+  const [showManual, setShowManual] = useState(false);
 
   const isOverride = selectedModel !== settings.analysis_model;
+  const anyAnalysisEnabled = settings.heartbeat_enabled || settings.hook_analysis_enabled;
 
   const handleWake = async (force = false, sessionKeys?: string[]) => {
     setWaking(true);
@@ -211,45 +213,43 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
         <span className="status-label">
           Claude {metadata.scheduler_status === "running" ? "active" : "stopped"}
         </span>
-        <select
-          className="interval-select"
-          value={settings.analysis_interval_minutes}
-          onChange={handleIntervalChange}
-          title="Analysis interval"
-        >
-          {INTERVAL_OPTIONS.map((m) => (
-            <option key={m} value={m}>{m}m</option>
-          ))}
-        </select>
-        <select
-          className="model-select"
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-          title="Model used for all analysis (scheduled + hook-triggered). Autopilot runs always use opus."
-        >
-          {MODEL_OPTIONS.map((m) => (
-            <option key={m} value={m}>{m}</option>
-          ))}
-        </select>
+        {settings.heartbeat_enabled && (
+          <select
+            className="interval-select"
+            value={settings.analysis_interval_minutes}
+            onChange={handleIntervalChange}
+            title="Heartbeat interval"
+          >
+            {INTERVAL_OPTIONS.map((m) => (
+              <option key={m} value={m}>{m}m</option>
+            ))}
+          </select>
+        )}
+        {anyAnalysisEnabled && (
+          <select
+            className="model-select"
+            value={selectedModel}
+            onChange={(e) => setSelectedModel(e.target.value)}
+            title="Model used for all analysis (scheduled + hook-triggered). Autopilot runs always use opus."
+          >
+            {MODEL_OPTIONS.map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        )}
       </div>
-      <div className="status-detail" style={{ opacity: 0.6, fontSize: "0.7rem" }}>
-        Analysis model (scheduled + hooks). Autopilot uses opus.
-      </div>
-      {isOverride && (
+      {anyAnalysisEnabled && (
+        <div className="status-detail" style={{ opacity: 0.6, fontSize: "0.7rem" }}>
+          Analysis model ({[settings.heartbeat_enabled && "scheduled", settings.hook_analysis_enabled && "hooks"].filter(Boolean).join(" + ")}). Autopilot uses opus.
+        </div>
+      )}
+      {isOverride && anyAnalysisEnabled && (
         <div className="status-detail model-override-note">
           Using <strong>{selectedModel}</strong> for this wake only.{" "}
           <button className="btn-link" onClick={handleMakePermanent}>Make permanent</button>
         </div>
       )}
-      {wakeMessage && (
-        <div className="status-detail wake-message">
-          {wakeMessage}{" "}
-          <button className="btn-link" onClick={() => handleWake(true)} disabled={busy}>
-            Force analyze
-          </button>
-        </div>
-      )}
-      {metadata.heartbeat && (
+      {settings.heartbeat_enabled && metadata.heartbeat && (
         <div className="status-detail">
           Last heartbeat: {timeAgo(metadata.heartbeat)}
           {countdown && (
@@ -257,7 +257,7 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
           )}
         </div>
       )}
-      {metadata.last_analysis && (
+      {anyAnalysisEnabled && metadata.last_analysis && (
         <div className="status-detail">
           Last analysis: {timeAgo(metadata.last_analysis.timestamp)}
           {metadata.last_analysis.model && ` (${metadata.last_analysis.model})`} — {metadata.last_analysis.summary}
@@ -266,93 +266,113 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
       {autopilotRunning && (
         <div className="status-detail autopilot-indicator">Autopilot running...</div>
       )}
-      <button className="btn-wake" onClick={() => handleWake()} disabled={busy}>
-        {busy ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}
-      </button>
-      <div className="session-picker-section">
-        <button className="btn-link session-picker-toggle" onClick={handleBrowseSessions} disabled={loadingSessions}>
-          {loadingSessions ? "Loading..." : showSessions ? "▾ Pick specific sessions" : "▸ Pick specific sessions"}
+      {/* Manual analysis section — collapsed by default */}
+      <div className="manual-analysis-section">
+        <button
+          className="btn-link manual-analysis-toggle"
+          onClick={() => setShowManual(!showManual)}
+        >
+          {showManual ? "▾" : "▸"} Manual analysis
         </button>
-        {showSessions && (
-          <div className="session-picker">
-            <div className="status-detail" style={{ marginBottom: "6px" }}>
-              By default, Wake analyzes only sessions changed in the last 24h.
-              Use this to re-analyze older sessions or pick specific ones.
-              Sessions are grouped by their working directory from <code style={{ fontSize: "0.7rem" }}>~/.claude/projects/</code>.
-            </div>
-            <div className="session-picker-header">
-              <span>{projectCount} projects, {sessions.length} sessions</span>
-              <button
-                className="btn-wake"
-                style={{ padding: "4px 10px", fontSize: "0.75rem", marginTop: 0 }}
-                onClick={handleAnalyzeSelected}
-                disabled={selectedKeys.size === 0 || busy}
-              >
-                Analyze Selected ({selectedKeys.size})
+        {showManual && (
+          <div className="manual-analysis-body">
+            {wakeMessage && (
+              <div className="status-detail wake-message">
+                {wakeMessage}{" "}
+                <button className="btn-link" onClick={() => handleWake(true)} disabled={busy}>
+                  Force analyze
+                </button>
+              </div>
+            )}
+            <button className="btn-wake" onClick={() => handleWake()} disabled={busy}>
+              {busy ? "⏳ Analyzing..." : "🔔 Wake Up Claude"}
+            </button>
+            <div className="session-picker-section">
+              <button className="btn-link session-picker-toggle" onClick={handleBrowseSessions} disabled={loadingSessions}>
+                {loadingSessions ? "Loading..." : showSessions ? "▾ Pick specific sessions" : "▸ Pick specific sessions"}
               </button>
-            </div>
-            {Object.entries(sessionsByProject).map(([projectName, projectSessions]) => {
-              const isExpanded = expandedProjects.has(projectName);
-              const allSelected = projectSessions.every((s) => selectedKeys.has(s.key));
-              const someSelected = projectSessions.some((s) => selectedKeys.has(s.key));
-              return (
-                <div key={projectName} className="session-group">
-                  <div className="session-group-header">
-                    <button
-                      className="session-group-toggle"
-                      onClick={() => toggleProject(projectName)}
-                      title={projectSessions[0]?.source_path}
-                    >
-                      {isExpanded ? "▾" : "▸"} {projectName}
-                      <span className="session-group-path-inline">{projectSessions[0]?.project_dir}</span>
-                      <span className="session-group-count">{projectSessions.length}</span>
-                    </button>
-                    <input
-                      type="checkbox"
-                      className="session-checkbox"
-                      checked={allSelected}
-                      ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
-                      onChange={() => toggleAllInProject(projectSessions)}
-                      title="Select all sessions in this project"
-                    />
+              {showSessions && (
+                <div className="session-picker">
+                  <div className="status-detail" style={{ marginBottom: "6px" }}>
+                    By default, Wake analyzes only sessions changed in the last 24h.
+                    Use this to re-analyze older sessions or pick specific ones.
                   </div>
-                  {isExpanded && projectSessions.map((s) => (
-                    <label key={s.key} className="session-item">
-                      <input
-                        type="checkbox"
-                        className="session-checkbox"
-                        checked={selectedKeys.has(s.key)}
-                        onChange={() => toggleSessionKey(s.key)}
-                      />
-                      <span className="session-id" title={s.session_id}>
-                        {s.session_id.slice(0, 8)}...
-                      </span>
-                      <span
-                        className="session-meta"
-                        title={s.last_analyzed_mtime
-                          ? `Last analyzed: ${formatTime(s.last_analyzed_mtime)}`
-                          : "Never analyzed"}
-                      >
-                        {s.message_count} msgs · {formatTime(s.mtime)}
-                        {s.state && s.state !== "unknown" && (
-                          <span className={`session-state-badge state-${s.state}`} title={`Source: ${s.state_source || "jsonl"}`}>
-                            {s.state.replace(/_/g, " ")}
-                            {s.state_source === "hook" && <span className="live-dot" />}
-                          </span>
-                        )}
-                        {s.last_analyzed_mtime && s.mtime > s.last_analyzed_mtime && (
-                          <span className="session-changed-badge">changed</span>
-                        )}
-                      </span>
-                    </label>
-                  ))}
+                  <div className="session-picker-header">
+                    <span>{projectCount} projects, {sessions.length} sessions</span>
+                    <button
+                      className="btn-wake"
+                      style={{ padding: "4px 10px", fontSize: "0.75rem", marginTop: 0 }}
+                      onClick={handleAnalyzeSelected}
+                      disabled={selectedKeys.size === 0 || busy}
+                    >
+                      Analyze Selected ({selectedKeys.size})
+                    </button>
+                  </div>
+                  {Object.entries(sessionsByProject).map(([projectName, projectSessions]) => {
+                    const isExpanded = expandedProjects.has(projectName);
+                    const allSelected = projectSessions.every((s) => selectedKeys.has(s.key));
+                    const someSelected = projectSessions.some((s) => selectedKeys.has(s.key));
+                    return (
+                      <div key={projectName} className="session-group">
+                        <div className="session-group-header">
+                          <button
+                            className="session-group-toggle"
+                            onClick={() => toggleProject(projectName)}
+                            title={projectSessions[0]?.source_path}
+                          >
+                            {isExpanded ? "▾" : "▸"} {projectName}
+                            <span className="session-group-path-inline">{projectSessions[0]?.project_dir}</span>
+                            <span className="session-group-count">{projectSessions.length}</span>
+                          </button>
+                          <input
+                            type="checkbox"
+                            className="session-checkbox"
+                            checked={allSelected}
+                            ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                            onChange={() => toggleAllInProject(projectSessions)}
+                            title="Select all sessions in this project"
+                          />
+                        </div>
+                        {isExpanded && projectSessions.map((s) => (
+                          <label key={s.key} className="session-item">
+                            <input
+                              type="checkbox"
+                              className="session-checkbox"
+                              checked={selectedKeys.has(s.key)}
+                              onChange={() => toggleSessionKey(s.key)}
+                            />
+                            <span className="session-id" title={s.session_id}>
+                              {s.session_id.slice(0, 8)}...
+                            </span>
+                            <span
+                              className="session-meta"
+                              title={s.last_analyzed_mtime
+                                ? `Last analyzed: ${formatTime(s.last_analyzed_mtime)}`
+                                : "Never analyzed"}
+                            >
+                              {s.message_count} msgs · {formatTime(s.mtime)}
+                              {s.state && s.state !== "unknown" && (
+                                <span className={`session-state-badge state-${s.state}`} title={`Source: ${s.state_source || "jsonl"}`}>
+                                  {s.state.replace(/_/g, " ")}
+                                  {s.state_source === "hook" && <span className="live-dot" />}
+                                </span>
+                              )}
+                              {s.last_analyzed_mtime && s.mtime > s.last_analyzed_mtime && (
+                                <span className="session-changed-badge">changed</span>
+                              )}
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
+              )}
+            </div>
           </div>
         )}
       </div>
-      {metadata.total_analyses > 0 && (
+      {anyAnalysisEnabled && metadata.total_analyses > 0 && (
         <div className="usage-totals">
           Total: {metadata.total_analyses} analyses | ${metadata.total_cost_usd.toFixed(2)} | {((metadata.total_input_tokens + metadata.total_output_tokens) / 1000).toFixed(1)}k tokens
         </div>
@@ -374,7 +394,7 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
         >?</span>
       </div>
       <div className="analysis-toggles">
-        <label className="toggle-row" title="Periodic heartbeat analysis on a timer">
+        <label className="toggle-row" title="Periodic heartbeat analysis on a timer (not needed when hooks are installed)">
           <input
             type="checkbox"
             checked={settings.heartbeat_enabled}

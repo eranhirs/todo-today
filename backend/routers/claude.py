@@ -315,7 +315,7 @@ async def get_usage() -> dict:
         token = oauth.get("accessToken")
         if not token:
             return {"error": "No OAuth access token"}
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=2.0) as client:
             resp = await client.get(
                 _USAGE_API_URL,
                 headers={

@@ -17,7 +17,7 @@ interface Props {
 const OUTPUT_MAX_CHARS = 500_000;
 const OUTPUT_WARNING_THRESHOLD = 0.9; // warn at 90%
 
-const FOLLOWUP_RE = /\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* /;
+const FOLLOWUP_RE = /\n\n--- (?:Follow-up(?: \(queued\))?|BTW|Resumed in CLI) ---\n\*\*You:\*\* /;
 
 function renderOutput(text: string) {
   const parts = text.split(FOLLOWUP_RE);
@@ -32,12 +32,14 @@ function renderOutput(text: string) {
     const queuedMatch = text.indexOf("\n\n--- Follow-up (queued) ---\n**You:** ", searchFrom);
     const normalMatch = text.indexOf("\n\n--- Follow-up ---\n**You:** ", searchFrom);
     const btwMatch = text.indexOf("\n\n--- BTW ---\n**You:** ", searchFrom);
+    const cliMatch = text.indexOf("\n\n--- Resumed in CLI ---\n**You:** ", searchFrom);
 
     // Find the earliest match among all variants
     const candidates = [
       { pos: queuedMatch, header: "Follow-up (queued)", full: "\n\n--- Follow-up (queued) ---\n**You:** " },
       { pos: normalMatch, header: "Follow-up", full: "\n\n--- Follow-up ---\n**You:** " },
       { pos: btwMatch, header: "BTW", full: "\n\n--- BTW ---\n**You:** " },
+      { pos: cliMatch, header: "Resumed in CLI", full: "\n\n--- Resumed in CLI ---\n**You:** " },
     ].filter(c => c.pos !== -1);
     candidates.sort((a, b) => a.pos - b.pos);
     const match = candidates[0];
@@ -396,7 +398,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
       return;
     }
     const raw = btwText.trim();
-    if (!raw) return;
+    if (!raw && pendingImages.length === 0) return;
 
     // If message starts with /btw, send as a side-channel btw
     const isBtwMessage = /^\/btw\b/i.test(raw);
@@ -416,9 +418,13 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     } else {
       // Default: queue as a follow-up that runs after the current run finishes
       try {
-        const result = await api.followupTodo(todo.id, raw);
+        const imageFilenames = pendingImages.map((img) => img.filename);
+        const result = await api.followupTodo(todo.id, raw, imageFilenames);
         setBtwText("");
         btwDrafts.delete(todo.id);
+        // Revoke preview URLs
+        pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+        setPendingImages([]);
         if (result.status === "queued") {
           addToast("Follow-up queued — will run when the current task finishes", "info");
         } else {
@@ -660,44 +666,75 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
 
       {/* Message bar — shown when main run is active; default queues follow-up, /btw prefix sends side-channel */}
       {showBtw && !hasQueuedFollowup && (
-        <div className="followup-bar btw-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-          <div className="followup-input-wrapper">
-            <textarea
-              ref={btwInputRef}
-              className="followup-input"
-              rows={1}
-              placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
-              value={btwText}
-              disabled={disabled}
-              onChange={(e) => setBtwText(e.target.value)}
-              onKeyDown={(e) => {
-                if (handleCmdKeyDown(e, btwInputRef, setBtwText, btwText)) return;
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  sendRunningMessage();
-                }
+        <div className="followup-bar btw-bar followup-bar-with-images" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+          {pendingImages.length > 0 && (
+            <div className="followup-image-previews">
+              {pendingImages.map((img, idx) => (
+                <div key={img.filename} className="followup-image-thumb">
+                  <img src={img.previewUrl} alt={`Attached ${idx + 1}`} />
+                  <button className="followup-image-remove" onClick={() => removeImage(idx)} title="Remove image">×</button>
+                </div>
+              ))}
+              {uploading && <div className="followup-image-thumb uploading">…</div>}
+            </div>
+          )}
+          <div className="followup-input-row">
+            <button
+              className="btn-icon btn-attach"
+              onClick={() => imageInputRef.current?.click()}
+              disabled={disabled || uploading}
+              title="Attach image"
+            >📎</button>
+            <input
+              type="file"
+              ref={imageInputRef}
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(e) => {
+                if (e.target.files) handleImageUpload(Array.from(e.target.files));
+                e.target.value = "";
               }}
             />
-            {!showFollowup && cmdSuggestions.length > 0 && (
-              <div className="cmd-suggestions" ref={suggestionsRef}>
-                {cmdSuggestions.map((cmd, i) => (
-                  <button
-                    key={cmd.name}
-                    className={`cmd-suggestion-item${i === selectedSuggestion ? " selected" : ""}`}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      applyCmdSuggestion(cmd.name, btwInputRef, setBtwText, btwText);
-                    }}
-                  >
-                    <span className="cmd-suggestion-name">/{cmd.name}</span>
-                    <span className={`cmd-suggestion-type cmd-type-${cmd.type}`}>{cmd.type}</span>
-                    <span className="cmd-suggestion-desc">{cmd.description}</span>
-                  </button>
-                ))}
-              </div>
-            )}
+            <div className="followup-input-wrapper">
+              <textarea
+                ref={btwInputRef}
+                className="followup-input"
+                rows={1}
+                placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
+                value={btwText}
+                disabled={disabled}
+                onChange={(e) => setBtwText(e.target.value)}
+                onPaste={handleFollowupPaste}
+                onKeyDown={(e) => {
+                  if (handleCmdKeyDown(e, btwInputRef, setBtwText, btwText)) return;
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendRunningMessage();
+                  }
+                }}
+              />
+              {!showFollowup && cmdSuggestions.length > 0 && (
+                <div className="cmd-suggestions" ref={suggestionsRef}>
+                  {cmdSuggestions.map((cmd, i) => (
+                    <button
+                      key={cmd.name}
+                      className={`cmd-suggestion-item${i === selectedSuggestion ? " selected" : ""}`}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        applyCmdSuggestion(cmd.name, btwInputRef, setBtwText, btwText);
+                      }}
+                    >
+                      <span className="cmd-suggestion-name">/{cmd.name}</span>
+                      <span className={`cmd-suggestion-type cmd-type-${cmd.type}`}>{cmd.type}</span>
+                      <span className="cmd-suggestion-desc">{cmd.description}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="btn-icon btn-run" onClick={sendRunningMessage} disabled={disabled} title="Send message">↵</button>
           </div>
-          <button className="btn-icon btn-run" onClick={sendRunningMessage} disabled={disabled} title="Send message">↵</button>
         </div>
       )}
       {/* Output limit warning — shown near follow-up bar */}

@@ -1651,6 +1651,21 @@ body {
   color: var(--text);
 }
 
+/* Manual analysis section */
+.manual-analysis-section {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.manual-analysis-toggle {
+  font-size: 0.75rem !important;
+  color: var(--text-dim) !important;
+  font-weight: 500;
+}
+.manual-analysis-body {
+  margin-top: 4px;
+}
+
 /* Session Picker */
 
 .session-picker-section {

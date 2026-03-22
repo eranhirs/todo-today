@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 _RUNS_DIR = DATA_DIR / "runs"
 _RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-_FLUSH_INTERVAL = 3  # seconds between progress flushes
+_FLUSH_INTERVAL = 5  # seconds between progress flushes
 
 _MAX_PLAN_RETRIES = 3  # max times we'll auto-accept a plan and continue
 
@@ -906,6 +906,34 @@ def _is_already_stopped(todo_id: str) -> bool:
     return False
 
 
+def _count_session_messages(session_id: str, source_path: str) -> int | None:
+    """Count user/assistant messages in a session JSONL file.
+
+    Returns the count, or None if the file doesn't exist or can't be read.
+    """
+    encoded = source_path.replace("/", "-")
+    jsonl_path = Path.home() / ".claude" / "projects" / encoded / f"{session_id}.jsonl"
+    if not jsonl_path.is_file():
+        return None
+    count = 0
+    try:
+        with open(jsonl_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") in ("user", "assistant"):
+                    count += 1
+    except Exception:
+        log.debug("Could not count session messages: %s", jsonl_path, exc_info=True)
+        return None
+    return count
+
+
 def _finalize_run(
     todo_id: str,
     final_result: Optional[dict],
@@ -975,6 +1003,17 @@ def _finalize_run(
                 t.red_flags = red_flags
                 if plan_file:
                     t.plan_file = plan_file
+                # Record session message count for CLI resume sync
+                if t.session_id:
+                    source = ""
+                    for p in ctx.store.projects:
+                        if p.id == t.project_id:
+                            source = p.source_path
+                            break
+                    if source:
+                        count = _count_session_messages(t.session_id, source)
+                        if count is not None:
+                            t.session_msg_count = count
                 if had_errors:
                     t.run_status = "error"
                     bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)
