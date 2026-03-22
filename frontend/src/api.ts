@@ -160,10 +160,10 @@ export const api = {
   dequeueTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/dequeue`, { method: "POST" }),
 
-  followupTodo: (id: string, message: string, images: string[] = []) =>
+  followupTodo: (id: string, message: string, images: string[] = [], planOnly = false) =>
     request<{ status: string }>(`/todos/${id}/followup`, {
       method: "POST",
-      body: JSON.stringify({ message, images }),
+      body: JSON.stringify({ message, images, plan_only: planOnly }),
     }),
 
   editFollowup: (id: string, message: string) =>

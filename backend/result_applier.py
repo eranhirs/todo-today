@@ -165,6 +165,7 @@ def _apply_result(
             t.run_trigger = None
             t.queued_at = None
             t.pending_followup = None
+            t.pending_followup_plan_only = False
         if su.status == "completed" and not was_completed:
             t.completed_at = _now()
             counters.todos_completed += 1
@@ -267,6 +268,7 @@ def _apply_result(
             t.run_trigger = None
             t.queued_at = None
             t.pending_followup = None
+            t.pending_followup_plan_only = False
             changed = True
         if changed:
             counters.todos_modified += 1

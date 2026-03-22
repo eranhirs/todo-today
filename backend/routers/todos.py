@@ -653,6 +653,7 @@ async def dequeue_todo(todo_id: str) -> dict:
 class FollowupRequest(BaseModel):
     message: str
     images: List[str] = []
+    plan_only: bool = False
 
 
 class EditFollowupRequest(BaseModel):
@@ -749,6 +750,7 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                     todo.images = list(todo.images) + new_attachments
                 todo.pending_followup = body.message
                 todo.pending_followup_images = list(body.images)
+                todo.pending_followup_plan_only = body.plan_only
                 return {"status": "queued"}
 
             session_id = todo.session_id
@@ -760,10 +762,11 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
             if not source_path:
                 return {"error": "no_source_path"}
 
-            # Check if another todo in the same project is running
+            # Check if another todo in the same project is running.
+            # Plan-only runs don't count — they can't edit files.
             project_busy = False
             for t in ctx.store.todos:
-                if t.project_id == todo.project_id and t.id != todo_id and (is_todo_running(t.id) or t.run_status == "running"):
+                if t.project_id == todo.project_id and t.id != todo_id and not t.plan_only and (is_todo_running(t.id) or t.run_status == "running"):
                     project_busy = True
                     break
 
@@ -782,6 +785,7 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 todo.queued_at = _now()
                 todo.pending_followup = body.message
                 todo.pending_followup_images = list(body.images)
+                todo.pending_followup_plan_only = body.plan_only
                 # Immediately show the user's follow-up message in the output
                 todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n"
                 return {"status": "queued"}
@@ -797,6 +801,7 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 "proj_id": todo.project_id,
                 "run_model": ctx.metadata.run_model,
                 "followup_images": list(body.images),
+                "plan_only": body.plan_only,
             }
 
     info = await run_in_thread(_do)
@@ -816,7 +821,7 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
     process_manager.spawn_thread(
         todo_id, _followup_claude_for_todo,
-        (todo_id, body.message, info["session_id"], info["source_path"], info["run_model"], info["proj_id"], info["followup_images"]),
+        (todo_id, body.message, info["session_id"], info["source_path"], info["run_model"], info["proj_id"], info["followup_images"], info.get("plan_only", False)),
     )
     return {"status": "started"}
 

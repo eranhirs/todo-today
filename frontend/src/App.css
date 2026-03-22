@@ -2438,6 +2438,15 @@ body {
 .btn-plan:hover:not(:disabled) { color: #fff !important; background: var(--blue) !important; }
 .btn-plan:disabled { opacity: 0.3; cursor: not-allowed; }
 
+.btn-plan-toggle {
+  font-size: 0.65rem !important;
+  color: var(--muted) !important;
+  opacity: 0.5;
+}
+.btn-plan-toggle:hover:not(:disabled) { opacity: 1; color: var(--blue) !important; }
+.btn-plan-toggle.active { opacity: 1; color: var(--blue) !important; }
+.btn-plan-toggle.active:hover:not(:disabled) { background: var(--blue) !important; color: #fff !important; }
+
 .btn-run {
   font-size: 0.75rem !important;
   color: var(--green) !important;

@@ -130,6 +130,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
 
   const [editingFollowup, setEditingFollowup] = useState(false);
   const [editFollowupText, setEditFollowupText] = useState("");
+  const [followupPlanOnly, setFollowupPlanOnly] = useState(false);
   const editFollowupRef = useRef<HTMLTextAreaElement>(null);
 
   // Command autocomplete state (shared — only one input visible at a time)
@@ -375,16 +376,16 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     if (!msg && pendingImages.length === 0) return;
     try {
       const imageFilenames = pendingImages.map((img) => img.filename);
-      const result = await api.followupTodo(todo.id, msg, imageFilenames);
+      const result = await api.followupTodo(todo.id, msg, imageFilenames, followupPlanOnly);
       setFollowupText("");
       followupDrafts.delete(todo.id);
       // Revoke preview URLs
       pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       setPendingImages([]);
       if (result.status === "queued") {
-        addToast("Follow-up queued — will run when the current task finishes", "info");
+        addToast(`Follow-up queued — will ${followupPlanOnly ? "plan" : "run"} when the current task finishes`, "info");
       } else {
-        addToast("Follow-up sent", "info");
+        addToast(followupPlanOnly ? "Plan-only follow-up sent" : "Follow-up sent", "info");
       }
       onRefresh();
     } catch {
@@ -823,7 +824,13 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
                 </div>
               )}
             </div>
-            <button className="btn-icon btn-run" onClick={sendFollowup} disabled={disabled} title="Send follow-up">↵</button>
+            <button
+              className={`btn-icon btn-plan-toggle${followupPlanOnly ? " active" : ""}`}
+              onClick={() => setFollowupPlanOnly((v) => !v)}
+              disabled={disabled}
+              title={followupPlanOnly ? "Plan only (no code changes)" : "Click to switch to plan-only mode"}
+            >📋</button>
+            <button className="btn-icon btn-run" onClick={sendFollowup} disabled={disabled} title={followupPlanOnly ? "Send plan-only follow-up" : "Send follow-up"}>↵</button>
           </div>
         </div>
       )}

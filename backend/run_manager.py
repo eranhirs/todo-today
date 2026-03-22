@@ -196,12 +196,14 @@ def _runs_in_window(project_id: str, todos: list, hours: int = 24) -> int:
 # ── Helpers ──────────────────────────────────────────────────────
 
 
-def _flush_progress(todo_id: str, output: str) -> None:
+def _flush_progress(todo_id: str, output: str, flush_lines: int | None = None) -> None:
     """Write current accumulated output to the store."""
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
                 t.run_output = cap_output(output)
+                if flush_lines is not None:
+                    t.run_flush_lines = flush_lines
                 break
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
@@ -636,7 +638,7 @@ def _tail_output_file(
 
         now = time.monotonic()
         if now - last_flush >= _FLUSH_INTERVAL and accumulated:
-            _flush_progress(todo_id, session_header + "\n".join(accumulated))
+            _flush_progress(todo_id, session_header + "\n".join(accumulated), flush_lines=len(accumulated))
             last_flush = now
 
         if not alive:
@@ -646,7 +648,7 @@ def _tail_output_file(
 
     # Final flush
     if accumulated:
-        _flush_progress(todo_id, session_header + "\n".join(accumulated))
+        _flush_progress(todo_id, session_header + "\n".join(accumulated), flush_lines=len(accumulated))
 
     return final_result, stream_objects
 
@@ -662,6 +664,7 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
     """
     followup_msg = None
     followup_images: list[str] = []
+    followup_plan_only = False
     session_id = None
     with StorageContext() as ctx:
         for t in ctx.store.todos:
@@ -669,9 +672,11 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
                 if t.pending_followup:
                     followup_msg = t.pending_followup
                     followup_images = list(t.pending_followup_images)
+                    followup_plan_only = t.pending_followup_plan_only
                     session_id = t.session_id
                     t.pending_followup = None
                     t.pending_followup_images = []
+                    t.pending_followup_plan_only = False
                     t.run_status = "running"
                     t.status = "in_progress"
                     t.completed_at = None
@@ -684,7 +689,7 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
     if followup_msg and session_id:
         process_manager.spawn_thread(
             todo_id, _followup_claude_for_todo,
-            (todo_id, followup_msg, session_id, source_path, model, project_id, followup_images),
+            (todo_id, followup_msg, session_id, source_path, model, project_id, followup_images, followup_plan_only),
         )
         return True
     return False
@@ -865,7 +870,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 autopilot_continue(project_id)
 
 
-def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "", images: list[str] | None = None) -> None:
+def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "", images: list[str] | None = None, plan_only: bool = False) -> None:
     """Background thread: send a follow-up message to an existing Claude session."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
     try:
@@ -898,6 +903,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
         final_result, stream_objects, returncode = _invoke_claude(
             todo_id, prompt, session_id, source_path, model, env,
             accumulated, session_header, output_file, resume=True,
+            plan_only=plan_only,
         )
 
         _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
@@ -1102,28 +1108,57 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
 
     output_file = Path(output_file_str)
 
-    # Capture existing output and file position BEFORE starting watcher thread
     existing_output = ""
+    flush_lines: int | None = None
     proj_id = ""
     with StorageContext(read_only=True) as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
                 existing_output = t.run_output or ""
+                flush_lines = t.run_flush_lines
                 proj_id = t.project_id
                 break
 
-    # Get current file size so we only tail NEW content
+    # Recover any output written to the file between the last flush and
+    # server death.  Re-read the entire file to extract text lines, then
+    # compare against the flushed line count to detect a gap.
     try:
         file_start_pos = output_file.stat().st_size
     except (OSError, FileNotFoundError):
         file_start_pos = 0
 
+    gap_text = ""
+    if flush_lines is not None:
+        file_lines: list[str] = []
+        try:
+            with open(output_file, "r") as f:
+                for raw_line in f:
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    try:
+                        obj = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    text = _extract_assistant_text(obj)
+                    if text:
+                        file_lines.append(text)
+        except (FileNotFoundError, OSError):
+            pass
+        missed = file_lines[flush_lines:]
+        if missed:
+            gap_text = (
+                "\n\n[Server restarted — recovered {} line(s) of untracked output]\n\n".format(len(missed))
+                + "\n".join(missed)
+            )
+            log.info("Recovered %d missed lines for todo %s on reconnect", len(missed), todo_id)
+
     def _watcher():
         try:
             log.info("Reconnecting to claude run for todo %s (pid %d)", todo_id, pid)
             accumulated: list[str] = []
-            # Preserve existing output, then append reconnect marker
-            session_header = existing_output + "\n\n[Reconnected after server restart]\n\n" if existing_output else "[Reconnected after server restart]\n\n"
+            # Preserve all prior output, appending any recovered gap content.
+            session_header = existing_output + gap_text
 
             final_result, stream_objects = _tail_output_file(
                 todo_id, pid, output_file, accumulated, session_header,
@@ -1234,11 +1269,12 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         if not source_path:
             return "no source_path"
 
-        # Check if another todo in the same project is running
-        # Check both in-memory threads AND persisted run_status (survives server restarts)
+        # Check if another todo in the same project is running.
+        # Plan-only runs don't count — they can't edit files, so they're safe
+        # to run concurrently with other tasks.
         project_busy = False
         for t in ctx.store.todos:
-            if t.project_id == todo.project_id and t.id != todo_id and (is_todo_running(t.id) or t.run_status == "running"):
+            if t.project_id == todo.project_id and t.id != todo_id and not t.plan_only and (is_todo_running(t.id) or t.run_status == "running"):
                 project_busy = True
                 break
 
@@ -1254,7 +1290,7 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
 
         trigger = "autopilot" if autopilot else "manual"
 
-        if project_busy:
+        if project_busy and not todo.plan_only:
             if autopilot:
                 # Don't queue autopilot runs — they'll be picked up on completion
                 return "busy"
@@ -1264,6 +1300,9 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
             todo.queued_at = _now()
             bus.emit_event_sync(EventType.RUN_QUEUED, todo_id=todo_id, project_id=todo.project_id)
             return "queued"
+        # plan_only runs (Add & Plan) skip the queue — they can't edit files,
+        # so they're safe to run concurrently. Follow-up messages on plan todos
+        # still go through followup_todo() which queues normally.
 
         todo.status = "in_progress"
         todo.run_status = "running"
@@ -1319,6 +1358,7 @@ def _process_queue(project_id: str) -> None:
                 t.queued_at = None
                 t.pending_followup = None
                 t.pending_followup_images = []
+                t.pending_followup_plan_only = False
             return
 
         # NOTE: No quota check here — items already in the queue were approved
@@ -1340,15 +1380,18 @@ def _process_queue(project_id: str) -> None:
         followup_msg = candidate.pending_followup
         followup_session = candidate.session_id if followup_msg else None
         followup_images = list(candidate.pending_followup_images) if followup_msg else None
+        followup_plan_only = candidate.pending_followup_plan_only if followup_msg else False
         if followup_msg and followup_session:
             candidate.pending_followup = None
             candidate.pending_followup_images = []
+            candidate.pending_followup_plan_only = False
         else:
             # Clear any orphaned pending_followup (no session to resume into)
             if candidate.pending_followup:
                 log.warning("Queue: clearing orphaned pending_followup on todo %s (no session_id)", candidate.id)
                 candidate.pending_followup = None
                 candidate.pending_followup_images = []
+                candidate.pending_followup_plan_only = False
                 followup_msg = None
             candidate.run_output = None
 
@@ -1356,7 +1399,7 @@ def _process_queue(project_id: str) -> None:
     if followup_session and followup_msg:
         process_manager.spawn_thread(
             todo_id, _followup_claude_for_todo,
-            (todo_id, followup_msg, followup_session, source_path, run_model, project_id, followup_images),
+            (todo_id, followup_msg, followup_session, source_path, run_model, project_id, followup_images, followup_plan_only),
         )
     else:
         process_manager.spawn_thread(
@@ -1435,6 +1478,7 @@ def dequeue_todo_run(todo_id: str) -> str | None:
                 t.queued_at = None
                 t.pending_followup = None
                 t.pending_followup_images = []
+                t.pending_followup_plan_only = False
                 return None
     return "todo not found"
 
@@ -1458,6 +1502,7 @@ def cancel_pending_followup(todo_id: str) -> str | None:
 
                 t.pending_followup = None
                 t.pending_followup_images = []
+                t.pending_followup_plan_only = False
 
                 # Remove the queued follow-up line from run_output
                 if t.run_output:

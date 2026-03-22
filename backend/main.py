@@ -115,6 +115,7 @@ def _cleanup_stale_runs() -> None:
                 log.info("Clearing orphaned pending_followup on todo %s (run_status=%s)", t.id, t.run_status)
                 t.pending_followup = None
                 t.pending_followup_images = []
+                t.pending_followup_plan_only = False
 
     # Fix todos with a session but null run_status — they should be "done" so
     # the follow-up bar remains available.

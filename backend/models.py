@@ -56,6 +56,7 @@ class Todo(BaseModel):
     run_started_at: Optional[str] = None
     pending_followup: Optional[str] = None
     pending_followup_images: List[str] = []
+    pending_followup_plan_only: bool = False
     pending_btw: Optional[str] = None
     btw_output: Optional[str] = None
     btw_status: Optional[Literal["running", "done", "error"]] = None
@@ -65,6 +66,7 @@ class Todo(BaseModel):
     plan_only: bool = False  # When True, agent plans but cannot implement
     manual: bool = False  # When True, task is for human execution — cannot be run by Claude
     is_command: bool = False  # When True, todo is a skill/command execution (contains /skill or /command token)
+    run_flush_lines: Optional[int] = None  # Accumulated text lines at last flush (for reconnect gap detection)
     sort_order: int = 0
     user_ordered: bool = False
     original_text: Optional[str] = None  # Preserved when analyzer renames a user-created todo text

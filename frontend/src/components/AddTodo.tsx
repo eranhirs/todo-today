@@ -75,18 +75,21 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
   const dropdownRef = useRef<HTMLDivElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
   const [modifierHeld, setModifierHeld] = useState(false);
+  const [altHeld, setAltHeld] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [uploading, setUploading] = useState(false);
 
-  // Track Cmd/Ctrl held state for button label
+  // Track Cmd/Ctrl and Alt held state for button label
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       if (e.key === "Meta" || e.key === "Control") setModifierHeld(true);
+      if (e.key === "Alt") setAltHeld(true);
     };
     const up = (e: KeyboardEvent) => {
       if (e.key === "Meta" || e.key === "Control") setModifierHeld(false);
+      if (e.key === "Alt") setAltHeld(false);
     };
-    const blur = () => setModifierHeld(false);
+    const blur = () => { setModifierHeld(false); setAltHeld(false); };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     window.addEventListener("blur", blur);
@@ -417,7 +420,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
 
   const needsProjectSelector = !projectId && projects && projects.length > 0;
 
-  const effectiveMode = modifierHeld ? "add-run" : mode;
+  const effectiveMode = modifierHeld ? "add-run" : altHeld ? "add-plan" : mode;
   const modeIcons: Record<AddMode, string> = { "add": "+", "add-run": "▶", "add-plan": "📋" };
   const modeLabels: Record<AddMode, string> = { "add": "Add", "add-run": "Add & Run", "add-plan": "Add & Plan" };
   const icon = modeIcons[effectiveMode];
@@ -494,6 +497,11 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
             if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
               e.preventDefault();
               handleAdd("add-run");
+              return;
+            }
+            if (e.key === "Enter" && e.altKey) {
+              e.preventDefault();
+              handleAdd("add-plan");
               return;
             }
             if (e.key === "Enter") {
