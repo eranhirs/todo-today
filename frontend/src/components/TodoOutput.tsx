@@ -124,13 +124,14 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const [uploading, setUploading] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
   const btwOutputRef = useRef<HTMLPreElement>(null);
+  const runPinnedToBottom = useRef(true);
+  const btwPinnedToBottom = useRef(true);
   const followupRef = useRef<HTMLTextAreaElement>(null);
   const btwInputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const [editingFollowup, setEditingFollowup] = useState(false);
   const [editFollowupText, setEditFollowupText] = useState("");
-  const [followupPlanOnly, setFollowupPlanOnly] = useState(false);
   const editFollowupRef = useRef<HTMLTextAreaElement>(null);
 
   // Command autocomplete state (shared — only one input visible at a time)
@@ -201,16 +202,30 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     }
   }, [isBtwRunning, showOutput]);
 
-  // Auto-scroll output to bottom as it streams
+  // Re-pin to bottom when output is first opened or tab switches
   useEffect(() => {
-    if (showOutput && activeTab === "run" && outputRef.current) {
+    if (showOutput) {
+      runPinnedToBottom.current = true;
+      btwPinnedToBottom.current = true;
+      if (activeTab === "run" && outputRef.current) {
+        outputRef.current.scrollTop = outputRef.current.scrollHeight;
+      }
+      if (activeTab === "btw" && btwOutputRef.current) {
+        btwOutputRef.current.scrollTop = btwOutputRef.current.scrollHeight;
+      }
+    }
+  }, [showOutput, activeTab]);
+
+  // Auto-scroll output to bottom as it streams (only if pinned)
+  useEffect(() => {
+    if (showOutput && activeTab === "run" && outputRef.current && runPinnedToBottom.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
   }, [showOutput, activeTab, todo.run_output]);
 
-  // Auto-scroll btw output
+  // Auto-scroll btw output (only if pinned)
   useEffect(() => {
-    if (showOutput && activeTab === "btw" && btwOutputRef.current) {
+    if (showOutput && activeTab === "btw" && btwOutputRef.current && btwPinnedToBottom.current) {
       btwOutputRef.current.scrollTop = btwOutputRef.current.scrollHeight;
     }
   }, [showOutput, activeTab, todo.btw_output]);
@@ -367,7 +382,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     }
   }, [handleImageUpload]);
 
-  const sendFollowup = async () => {
+  const sendFollowup = async (planOnly: boolean) => {
     if (disabled) {
       addToast("You're offline — follow-ups aren't available right now", "warning");
       return;
@@ -376,16 +391,16 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     if (!msg && pendingImages.length === 0) return;
     try {
       const imageFilenames = pendingImages.map((img) => img.filename);
-      const result = await api.followupTodo(todo.id, msg, imageFilenames, followupPlanOnly);
+      const result = await api.followupTodo(todo.id, msg, imageFilenames, planOnly);
       setFollowupText("");
       followupDrafts.delete(todo.id);
       // Revoke preview URLs
       pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       setPendingImages([]);
       if (result.status === "queued") {
-        addToast(`Follow-up queued — will ${followupPlanOnly ? "plan" : "run"} when the current task finishes`, "info");
+        addToast(`Follow-up queued — will ${planOnly ? "plan" : "run"} when the current task finishes`, "info");
       } else {
-        addToast(followupPlanOnly ? "Plan-only follow-up sent" : "Follow-up sent", "info");
+        addToast(planOnly ? "Plan-only follow-up sent" : "Follow-up sent", "info");
       }
       onRefresh();
     } catch {
@@ -573,7 +588,10 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
               {expanded ? "⤡" : "⤢"}
             </button>
           </div>
-          <pre ref={outputRef} className={expanded ? "expanded" : ""}>{renderOutput(todo.run_output)}</pre>
+          <pre ref={outputRef} className={expanded ? "expanded" : ""} onScroll={(e) => {
+            const el = e.currentTarget;
+            runPinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+          }}>{renderOutput(todo.run_output)}</pre>
         </div>
       )}
 
@@ -631,7 +649,10 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
               {expanded ? "⤡" : "⤢"}
             </button>
           </div>
-          <pre ref={btwOutputRef} className={expanded ? "expanded" : ""}>{renderBtwOutput(todo.btw_output)}</pre>
+          <pre ref={btwOutputRef} className={expanded ? "expanded" : ""} onScroll={(e) => {
+            const el = e.currentTarget;
+            btwPinnedToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+          }}>{renderBtwOutput(todo.btw_output)}</pre>
         </div>
       )}
 
@@ -801,7 +822,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
                   if (handleCmdKeyDown(e, followupRef, setFollowupText, followupText)) return;
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    sendFollowup();
+                    sendFollowup(e.altKey);
                   }
                 }}
               />
@@ -825,12 +846,12 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
               )}
             </div>
             <button
-              className={`btn-icon btn-plan-toggle${followupPlanOnly ? " active" : ""}`}
-              onClick={() => setFollowupPlanOnly((v) => !v)}
+              className="btn-icon btn-plan"
+              onClick={() => sendFollowup(true)}
               disabled={disabled}
-              title={followupPlanOnly ? "Plan only (no code changes)" : "Click to switch to plan-only mode"}
+              title="Send plan-only follow-up (Alt+Enter)"
             >📋</button>
-            <button className="btn-icon btn-run" onClick={sendFollowup} disabled={disabled} title={followupPlanOnly ? "Send plan-only follow-up" : "Send follow-up"}>↵</button>
+            <button className="btn-icon btn-run" onClick={() => sendFollowup(false)} disabled={disabled} title="Send follow-up (Enter)">▶</button>
           </div>
         </div>
       )}

@@ -155,7 +155,7 @@ async def _git_update_check_job() -> None:
     """Periodic job: check if there are new commits to pull from origin/main.
 
     Respects backoff from consecutive failures — skips ticks rather than
-    hammering a broken remote every 30 seconds.
+    hammering a broken remote every 5 minutes.
     """
     global _git_check_skip_counter
     if DEMO_MODE:
@@ -409,7 +409,7 @@ def start_scheduler() -> None:
     scheduler.add_job(
         _git_update_check_job,
         "interval",
-        seconds=30,
+        minutes=5,
         id="git_update_check",
         max_instances=1,
         replace_existing=True,

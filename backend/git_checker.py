@@ -25,7 +25,7 @@ _TODO_PREFIX = "Pull latest changes from main"
 
 # Backoff: consecutive fetch failures increase the delay before retrying
 _consecutive_failures = 0
-_MAX_BACKOFF_MULTIPLIER = 20  # cap at 20x the base interval (30s * 20 = 10 min)
+_MAX_BACKOFF_MULTIPLIER = 6  # cap at 6x the base interval (5m * 6 = 30 min)
 
 
 def skips_remaining() -> int:
