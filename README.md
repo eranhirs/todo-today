@@ -116,6 +116,24 @@ You can monitor all of this from the Dashboard — watching completion rates cli
 | Storage  | JSON files (atomic writes)   |
 | AI       | Claude CLI (`claude -p`)     |
 
+## Related Projects
+
+Claude Todos sits in a growing ecosystem of Claude Code task management and orchestration tools. Its core differentiator is the **session-awareness → task-discovery → autopilot loop**: hooks capture session events, analysis extracts tasks from transcripts, and Autopilot executes them — no other project combines all three.
+
+| Project | Stars | Focus | How it differs from Claude Todos |
+|---|---|---|---|
+| [Claude Task Master](https://github.com/eyaltoledano/claude-task-master) | ~14.9k | MCP-based task manager | Editor-integrated; no session awareness, no autopilot, no web UI |
+| [Claude Squad](https://github.com/smtg-ai/claude-squad) | ~7.6k | Multi-agent terminal manager | Parallel agents via tmux; no task discovery — you tell it what to run |
+| [Aperant (Auto-Claude)](https://github.com/AndyMik90/Auto-Claude) | ~2.4k | Autonomous multi-agent framework | Electron desktop app with up to 12 parallel agents; no session-aware task discovery |
+| [CCPM](https://github.com/automazeio/ccpm) | ~900 | Spec-driven PM workflow | PRD → GitHub Issues pipeline; agent-agnostic but no autopilot or web UI |
+| [Simone](https://github.com/Helmi/claude-simone) | ~550 | Structured project management | MCP-based prompts and tools; no automation or session awareness |
+| [Ralph Orchestrator](https://github.com/mikeyobrien/ralph-orchestrator) | ~500 | Autonomous loop orchestrator | "Loop until done" pattern; no task discovery from session transcripts |
+| [Scopecraft Command](https://github.com/scopecraft/command) | ~300 | Markdown-driven task manager | MDTM files + MCP; Docker dispatch for autonomous execution |
+| [TSK](https://github.com/dtormoen/tsk) | ~200 | Sandboxed agent task runner | Docker-isolated parallel agents; multi-model but no session analysis |
+| [Swarm](https://github.com/bschleifer/swarm) | ~3 | Web control center for agents | Closest architectural match (web UI + hooks + autopilot) but lacks session-to-task discovery |
+
+For a full feature-by-feature comparison with verbatim README evidence, see [docs/related-projects.md](docs/related-projects.md).
+
 ## Documentation
 
 - [Architecture](docs/architecture.md) — system overview and directory structure
@@ -123,6 +141,7 @@ You can monitor all of this from the Dashboard — watching completion rates cli
 - [Analysis Pipeline](docs/analysis.md) — how Claude analyzes sessions
 - [Hooks](docs/hooks.md) — real-time session monitoring via Claude Code hooks
 - [API Reference](docs/api.md) — all REST endpoints
+- [Related Projects](docs/related-projects.md) — detailed comparisons
 
 ## License
 
