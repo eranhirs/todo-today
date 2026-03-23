@@ -1041,10 +1041,28 @@ def _finalize_run(
                 real_denials = denials  # unexpected format, treat as real
             if real_denials:
                 had_errors = True
-                if isinstance(real_denials, list):
-                    error_details.append(f"permission_denials: {', '.join(str(d) for d in real_denials[:10])}")
-                else:
-                    error_details.append(f"permission_denials: {str(real_denials)[:500]}")
+                # Build human-readable summaries instead of raw dicts
+                summaries = []
+                for d in (real_denials if isinstance(real_denials, list) else [real_denials]):
+                    if isinstance(d, dict):
+                        tool = d.get("tool_name", "?")
+                        inp = d.get("tool_input", {})
+                        file_path = inp.get("file_path", "") if isinstance(inp, dict) else ""
+                        if file_path and "/.claude/" in file_path:
+                            summaries.append(
+                                f"{tool} → {file_path} (Claude CLI blocks Write/Edit "
+                                f"to .claude/ paths even with --dangerously-skip-permissions)"
+                            )
+                        elif file_path:
+                            summaries.append(f"{tool} → {file_path}")
+                        else:
+                            detail = ""
+                            if tool == "Bash" and isinstance(inp, dict):
+                                detail = f": {inp.get('command', '')[:80]}"
+                            summaries.append(f"{tool}{detail}")
+                    else:
+                        summaries.append(str(d)[:200])
+                error_details.append(f"permission_denials: {'; '.join(summaries)}")
 
     if had_errors:
         error_summary = "; ".join(error_details)
