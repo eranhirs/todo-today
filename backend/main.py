@@ -19,6 +19,7 @@ from .event_bus import bus
 from .models import ErrorResponse, FullState, _now
 from .routers import claude, projects, todos
 from .run_manager import (
+    _detect_plan_file,
     _process_queue,
     autopilot_continue,
     cap_output,
@@ -59,7 +60,7 @@ def _cleanup_stale_runs() -> None:
         elif run_pid and run_output_file:
             # Process finished while server was down — parse output file
             log.info("Parsing completed output file for todo %s", todo_id)
-            final_result, accumulated = parse_output_file_result(run_output_file)
+            final_result, accumulated, stream_objects = parse_output_file_result(run_output_file)
             output_text = "\n".join(accumulated)
             had_errors = False
             if final_result:
@@ -71,6 +72,9 @@ def _cleanup_stale_runs() -> None:
                 if final_result.get("permission_denials"):
                     had_errors = True
 
+            # Detect plan file from stream objects
+            plan_file = _detect_plan_file(stream_objects)
+
             with StorageContext() as ctx:
                 for t in ctx.store.todos:
                     if t.id == todo_id:
@@ -80,12 +84,20 @@ def _cleanup_stale_runs() -> None:
                         t.run_output = cap_output(recovery_header + output_text) if output_text else t.run_output
                         t.run_pid = None
                         t.run_output_file = None
+                        if plan_file:
+                            t.plan_file = plan_file
                         if had_errors or not final_result:
                             t.run_status = "error"
                             if not final_result:
                                 t.run_output = (t.run_output or "") + "\n[Process exited without result]"
                             if t.status == "in_progress":
                                 t.status = "next"
+                        elif t.plan_only:
+                            # Plan-only runs are done once the plan is produced
+                            t.run_status = "done"
+                            t.status = "completed"
+                            t.completed_at = _now()
+                            t.completed_by_run = True
                         else:
                             t.run_status = "done"
                             t.status = "completed"

@@ -906,7 +906,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
             plan_only=plan_only,
         )
 
-        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
+        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only)
 
     except Exception as e:
         log.exception("Claude follow-up error for todo %s", todo_id)
@@ -1097,9 +1097,11 @@ def _finalize_run(
                     t.run_status = "error"
                     bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)
                 elif plan_only:
-                    # Plan-only runs produce a plan but don't complete the todo
+                    # Plan-only runs are done once the plan is produced
                     t.run_status = "done"
-                    t.status = "next"
+                    t.status = "completed"
+                    t.completed_at = _now()
+                    t.completed_by_run = True
                     bus.emit_event_sync(EventType.RUN_COMPLETED, todo_id=todo_id)
                 else:
                     t.run_status = "done"
@@ -1129,12 +1131,14 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
     existing_output = ""
     flush_lines: int | None = None
     proj_id = ""
+    is_plan_only = False
     with StorageContext(read_only=True) as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
                 existing_output = t.run_output or ""
                 flush_lines = t.run_flush_lines
                 proj_id = t.project_id
+                is_plan_only = t.plan_only
                 break
 
     # Recover any output written to the file between the last flush and
@@ -1186,7 +1190,13 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
             # Wait for the process to fully exit and get return code
             returncode = process_manager.reap_process(pid)
 
-            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file)
+            # Re-parse the FULL output file for stream objects so that plan
+            # detection (EnterPlanMode, ExitPlanMode, Write to .claude/plans/)
+            # works even when the server restarted mid-run and _tail_output_file
+            # only captured objects from the restart point onward.
+            _, _, all_stream_objects = parse_output_file_result(str(output_file))
+
+            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=is_plan_only, stream_objects=all_stream_objects)
 
         except Exception as e:
             log.exception("Reconnect error for todo %s", todo_id)
@@ -1212,18 +1222,20 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
     process_manager.spawn_thread(todo_id, _watcher)
 
 
-def parse_output_file_result(output_file_str: str) -> tuple[Optional[dict], list[str]]:
-    """Parse a completed output file to extract final result and accumulated text.
+def parse_output_file_result(output_file_str: str) -> tuple[Optional[dict], list[str], list[dict]]:
+    """Parse a completed output file to extract final result, accumulated text, and stream objects.
 
-    Used when the subprocess finished while the server was down.
-    Returns (final_result, accumulated_texts).
+    Used when the subprocess finished while the server was down, or to
+    recover full stream context after a server restart.
+    Returns (final_result, accumulated_texts, stream_objects).
     """
     output_file = Path(output_file_str)
     final_result = None
     accumulated: list[str] = []
+    stream_objects: list[dict] = []
 
     if not output_file.exists():
-        return None, []
+        return None, [], []
 
     try:
         with open(output_file, "r") as f:
@@ -1236,6 +1248,8 @@ def parse_output_file_result(output_file_str: str) -> tuple[Optional[dict], list
                 except json.JSONDecodeError:
                     continue
 
+                stream_objects.append(obj)
+
                 if obj.get("type") == "result":
                     final_result = obj
                     continue
@@ -1246,7 +1260,7 @@ def parse_output_file_result(output_file_str: str) -> tuple[Optional[dict], list
     except Exception:
         log.debug("Could not parse output file %s", output_file)
 
-    return final_result, accumulated
+    return final_result, accumulated, stream_objects
 
 
 # ── Queue & status ───────────────────────────────────────────────
