@@ -2,34 +2,34 @@
 
 Analysis of projects from [awesome-claude-code](https://github.com/hesreallyhim/awesome-claude-code) and GitHub search that overlap with Claude Todos.
 
-**Last updated**: 2026-03-23
+**Last updated**: 2026-03-25
 
 ---
 
 ## Feature Comparison Matrix
 
-| Project | Stars | Auto-discover | Autopilot | Web UI | Parallel | Cost | Hooks | Multi-model |
-|---|---|---|---|---|---|---|---|---|
-| **Claude Todos** | — | **Yes** | **Yes** | **Yes** | No | **Yes** | **Yes** | No |
-| Claude Task Master | ~14.9k | No | No | No | No | No | No | **Yes** |
-| Claude Squad | ~7.6k | No | Partial | No | **Yes** | No | No | **Yes** |
-| Aperant (Auto-Claude) | ~2.4k | No | **Yes** | Desktop | **Yes** | No | No | No |
-| CCPM | ~900 | No | No | No | **Yes** | No | No | **Yes** |
-| OctoAlly | ~57 | No | No | **Yes** | **Yes** | No | No | No |
-| Simone | ~550 | No | No | No | No | No | No | **Yes** |
-| Ralph Orchestrator | ~500 | No | **Yes** | Alpha | No | No | No | **Yes** |
-| Scopecraft Command | ~300 | No | Partial | No | Partial | No | No | **Yes** |
-| Omnara | ~300 | No | No | **Yes** | No | No | No | Partial |
-| Happy Coder | ~200 | No | No | **Yes** | No | No | No | **Yes** |
-| TSK | ~200 | No | **Yes** | No | **Yes** | No | No | **Yes** |
-| Claude Task Runner | ~100 | No | **Yes** | No | Partial | No | No | No |
-| Sudocode | ~? | No | **Yes** | **Yes** | **Yes** | No | No | **Yes** |
-| CC Orchestrator | ~8 | Partial | Partial | **Yes** | **Yes** | **Yes** | No | No |
-| Swarm | ~3 | No | **Yes** | **Yes** | **Yes** | No | **Yes** | **Yes** |
-| Claudit | ~3 | No | No | **Yes** | No | No | No | No |
-| ClawWarden | ~4 | No | Partial | **Yes** | **Yes** | No | No | No |
+| Project | Stars | Auto-discover | Autopilot | Web UI | Parallel | Cost | Hooks | Multi-model | Pricing |
+|---|---|---|---|---|---|---|---|---|---|
+| **Claude Todos** | — | **Yes** | **Yes** | **Yes** | No | **Yes** | **Yes** | No | Free (MIT) |
+| Claude Task Master | ~14.9k | No | No | No | No | No | No | **Yes** | Free† ([MIT + Commons Clause](https://github.com/eyaltoledano/claude-task-master)) |
+| Claude Squad | ~7.6k | No | Partial | No | **Yes** | No | No | **Yes** | Free ([AGPL-3.0](https://github.com/smtg-ai/claude-squad)) |
+| Aperant (Auto-Claude) | ~2.4k | No | **Yes** | Desktop | **Yes** | No | No | No | Free ([AGPL-3.0](https://github.com/AndyMik90/Auto-Claude)) |
+| CCPM | ~900 | No | No | No | **Yes** | No | No | **Yes** | Free ([MIT](https://github.com/automazeio/ccpm)) |
+| OctoAlly | ~57 | No | No | **Yes** | **Yes** | No | No | No | Free† ([Apache 2.0 + Commons Clause](https://github.com/ai-genius-automations/octoally)) |
+| Simone | ~550 | No | No | No | No | No | No | **Yes** | Free ([MIT](https://github.com/Helmi/claude-simone)) |
+| Ralph Orchestrator | ~500 | No | **Yes** | Alpha | No | No | No | **Yes** | Free ([MIT](https://github.com/mikeyobrien/ralph-orchestrator)) |
+| Scopecraft Command | ~300 | No | Partial | No | Partial | No | No | **Yes** | Free ([MIT](https://github.com/scopecraft/command)) |
+| Omnara | ~300 | No | No | **Yes** | No | No | No | Partial | Freemium ([Apache 2.0](https://github.com/omnara-ai/omnara); [paid tiers](https://www.omnara.com/)) |
+| Happy Coder | ~200 | No | No | **Yes** | No | No | No | **Yes** | Free ([MIT](https://github.com/slopus/happy)) |
+| TSK | ~200 | No | **Yes** | No | **Yes** | No | No | **Yes** | Free ([MIT](https://github.com/dtormoen/tsk)) |
+| Claude Task Runner | ~100 | No | **Yes** | No | Partial | No | No | No | Free ([MIT](https://github.com/grahama1970/claude-task-runner)) |
+| Sudocode | ~? | No | **Yes** | **Yes** | **Yes** | No | No | **Yes** | Free ([Apache 2.0](https://github.com/sudocode-ai/sudocode)) |
+| CC Orchestrator | ~8 | Partial | Partial | **Yes** | **Yes** | **Yes** | No | No | Free ([MIT](https://github.com/trillion-labs/claude-code-orchestrator)) |
+| Swarm | ~3 | No | **Yes** | **Yes** | **Yes** | No | **Yes** | **Yes** | Free ([MIT](https://github.com/bschleifer/swarm)) |
+| Claudit | ~3 | No | No | **Yes** | No | No | No | No | Free ([Apache 2.0](https://github.com/HarmonicSecurity/claudit-sec)) |
+| ClawWarden | ~4 | No | Partial | **Yes** | **Yes** | No | No | No | Free ([MIT](https://github.com/johnzfitch/claude-warden)) |
 
-**Legend**: Bold **Yes** = full support. "Partial" = limited or experimental.
+**Legend**: Bold **Yes** = full support. "Partial" = limited or experimental. †Commons Clause restricts commercial resale but is free to use.
 
 ---
 
@@ -57,6 +57,7 @@ The dominant project in this space, but fundamentally different: it's an **MCP-b
 | **Parallel agents** | No | — |
 | **Cost tracking** | No | — |
 | **Multi-model** | Yes | Supports *"claude-code/opus"* and *"claude-code/sonnet"*; also OpenAI, Gemini, Perplexity, xAI |
+| **Pricing** | Free (restricted) | MIT + Commons Clause — free to use, but commercial resale is prohibited |
 
 **Overlap**: Low. Different paradigm (editor-integrated vs. standalone dashboard). Complementary.
 
@@ -74,6 +75,7 @@ Polished Go TUI for running multiple Claude instances in parallel via tmux + wor
 | **Autopilot** | Partial | *"Complete tasks in the background (including yolo / auto-accept mode!)"* |
 | **Parallel agents** | Yes | *"allowing you to work on multiple tasks simultaneously"* + *"Each task gets its own isolated git workspace, so no conflicts"* |
 | **Multi-model** | Yes | *"manages multiple Claude Code, Codex, Gemini (and other local agents including Aider)"* |
+| **Pricing** | Free | AGPL-3.0 (copyleft) |
 
 **Overlap**: Low-Medium. Complementary — Claude Todos discovers *what*; Squad manages *how many*.
 
@@ -90,6 +92,7 @@ An Electron desktop app with up to 12 parallel agents and self-validating QA loo
 | **Autopilot** | Yes | *"Describe your goal; agents handle planning, implementation, and validation"* |
 | **Parallel agents** | Yes | *"Run multiple builds simultaneously with up to 12 agent terminals"* |
 | **Bonus** | Memory layer | *"Memory Layer - Agents retain insights across sessions for smarter builds"* |
+| **Pricing** | Free | AGPL-3.0 (commercial license available for closed-source use) |
 
 **Overlap**: Medium. Overlaps on autopilot and task visualization, but lacks session discovery and is desktop-only.
 
@@ -103,6 +106,7 @@ An Electron desktop app with up to 12 parallel agents and self-validating QA loo
 | **Interface** | CLI + GitHub Issues | *"requires: `git` and `gh` CLI (authenticated: `gh auth login`)"* |
 | **Parallel agents** | Yes | *"Parallel agents on independent streams"* |
 | **Multi-model** | Yes (agent-agnostic) | *"It works with any Agent Skills–compatible harness that supports skills: Claude Code, Codex, OpenCode, Factory, Amp, Cursor, and more."* |
+| **Pricing** | Free | MIT |
 
 ---
 
@@ -113,6 +117,7 @@ An Electron desktop app with up to 12 parallel agents and self-validating QA loo
 | **Description** | Project/task management | *"provides structured prompts and tools to help AI assistants understand and work with your projects effectively"* |
 | **Interface** | CLI + MCP | Legacy directory-based system + newer MCP server |
 | **Multi-model** | Yes (agent-agnostic) | Universal installer works with any MCP-compatible client |
+| **Pricing** | Free | MIT |
 
 ---
 
@@ -127,6 +132,7 @@ Implements autonomous loops that keep running until tests pass. The "loop until 
 | **Autopilot** | Yes (loop) | *"Ralph iterates until it outputs `LOOP_COMPLETE` or hits the iteration limit."* |
 | **Multi-model** | Yes | *"ralph init --backend claude"* — also supports Kiro, Gemini, Codex, Amp |
 | **Notifications** | Telegram | Human-in-the-loop via Telegram |
+| **Pricing** | Free | MIT |
 
 **Overlap**: Low-Medium. Loop pattern overlaps, but lacks session-aware task discovery.
 
@@ -139,6 +145,7 @@ Implements autonomous loops that keep running until tests pass. The "loop until 
 | **Description** | Markdown-driven task manager | *"A powerful command-line tool and MCP server for managing Markdown-Driven Task Management (MDTM) files."* |
 | **Autopilot** | Partial | *"Autonomous execution in Docker"* via dispatch command |
 | **Parallel agents** | Partial | *"Supports...parallel execution"* for subtasks |
+| **Pricing** | Free | MIT |
 
 ---
 
@@ -150,6 +157,7 @@ Implements autonomous loops that keep running until tests pass. The "loop until 
 | **Autopilot** | Yes (async queue) | *"Agents work asynchronously and in parallel so you can review their work on your own schedule"* |
 | **Parallel agents** | Yes | *"Adding `--agent codex,claude` will have `codex` and `claude` do the task in parallel"* |
 | **Bonus** | Docker isolation | *"Agents work in YOLO mode in parallel filesystem and network isolated containers"* |
+| **Pricing** | Free | MIT |
 
 ---
 
@@ -166,6 +174,7 @@ Despite low stars, this is the **closest architectural match**: web dashboard, C
 | **Parallel agents** | Yes | *"Manage one agent or ten from a single browser tab."* |
 | **Multi-model** | Yes | *"Claude Code, Gemini CLI, and Codex CLI"* |
 | **Bonus** | Queen conductor | *"The Queen conductor watches the hive, proposes task assignments, detects when work is done."* |
+| **Pricing** | Free | MIT |
 
 **Overlap**: High.
 
@@ -182,6 +191,7 @@ The only other project that tracks session costs, and it can scan for existing s
 | **Autopilot** | Partial | *"Auto-approves file edits & safe commands"* (Accept Edits mode only) |
 | **Parallel agents** | Yes | *"Run dozens of Claude Code agents in parallel. One dashboard to rule them all."* |
 | **Cost tracking** | Yes | *"Track status, cost, and progress per session — all at a glance."* |
+| **Pricing** | Free | MIT |
 
 **Overlap**: Medium. The cost + session scanning combo is close, but the task discovery loop is missing.
 
