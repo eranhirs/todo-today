@@ -13,6 +13,7 @@ Analysis of projects from [awesome-claude-code](https://github.com/hesreallyhim/
 | **Claude Todos** | — | **Yes** | **Yes** | **Yes** | No | **Yes** | **Yes** | No | Free (MIT) |
 | Claude Task Master | ~14.9k | No | No | No | No | No | No | **Yes** | Free† ([MIT + Commons Clause](https://github.com/eyaltoledano/claude-task-master)) |
 | Claude Squad | ~7.6k | No | Partial | No | **Yes** | No | No | **Yes** | Free ([AGPL-3.0](https://github.com/smtg-ai/claude-squad)) |
+| Pilot Shell | ~1.6k | Partial | **Yes** | **Yes** | No | **Yes** | **Yes** | **Yes** | Paid ([proprietary](https://github.com/maxritter/pilot-shell); [7-day trial](https://pilot-shell.com/)) |
 | Aperant (Auto-Claude) | ~2.4k | No | **Yes** | Desktop | **Yes** | No | No | No | Free ([AGPL-3.0](https://github.com/AndyMik90/Auto-Claude)) |
 | CCPM | ~900 | No | No | No | **Yes** | No | No | **Yes** | Free ([MIT](https://github.com/automazeio/ccpm)) |
 | OctoAlly | ~57 | No | No | **Yes** | **Yes** | No | No | No | Free† ([Apache 2.0 + Commons Clause](https://github.com/ai-genius-automations/octoally)) |
@@ -78,6 +79,25 @@ Polished Go TUI for running multiple Claude instances in parallel via tmux + wor
 | **Pricing** | Free | AGPL-3.0 (copyleft) |
 
 **Overlap**: Low-Medium. Complementary — Claude Todos discovers *what*; Squad manages *how many*.
+
+---
+
+### Pilot Shell — [repo](https://github.com/maxritter/pilot-shell) (~1.6k stars)
+
+A commercial wrapper around Claude Code that enforces structured spec-driven workflows (plan → approve → implement with TDD → verify). Includes a web console, quality hooks pipeline, persistent memory, and smart model routing. The closest overlap with Claude Todos is the web dashboard and cost tracking, but it takes a fundamentally different approach: it structures *how* you work with Claude Code, rather than discovering *what* you're working on.
+
+| Feature | Status | Evidence |
+|---|---|---|
+| **Description** | Production-grade Claude Code wrapper | *"Claude Code is powerful. Pilot Shell makes it reliable."* |
+| **Interface** | CLI + Web console | *"Real-time web dashboard with spec tracking, extensions management, git changes, persistent memories, sessions, usage analytics, settings"* |
+| **Auto-discovers tasks** | Partial | `/setup-rules` explores codebase across 11 phases to discover conventions and generate rules, but doesn't discover tasks from session transcripts |
+| **Autopilot** | Yes (spec mode) | *"The /spec command replaces Claude Code's built-in plan mode and provides a complete planning workflow with TDD, verification, and code review."* |
+| **Hooks integration** | Yes | Quality hooks pipeline: *"Auto-runs ruff, ESLint, go vet on every edit; enforces TDD; optimizes tokens; captures memories"* |
+| **Cost tracking** | Yes | Status line shows session cost; usage analytics in the console |
+| **Multi-model** | Yes | Smart model routing: *"Opus for planning, Sonnet for implementation/verification; configurable per-phase"* |
+| **Pricing** | Paid | Proprietary license with 7-day free trial; Solo and Team tiers. *"This availability does not constitute an open-source license."* |
+
+**Overlap**: Medium. Overlaps on web dashboard, hooks, and cost tracking, but is a workflow enforcer rather than a task discoverer. Also the only paid product in this space.
 
 ---
 
@@ -202,13 +222,13 @@ The only other project that tracks session costs, and it can scan for existing s
 | Feature | Claude Todos status | Existing projects addressing it |
 |---|---|---|
 | Auto-discover tasks from sessions | **Unique advantage** | CC Orchestrator (session scanning only, no analysis) |
-| Real-time hook integration | **Shared with Swarm** | Swarm (hooks for auto-approve, not analysis) |
+| Real-time hook integration | **Shared with Swarm, Pilot Shell** | Swarm (hooks for auto-approve, not analysis), Pilot Shell (quality hooks) |
 | Parallel agent execution | Not supported | Squad, Aperant, TSK, Swarm, Sudocode, CC Orchestrator |
 | Mobile access | Not supported | Happy Coder, Omnara |
-| Multi-model support | Claude only | Task Master, Squad, Ralph, CCPM, Swarm |
+| Multi-model support | Claude only | Task Master, Squad, Ralph, CCPM, Swarm, Pilot Shell |
 | Docker/container isolation | Not supported | TSK, Squad (worktrees), Scopecraft (dispatch) |
 | GitHub Issues integration | Not supported | CCPM, Aperant |
-| Cost tracking | **Shared with CC Orchestrator** | CC Orchestrator (per-session cost) |
+| Cost tracking | **Shared with CC Orchestrator, Pilot Shell** | CC Orchestrator (per-session cost), Pilot Shell (session cost + analytics) |
 | Kanban/visual board | Not supported | Aperant, ClawWarden |
 
 ---
