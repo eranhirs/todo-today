@@ -84,7 +84,11 @@ class ProcessManager:
     # ── PID & zombie detection ───────────────────────────────────
 
     def pid_alive(self, pid: int) -> bool:
-        """Check if a process with the given PID is alive (not a zombie)."""
+        """Check if a process with the given PID is a live claude process (not a zombie).
+
+        Verifies the process is actually a claude/ccd-cli process, not an
+        unrelated process that reused the same PID after the original exited.
+        """
         try:
             os.kill(pid, 0)
         except (OSError, ProcessLookupError):
@@ -94,8 +98,22 @@ class ProcessManager:
             with open(f"/proc/{pid}/status") as f:
                 for line in f:
                     if line.startswith("State:"):
-                        return "Z" not in line  # Z = zombie
+                        if "Z" in line:
+                            return False
+                        break
         except (FileNotFoundError, PermissionError, OSError):
+            pass
+        # Verify the PID actually belongs to a claude process — if the original
+        # claude process exited and the OS recycled the PID, we must not
+        # reconnect to the unrelated process that now holds it.
+        try:
+            with open(f"/proc/{pid}/cmdline") as f:
+                cmdline = f.read()
+            # cmdline uses \0 as separator; check for claude or ccd-cli binaries
+            if "claude" not in cmdline and "ccd-cli" not in cmdline:
+                return False
+        except (FileNotFoundError, PermissionError, OSError):
+            # /proc not available (non-Linux) — fall back to trusting kill(0)
             pass
         return True
 
@@ -263,11 +281,20 @@ def _handle_quota_error(todo_id: str, error_output: str, output_file: Path) -> N
     process_manager.cleanup_output_file(output_file)
 
 
-def _detect_plan_file(stream_objects: list[dict]) -> Optional[str]:
+def _detect_plan_file(
+    stream_objects: list[dict],
+    source_path: str = "",
+    run_started_at: str | None = None,
+) -> Optional[str]:
     """Scan stream objects for a Write tool_use targeting .claude/plans/.
+
+    Falls back to scanning the filesystem at ``{source_path}/.claude/plans/``
+    for files modified after *run_started_at* when the stream-object scan
+    returns nothing (e.g. reconnect picked up only a tail of output).
 
     Returns the file path if found, else None.
     """
+    # Primary: stream-object detection
     for obj in stream_objects:
         if obj.get("type") != "assistant":
             continue
@@ -277,6 +304,30 @@ def _detect_plan_file(stream_objects: list[dict]) -> Optional[str]:
                     file_path = block.get("input", {}).get("file_path", "")
                     if ".claude/plans/" in file_path:
                         return file_path
+
+    # Fallback: filesystem scan
+    if source_path and run_started_at:
+        plans_dir = Path(source_path) / ".claude" / "plans"
+        if plans_dir.is_dir():
+            try:
+                cutoff = datetime.fromisoformat(run_started_at)
+            except (ValueError, TypeError):
+                return None
+            best: tuple[datetime, str] | None = None
+            try:
+                for entry in plans_dir.iterdir():
+                    if not entry.is_file():
+                        continue
+                    mtime = datetime.fromtimestamp(entry.stat().st_mtime)
+                    if mtime >= cutoff:
+                        if best is None or mtime > best[0]:
+                            best = (mtime, str(entry))
+            except OSError:
+                pass
+            if best is not None:
+                log.info("Detected plan file via filesystem fallback: %s", best[1])
+                return best[1]
+
     return None
 
 
@@ -318,27 +369,39 @@ def _detect_plan_mode(stream_lines: list[dict]) -> bool:
 # ── Concurrent BTW runner ────────────────────────────────────────
 
 
-def _flush_btw_progress(todo_id: str, output: str) -> None:
+def _flush_btw_progress(todo_id: str, output: str, is_continuation: bool = False) -> None:
     """Write current accumulated btw output to the store."""
     with StorageContext() as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
-                t.btw_output = cap_output(output)
+                if is_continuation and t.btw_output:
+                    # Replace content after the last separator with current progress
+                    sep = "\n\n--- BTW ---\n"
+                    last_sep = t.btw_output.rfind(sep)
+                    if last_sep >= 0:
+                        t.btw_output = cap_output(t.btw_output[:last_sep] + sep + output)
+                    else:
+                        t.btw_output = cap_output(t.btw_output + sep + output)
+                else:
+                    t.btw_output = cap_output(output)
                 break
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
 
-def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", main_session_id: str = "") -> None:
+def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", main_session_id: str = "", btw_session_id: str | None = None) -> None:
     """Background thread: run a concurrent /btw Claude session alongside the main run.
 
-    Forks the main run's session via --resume --fork-session --no-session-persistence
-    so Claude has the full native conversation history (tool calls, results, system
-    prompts) without modifying the original session. Output is stored separately in
-    btw_output/btw_status fields.
+    First call: forks the main session via --resume --fork-session so Claude has
+    the full conversation history. The forked session is persisted and its ID is
+    saved as btw_session_id.
+
+    Subsequent calls: resumes the existing btw_session_id so messages stay in the
+    same conversational thread rather than opening a new tab.
     """
     output_file = _RUNS_DIR / f"{todo_id}_btw.jsonl"
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        is_continuation = btw_session_id is not None
 
         prompt = (
             f"The user has a mid-task question. Answer concisely — this is a /btw "
@@ -347,27 +410,39 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
         )
         accumulated: list[str] = []
 
-        # Store btw metadata on todo
+        # Store btw metadata on todo — append separator for continuations
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
                     t.btw_output_file = str(output_file)
                     t.btw_status = "running"
-                    t.btw_output = f"**You:** {message}\n"
+                    if is_continuation and t.btw_output:
+                        t.btw_output += f"\n\n--- BTW ---\n**You:** {message}\n"
+                    else:
+                        t.btw_output = f"**You:** {message}\n"
                     t.pending_btw = None
                     break
 
         # Ensure clean output file
         output_file.write_text("")
 
-        cmd = [
-            "claude", "-p", "--output-format", "stream-json", "--verbose",
-            "--dangerously-skip-permissions",
-            "--model", model,
-            "--resume", main_session_id,
-            "--fork-session",
-            "--no-session-persistence",
-        ]
+        if is_continuation:
+            # Resume the existing btw session
+            cmd = [
+                "claude", "-p", "--output-format", "stream-json", "--verbose",
+                "--dangerously-skip-permissions",
+                "--model", model,
+                "--resume", btw_session_id,
+            ]
+        else:
+            # Fork from main session to start a new btw conversation
+            cmd = [
+                "claude", "-p", "--output-format", "stream-json", "--verbose",
+                "--dangerously-skip-permissions",
+                "--model", model,
+                "--resume", main_session_id,
+                "--fork-session",
+            ]
 
         fout = open(output_file, "a")
         proc = subprocess.Popen(
@@ -394,6 +469,7 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
         # Tail the output file
         last_flush = time.monotonic()
         file_pos = 0
+        result_session_id: str | None = None
 
         while True:
             alive = _pid_alive(proc.pid)
@@ -415,6 +491,8 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 except json.JSONDecodeError:
                     continue
                 if obj.get("type") == "result":
+                    # Capture session_id from result for future continuation
+                    result_session_id = obj.get("session_id")
                     continue
                 text = _extract_assistant_text(obj)
                 if text:
@@ -422,7 +500,8 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
 
             now = time.monotonic()
             if now - last_flush >= _FLUSH_INTERVAL and accumulated:
-                _flush_btw_progress(todo_id, f"**You:** {message}\n\n" + "\n".join(accumulated))
+                this_msg_output = f"**You:** {message}\n\n" + "\n".join(accumulated)
+                _flush_btw_progress(todo_id, this_msg_output, is_continuation=is_continuation)
                 last_flush = now
 
             if not alive:
@@ -440,13 +519,27 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 log.error("BTW Claude stderr for todo %s: %s", todo_id, stderr_out[:2000])
                 output_text += f"\n\nstderr: {stderr_out[:2000]}"
 
+        this_msg_output = f"**You:** {message}\n\n" + output_text
+
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
-                    t.btw_output = cap_output(f"**You:** {message}\n\n" + output_text)
+                    if is_continuation and t.btw_output:
+                        # Find the last "--- BTW ---" separator and replace everything after it
+                        sep = "\n\n--- BTW ---\n"
+                        last_sep = t.btw_output.rfind(sep)
+                        if last_sep >= 0:
+                            t.btw_output = cap_output(t.btw_output[:last_sep] + sep + this_msg_output)
+                        else:
+                            t.btw_output = cap_output(t.btw_output + sep + this_msg_output)
+                    else:
+                        t.btw_output = cap_output(this_msg_output)
                     t.btw_status = "error" if returncode != 0 else "done"
                     t.btw_pid = None
                     t.btw_output_file = None
+                    # Save session ID for continuation (prefer result, fall back to existing)
+                    if result_session_id:
+                        t.btw_session_id = result_session_id
                     break
 
         bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
@@ -502,11 +595,18 @@ def start_btw(todo_id: str, message: str) -> str | None:
         main_session_id = todo.session_id
         if not main_session_id:
             return "no session"
-        run_model = ctx.metadata.run_model
+        btw_session_id = todo.btw_session_id
+        # Resolve model: per-project override > global setting
+        project = None
+        for p in ctx.store.projects:
+            if p.id == todo.project_id:
+                project = p
+                break
+        run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
 
     thread = threading.Thread(
         target=run_btw_for_todo,
-        args=(todo_id, message, source_path, run_model, main_session_id),
+        args=(todo_id, message, source_path, run_model, main_session_id, btw_session_id),
         daemon=True,
     )
     thread.start()
@@ -779,12 +879,14 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         session_header = f"Session: {session_id}\n\n"
         accumulated: list[str] = []
 
-        # Store output file path and session_id on todo
+        # Store output file path and session_id on todo; capture run_started_at
+        run_started_at: str | None = None
         with StorageContext() as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
                     t.run_output_file = str(output_file)
                     t.session_id = session_id
+                    run_started_at = t.run_started_at
                     break
 
         bus.emit_event_sync(EventType.RUN_STARTED, todo_id=todo_id, todo_text=todo_text, project_id=project_id)
@@ -831,7 +933,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         if returncode != 0 and _is_quota_error(all_output):
             _handle_quota_error(todo_id, all_output, output_file)
         else:
-            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, stream_objects=all_stream_objects)
+            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, stream_objects=all_stream_objects, source_path=source_path, run_started_at=run_started_at)
 
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
@@ -856,7 +958,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         # Trigger analysis directly — don't rely solely on hook curl
         try:
             from .scheduler import queue_run_session_analysis
-            project_dir = source_path.replace("/", "-")
+            project_dir = source_path.replace("/", "-").replace(".", "-")
             run_session_key = f"{project_dir}/{session_id}"
             queue_run_session_analysis(run_session_key)
         except Exception:
@@ -877,10 +979,12 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
         # Use the already-updated output (includes user message) as the header
+        run_started_at: str | None = None
         with StorageContext(read_only=True) as ctx:
             for t in ctx.store.todos:
                 if t.id == todo_id:
                     existing_output = t.run_output or ""
+                    run_started_at = t.run_started_at
                     break
             else:
                 existing_output = ""
@@ -906,7 +1010,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
             plan_only=plan_only,
         )
 
-        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only)
+        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, source_path=source_path, run_started_at=run_started_at)
 
     except Exception as e:
         log.exception("Claude follow-up error for todo %s", todo_id)
@@ -945,7 +1049,7 @@ def _count_session_messages(session_id: str, source_path: str) -> int | None:
 
     Returns the count, or None if the file doesn't exist or can't be read.
     """
-    encoded = source_path.replace("/", "-")
+    encoded = source_path.replace("/", "-").replace(".", "-")
     jsonl_path = Path.home() / ".claude" / "projects" / encoded / f"{session_id}.jsonl"
     if not jsonl_path.is_file():
         return None
@@ -977,6 +1081,8 @@ def _finalize_run(
     output_file: Path,
     plan_only: bool = False,
     stream_objects: Optional[list[dict]] = None,
+    source_path: str = "",
+    run_started_at: str | None = None,
 ) -> None:
     """Apply the final result of a claude run to the todo and clean up."""
     # If the user already paused/stopped this run, don't overwrite the status
@@ -985,12 +1091,13 @@ def _finalize_run(
         process_manager.cleanup_output_file(output_file)
         return
     # Detect plan file written during the run
-    plan_file = _detect_plan_file(stream_objects or [])
+    plan_file = _detect_plan_file(stream_objects or [], source_path=source_path, run_started_at=run_started_at)
 
-    # For plan_only runs that successfully wrote a plan file, suppress errors —
-    # Claude may exit non-zero after writing the plan (e.g. permission denials
-    # for tools it tried after writing), but the plan itself is valid.
-    suppress_error = plan_only and plan_file is not None
+    # For plan_only runs that wrote a plan file or entered plan mode, suppress
+    # errors — Claude may exit non-zero after writing the plan (e.g. permission
+    # denials for tools it tried after writing), but the plan itself is valid.
+    entered_plan = _detect_plan_mode(stream_objects or [])
+    suppress_error = plan_only and (plan_file is not None or entered_plan)
 
     if returncode != 0 and not suppress_error:
         stderr_msg = f"Exit code {returncode}"
@@ -1132,6 +1239,8 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
     flush_lines: int | None = None
     proj_id = ""
     is_plan_only = False
+    source_path = ""
+    run_started_at: str | None = None
     with StorageContext(read_only=True) as ctx:
         for t in ctx.store.todos:
             if t.id == todo_id:
@@ -1139,7 +1248,14 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
                 flush_lines = t.run_flush_lines
                 proj_id = t.project_id
                 is_plan_only = t.plan_only
+                run_started_at = t.run_started_at
                 break
+        # Resolve source_path from the project
+        if proj_id:
+            for p in ctx.store.projects:
+                if p.id == proj_id:
+                    source_path = p.source_path
+                    break
 
     # Recover any output written to the file between the last flush and
     # server death.  Re-read the entire file to extract text lines, then
@@ -1196,7 +1312,7 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
             # only captured objects from the restart point onward.
             _, _, all_stream_objects = parse_output_file_result(str(output_file))
 
-            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=is_plan_only, stream_objects=all_stream_objects)
+            _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=is_plan_only, stream_objects=all_stream_objects, source_path=source_path, run_started_at=run_started_at)
 
         except Exception as e:
             log.exception("Reconnect error for todo %s", todo_id)
@@ -1345,7 +1461,13 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
             todo.run_started_at = _now()
         todo_text = todo.text
         proj_id = todo.project_id
-        run_model = ctx.metadata.run_model
+        # Resolve model: per-project override > global setting
+        project = None
+        for p in ctx.store.projects:
+            if p.id == todo.project_id:
+                project = p
+                break
+        run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
         is_plan_only = todo.plan_only
         todo_images = [img.filename for img in todo.images] if todo.images else None
 
@@ -1404,7 +1526,13 @@ def _process_queue(project_id: str) -> None:
             candidate.run_started_at = _now()
         todo_id = candidate.id
         todo_text = candidate.text
-        run_model = ctx.metadata.run_model
+        # Resolve model: per-project override > global setting
+        project = None
+        for p in ctx.store.projects:
+            if p.id == project_id:
+                project = p
+                break
+        run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
         is_plan_only = candidate.plan_only
         todo_images = [img.filename for img in candidate.images] if candidate.images else None
 
@@ -1441,12 +1569,43 @@ def _process_queue(project_id: str) -> None:
     log.info("Queue: auto-started todo %s for project %s", todo_id, project_id)
 
 
+def _is_session_autopilot_eligible(todo, todos: list, session_autopilot: dict[str, int]) -> str | None:
+    """Walk up the source_session_id chain to find an autopilot-enabled ancestor.
+
+    Returns the autopilot session_id if eligible, None otherwise.
+    """
+    if not session_autopilot:
+        return None
+
+    # Build lookup: session_id → todo (for finding parents)
+    by_session: dict[str, object] = {}
+    for t in todos:
+        if t.session_id:
+            by_session[t.session_id] = t
+
+    # Walk up the chain
+    visited: set[str] = set()
+    current_source = todo.source_session_id
+    while current_source and current_source not in visited:
+        visited.add(current_source)
+        # Check if this session is autopilot-enabled
+        if current_source in session_autopilot and session_autopilot[current_source] > 0:
+            return current_source
+        # Find the parent todo whose run session matches
+        parent = by_session.get(current_source)
+        if parent:
+            current_source = parent.source_session_id
+        else:
+            break
+
+    return None
+
+
 def autopilot_continue(project_id: str) -> None:
     """Start the next autopilot todo for a project if quota remains.
 
     Called after a run finishes (and after _process_queue drains manual queues).
-    Checks if the project still has auto_run_quota > 0, finds the next eligible
-    "next" todo, starts it, and decrements the quota.
+    Checks project-level autopilot first, then session-scoped autopilot.
     """
     with StorageContext(read_only=True) as ctx:
         # Check if project is free (no running or queued-then-started todos)
@@ -1462,40 +1621,73 @@ def autopilot_continue(project_id: str) -> None:
                 quota = p.auto_run_quota
                 todo_quota = p.todo_quota
                 break
-        if quota <= 0:
-            return
 
-        # Enforce daily run quota
+        # Enforce daily run quota (applies to both project and session autopilot)
         if todo_quota > 0 and _runs_in_window(project_id, ctx.store.todos) >= todo_quota:
             log.info("Autopilot continue: run quota %d reached for project %s, stopping", todo_quota, project_id)
             return
 
-        # Find eligible candidates (exclude manual tasks — those are for humans)
+        all_todos = list(ctx.store.todos)
+        session_ap = dict(ctx.metadata.session_autopilot)
+
+    # --- Project-level autopilot ---
+    if quota > 0:
         candidates = [
-            t for t in ctx.store.todos
+            t for t in all_todos
             if t.project_id == project_id and t.status == "next" and t.run_status not in ("queued", "running") and not t.manual
         ]
-        if not candidates:
-            return
+        if candidates:
+            candidates.sort(key=lambda t: t.created_at, reverse=True)
+            candidates.sort(key=lambda t: t.sort_order)
+            todo = candidates[0]
 
-    # Sort same as autopilot: sort_order ascending, created_at descending
-    candidates.sort(key=lambda t: t.created_at, reverse=True)
-    candidates.sort(key=lambda t: t.sort_order)
-    todo = candidates[0]
+            log.info("Autopilot continue: starting todo %s (%s) [quota: %d]", todo.id, todo.text[:60], quota)
+            err = start_todo_run(todo.id, autopilot=True)
+            if not err:
+                with StorageContext() as ctx:
+                    for p in ctx.store.projects:
+                        if p.id == project_id:
+                            p.auto_run_quota = max(0, p.auto_run_quota - 1)
+                            log.info("Autopilot continue: decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
+                            break
+                return
+            log.info("Autopilot continue: could not start todo %s: %s", todo.id, err)
 
-    log.info("Autopilot continue: starting todo %s (%s) [quota: %d]", todo.id, todo.text[:60], quota)
-    err = start_todo_run(todo.id, autopilot=True)
-    if err:
-        log.info("Autopilot continue: could not start todo %s: %s", todo.id, err)
+    # --- Session-scoped autopilot ---
+    if not session_ap:
         return
 
-    # Decrement quota
+    candidates_with_session = []
+    for t in all_todos:
+        if t.project_id != project_id or t.status != "next" or t.run_status in ("queued", "running") or t.manual:
+            continue
+        if not t.source_session_id:
+            continue
+        ap_session = _is_session_autopilot_eligible(t, all_todos, session_ap)
+        if ap_session:
+            candidates_with_session.append((t, ap_session))
+
+    if not candidates_with_session:
+        return
+
+    # Sort: pinned first by sort_order, then by created_at descending
+    candidates_with_session.sort(key=lambda pair: pair[0].created_at, reverse=True)
+    candidates_with_session.sort(key=lambda pair: pair[0].sort_order)
+    todo, ap_session = candidates_with_session[0]
+
+    log.info("Session autopilot continue: starting todo %s (%s) [session: %s]", todo.id, todo.text[:60], ap_session)
+    err = start_todo_run(todo.id, autopilot=True)
+    if err:
+        log.info("Session autopilot continue: could not start todo %s: %s", todo.id, err)
+        return
+
+    # Decrement session autopilot quota
     with StorageContext() as ctx:
-        for p in ctx.store.projects:
-            if p.id == project_id:
-                p.auto_run_quota = max(0, p.auto_run_quota - 1)
-                log.info("Autopilot continue: decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
-                break
+        remaining = ctx.metadata.session_autopilot.get(ap_session, 0)
+        if remaining > 1:
+            ctx.metadata.session_autopilot[ap_session] = remaining - 1
+        else:
+            ctx.metadata.session_autopilot.pop(ap_session, None)
 
 
 def dequeue_todo_run(todo_id: str) -> str | None:

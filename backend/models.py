@@ -32,7 +32,10 @@ class Project(BaseModel):
     name: str
     source_path: str = ""
     auto_run_quota: int = 0  # 0 = autopilot disabled, 1+ = remaining todos to auto-run (decrements)
+    scheduled_auto_run_quota: int = 0  # 0 = none scheduled, 1+ = quota to activate at autopilot_starts_at
+    autopilot_starts_at: Optional[str] = None  # ISO timestamp: when to activate scheduled_auto_run_quota
     todo_quota: int = 0  # 0 = unlimited, 1+ = max todo runs per 24h sliding window
+    run_model: Optional[str] = None  # None = use global setting, "opus"/"sonnet"/"haiku" = override
     created_at: str = Field(default_factory=_now)
 
 
@@ -62,6 +65,7 @@ class Todo(BaseModel):
     btw_status: Optional[Literal["running", "done", "error"]] = None
     btw_pid: Optional[int] = None
     btw_output_file: Optional[str] = None
+    btw_session_id: Optional[str] = None
     is_read: bool = True  # Whether the user has seen the run output
     plan_only: bool = False  # When True, agent plans but cannot implement
     manual: bool = False  # When True, task is for human execution — cannot be run by Claude
@@ -75,6 +79,8 @@ class Todo(BaseModel):
     images: List[ImageAttachment] = []  # Image attachments with metadata
     red_flags: List[Dict[str, Any]] = []  # Coping-phrase red flags detected in run output
     plan_file: Optional[str] = None  # Path to .claude/plans/ file written during plan_only run
+    priority: Optional[int] = None  # 1=critical, 2=high, 3=medium, 4=low, None=no priority
+    source_session_id: Optional[str] = None  # Session analyzed to create this todo (permanent, never overwritten)
     session_msg_count: Optional[int] = None  # JSONL user/assistant message count at last sync
 
     @model_validator(mode="before")
@@ -165,6 +171,7 @@ class SettingsUpdate(BaseModel):
     """Partial update — only supplied fields are changed."""
     analysis_interval_minutes: Optional[int] = Field(default=None, ge=1, le=60)
     analysis_model: Optional[str] = None
+    run_model: Optional[str] = None
     heartbeat_enabled: Optional[bool] = None
     hook_analysis_enabled: Optional[bool] = None
     local_image_storage: Optional[bool] = None
@@ -192,6 +199,7 @@ class Metadata(BaseModel):
     hook_analysis_enabled: bool = True
     local_image_storage: bool = False
     token_budget_usd: float = 0.0
+    session_autopilot: Dict[str, int] = {}  # session_id → remaining quota
 
     def get_settings(self) -> Settings:
         """Extract the settings subset from metadata."""
@@ -211,6 +219,8 @@ class Metadata(BaseModel):
             self.analysis_interval_minutes = update.analysis_interval_minutes
         if update.analysis_model is not None:
             self.analysis_model = update.analysis_model
+        if update.run_model is not None:
+            self.run_model = update.run_model
         if update.heartbeat_enabled is not None:
             self.heartbeat_enabled = update.heartbeat_enabled
         if update.hook_analysis_enabled is not None:
@@ -240,7 +250,12 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = None
     source_path: Optional[str] = None
     auto_run_quota: Optional[int] = None
+    scheduled_auto_run_quota: Optional[int] = None
+    autopilot_starts_at: Optional[str] = None
+    clear_scheduled_autopilot: bool = False  # When True, clears both scheduled_auto_run_quota and autopilot_starts_at
     todo_quota: Optional[int] = None
+    run_model: Optional[str] = None  # None = use global, "opus"/"sonnet"/"haiku" = override
+    clear_run_model: bool = False  # When True, clears per-project run_model override
 
 
 class TodoCreate(BaseModel):
@@ -277,6 +292,7 @@ class FullState(BaseModel):
     has_more_completed: bool = False
     completed_by_project: Dict[str, int] = {}
     unread_counts: Dict[str, int] = {}  # {"_total": N, "<project_id>": N, ...}
+    session_autopilot: Dict[str, int] = {}  # session_id → remaining quota
 
 
 # ── Claude analysis result (what Claude returns) ───────────────

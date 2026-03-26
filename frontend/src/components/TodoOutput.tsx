@@ -19,11 +19,82 @@ const OUTPUT_WARNING_THRESHOLD = 0.9; // warn at 90%
 
 const FOLLOWUP_RE = /\n\n--- (?:Follow-up(?: \(queued\))?|BTW|Resumed in CLI) ---\n\*\*You:\*\* /;
 
+/**
+ * Detect markdown pipe tables in text and render them as HTML <table> elements.
+ * Non-table text is returned as-is in a fragment.
+ */
+function renderTextWithTables(text: string): React.ReactNode {
+  const lines = text.split("\n");
+  const segments: { type: "text" | "table"; lines: string[] }[] = [];
+  let current: { type: "text" | "table"; lines: string[] } | null = null;
+
+  for (const line of lines) {
+    const isTableLine = /^\s*\|/.test(line);
+    if (isTableLine) {
+      if (current?.type === "table") {
+        current.lines.push(line);
+      } else {
+        if (current) segments.push(current);
+        current = { type: "table", lines: [line] };
+      }
+    } else {
+      if (current?.type === "text") {
+        current.lines.push(line);
+      } else {
+        if (current) segments.push(current);
+        current = { type: "text", lines: [line] };
+      }
+    }
+  }
+  if (current) segments.push(current);
+
+  // If no tables found, return original text
+  if (!segments.some((s) => s.type === "table")) return text;
+
+  return (
+    <>
+      {segments.map((seg, i) => {
+        if (seg.type === "text") {
+          // Preserve the newlines between text lines
+          return <span key={i}>{seg.lines.join("\n")}</span>;
+        }
+        // Parse markdown table
+        const rows = seg.lines
+          .filter((l) => !/^\s*\|[\s\-:|]+\|\s*$/.test(l)) // skip separator rows like |---|---|
+          .map((l) =>
+            l.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim())
+          );
+        if (rows.length === 0) return <span key={i}>{seg.lines.join("\n")}</span>;
+        const header = rows[0];
+        const body = rows.slice(1);
+        return (
+          <span key={i}>
+            {"\n"}
+            <table className="output-table">
+              <thead>
+                <tr>{header.map((cell, j) => <th key={j}>{cell}</th>)}</tr>
+              </thead>
+              {body.length > 0 && (
+                <tbody>
+                  {body.map((row, ri) => (
+                    <tr key={ri}>{row.map((cell, ci) => <td key={ci}>{cell}</td>)}</tr>
+                  ))}
+                </tbody>
+              )}
+            </table>
+            {"\n"}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 function renderOutput(text: string) {
   const parts = text.split(FOLLOWUP_RE);
-  if (parts.length === 1) return text;
+  if (parts.length === 1) return renderTextWithTables(text);
 
-  const elements: (string | React.ReactElement)[] = [parts[0]];
+  const elements: (string | React.ReactNode)[] = [parts[0]];
   // After each split point, we have the user's message + rest of output
   let matchIndex = 0;
   let searchFrom = 0;
@@ -71,24 +142,17 @@ function renderOutput(text: string) {
     if (rest) elements.push(rest);
     matchIndex++;
   }
-  return <>{elements}</>;
+  // Process string segments through table renderer
+  const processed = elements.map((el, i) =>
+    typeof el === "string" ? <span key={`txt-${i}`}>{renderTextWithTables(el)}</span> : el
+  );
+  return <>{processed}</>;
 }
 
 function renderBtwOutput(text: string) {
-  const match = text.match(/^\*\*You:\*\* (.+)\n/);
-  if (!match) return text;
-  const userMsg = match[1];
-  const rest = text.slice(match[0].length);
-  return (
-    <>
-      <span className="followup-marker">
-        <span className="followup-header">{"── BTW ──"}</span>
-        {"\n"}
-        <span className="followup-user-msg">{"▶ You: " + userMsg}</span>
-      </span>
-      {rest ? "\n" + rest : ""}
-    </>
-  );
+  // Normalize: prepend a BTW separator so renderOutput can handle the whole thing uniformly
+  const normalized = "\n\n--- BTW ---\n" + text;
+  return renderOutput(normalized);
 }
 
 type OutputTab = "run" | "btw";
@@ -149,6 +213,18 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const isBtwRunning = todo.btw_status === "running";
   const hasQueuedFollowup = !!todo.pending_followup;
   const isQueuedFollowup = (todo.run_status === "queued" || isRunning) && hasQueuedFollowup;
+
+  // When run finishes/stops, transfer any in-progress BTW text to the follow-up input
+  const prevRunStatusRef = useRef(todo.run_status);
+  useEffect(() => {
+    const prev = prevRunStatusRef.current;
+    prevRunStatusRef.current = todo.run_status;
+    if (prev === "running" && prev !== todo.run_status && btwTextRef.current) {
+      setFollowupText(btwTextRef.current);
+      setBtwText("");
+      btwDrafts.delete(todo.id);
+    }
+  }, [todo.run_status, todo.id]);
 
   // Reset edit state when the todo is no longer queued
   useEffect(() => {
@@ -416,10 +492,11 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     const raw = btwText.trim();
     if (!raw && pendingImages.length === 0) return;
 
-    // If message starts with /btw, send as a side-channel btw
-    const isBtwMessage = /^\/btw\b/i.test(raw);
+    // When btw tab is active, all messages go to btw (no /btw prefix needed)
+    const onBtwTab = activeTab === "btw";
+    const isBtwMessage = onBtwTab || /^\/btw\b/i.test(raw);
     if (isBtwMessage) {
-      const msg = raw.replace(/^\/btw\s*/i, "").trim();
+      const msg = onBtwTab ? raw : raw.replace(/^\/btw\s*/i, "").trim();
       if (!msg) return;
       try {
         await api.btwTodo(todo.id, msg);
@@ -656,8 +733,8 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         </div>
       )}
 
-      {/* Edit bar for follow-up queued on a running todo */}
-      {showBtw && isQueuedFollowup && (
+      {/* Edit bar for follow-up queued on a running todo (hidden on btw tab) */}
+      {showBtw && isQueuedFollowup && activeTab !== "btw" && (
         <div className="followup-edit-bar" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
           {editingFollowup ? (
             <div className="followup-edit-row">
@@ -686,8 +763,8 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
         </div>
       )}
 
-      {/* Message bar — shown when main run is active; default queues follow-up, /btw prefix sends side-channel */}
-      {showBtw && !hasQueuedFollowup && (
+      {/* Message bar — shown when main run is active; on btw tab all messages go to btw, on run tab default queues follow-up */}
+      {showBtw && (!hasQueuedFollowup || activeTab === "btw") && (
         <div className="followup-bar btw-bar followup-bar-with-images" draggable={false} onMouseDown={(e) => e.stopPropagation()} onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}>
           {pendingImages.length > 0 && (
             <div className="followup-image-previews">
@@ -723,7 +800,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
                 ref={btwInputRef}
                 className="followup-input"
                 rows={1}
-                placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
+                placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : activeTab === "btw" ? "Send /btw message (runs in parallel)..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
                 value={btwText}
                 disabled={disabled}
                 onChange={(e) => setBtwText(e.target.value)}
