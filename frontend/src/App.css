@@ -469,6 +469,54 @@ body {
   border-color: var(--accent-light);
   background: rgba(108, 92, 231, 0.1);
 }
+.autopilot-inline-select.autopilot-scheduled {
+  color: var(--warning, #e2b93d);
+  border-color: var(--warning, #e2b93d);
+  background: rgba(226, 185, 61, 0.1);
+}
+.dash-autopilot-badge.scheduled {
+  color: var(--warning, #e2b93d);
+}
+.autopilot-inline-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.autopilot-schedule-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+}
+.autopilot-schedule-time {
+  padding: 1px 3px;
+  border: 1px solid var(--warning, #e2b93d);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--warning, #e2b93d);
+  font-size: 0.7rem;
+  cursor: pointer;
+  max-width: 160px;
+}
+.autopilot-schedule-cancel {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  cursor: pointer;
+  padding: 1px 4px;
+  line-height: 1;
+}
+.autopilot-schedule-cancel:hover {
+  color: var(--danger, #e74c3c);
+  border-color: var(--danger, #e74c3c);
+}
+.autopilot-inline-wrapper.autopilot-pending {
+  opacity: 0.5;
+  pointer-events: none;
+}
 
 /* Add forms */
 
@@ -1369,6 +1417,29 @@ body {
 .badge-read-toggle.is-read { opacity: 0.3; filter: saturate(0) brightness(0.8); }
 .badge-read-toggle:hover { opacity: 0.7; }
 .badge-autopilot { font-size: 0.8rem; }
+.badge-session-autopilot { font-size: 0.75rem; opacity: 0.7; }
+
+.session-autopilot-select {
+  padding: 1px 2px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  cursor: pointer;
+  min-width: 0;
+  width: 38px;
+}
+.session-autopilot-select:hover {
+  border-color: var(--accent-light);
+  color: var(--text);
+}
+.session-autopilot-select.session-autopilot-active {
+  color: var(--accent-light);
+  border-color: var(--accent-light);
+  background: rgba(108, 92, 231, 0.1);
+  font-weight: 600;
+}
 
 .todo-project-label {
   display: inline-block;
@@ -2384,6 +2455,39 @@ body {
   cursor: default;
 }
 
+/* Priority badges on todo items */
+.priority-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  padding: 0px 5px;
+  border-radius: 3px;
+  border: 1px solid;
+}
+.priority-badge.priority-1 { background: rgba(229, 62, 62, 0.12); }
+.priority-badge.priority-2 { background: rgba(221, 107, 32, 0.12); }
+.priority-badge.priority-3 { background: rgba(214, 158, 46, 0.12); }
+.priority-badge.priority-4 { background: rgba(113, 128, 150, 0.12); }
+
+/* Priority filter pills in tag bar */
+.tag-filter-pill.priority-filter {
+  font-weight: 600;
+  font-size: 0.72rem;
+}
+.tag-filter-pill.priority-filter.priority-1 { color: #e53e3e; border-color: #e53e3e; }
+.tag-filter-pill.priority-filter.priority-2 { color: #dd6b20; border-color: #dd6b20; }
+.tag-filter-pill.priority-filter.priority-3 { color: #d69e2e; border-color: #d69e2e; }
+.tag-filter-pill.priority-filter.priority-4 { color: #718096; border-color: #718096; }
+.tag-filter-pill.priority-filter.active {
+  color: #fff;
+}
+.tag-filter-pill.priority-filter.active.priority-1 { background: #e53e3e; }
+.tag-filter-pill.priority-filter.active.priority-2 { background: #dd6b20; }
+.tag-filter-pill.priority-filter.active.priority-3 { background: #d69e2e; }
+.tag-filter-pill.priority-filter.active.priority-4 { background: #718096; }
+
 .btn-unpin {
   font-size: 0.7rem !important;
   opacity: 0.5 !important;
@@ -2941,6 +3045,30 @@ body {
 
 .run-output pre.expanded {
   max-height: none;
+}
+
+/* Markdown tables rendered inside output */
+.output-table {
+  border-collapse: collapse;
+  margin: 4px 0;
+  font-size: inherit;
+  font-family: inherit;
+  width: auto;
+  display: inline-table;
+}
+.output-table th,
+.output-table td {
+  border: 1px solid var(--border);
+  padding: 3px 8px;
+  white-space: nowrap;
+  text-align: left;
+}
+.output-table th {
+  background: var(--bg-alt, rgba(128,128,128,0.12));
+  font-weight: 600;
+}
+.output-table tbody tr:hover {
+  background: var(--bg-alt, rgba(128,128,128,0.06));
 }
 
 .output-toolbar {
@@ -3637,8 +3765,237 @@ body {
   align-self: flex-start;
 }
 
+.dash-model-badge {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px 8px;
+  border-radius: 4px;
+  align-self: flex-start;
+}
+
+.run-model-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  padding: 4px 0;
+}
+
 .progress-ring {
   flex-shrink: 0;
+}
+
+/* ── Skills view ────────────────────────────────────────────── */
+
+.skills-view {
+  max-width: 900px;
+}
+
+.skills-view h2 {
+  font-size: 1.2rem;
+  margin-bottom: 16px;
+}
+
+.skills-available {
+  margin-bottom: 32px;
+}
+
+.skills-loading,
+.skills-empty {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  padding: 12px 0;
+}
+
+.skills-hint {
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+
+.skills-hint code {
+  background: var(--card-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 0.75rem;
+}
+
+.skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.skill-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.skill-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--accent-light);
+}
+
+.skill-type {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.skill-type-skill {
+  color: var(--accent-light);
+  background: rgba(108, 92, 231, 0.15);
+}
+
+.skill-type-command {
+  color: var(--claude);
+  background: rgba(212, 165, 116, 0.15);
+}
+
+.skill-desc {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+  flex: 1;
+}
+
+.skill-run-btn {
+  align-self: flex-start;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 14px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.skill-run-btn:hover:not(:disabled) {
+  background: var(--accent-light);
+}
+
+.skill-run-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.skills-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.skill-history-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card-bg);
+  overflow: hidden;
+}
+
+.skill-history-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.skill-history-header:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.skill-status-icon {
+  font-size: 0.85rem;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+}
+
+.skill-status-running {
+  color: var(--blue);
+  animation: skill-spin 1.2s linear infinite;
+}
+
+.skill-status-queued {
+  color: var(--amber);
+}
+
+.skill-status-done {
+  color: var(--green);
+}
+
+.skill-status-error {
+  color: var(--red);
+}
+
+.skill-status-stopped {
+  color: var(--text-dim);
+}
+
+@keyframes skill-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.skill-history-text {
+  flex: 1;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.skill-history-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.skill-history-project {
+  font-size: 0.72rem;
+  color: var(--accent-light);
+  background: rgba(108, 92, 231, 0.12);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.skill-history-time {
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.skill-history-chevron {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.skill-history-output {
+  border-top: 1px solid var(--border);
+  padding: 12px 14px;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 /* ── Keyboard focused todo ─────────────────────────────────── */
@@ -3837,6 +4194,16 @@ body {
 /* ── Responsive: tablets and smaller (≤768px) ────────────── */
 
 @media (max-width: 768px) {
+  /* Smooth scrolling for touch */
+  html {
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Prevent accidental double-tap zoom on interactive elements */
+  button, a, select, input, textarea {
+    touch-action: manipulation;
+  }
+
   .sidebar-toggle {
     display: flex;
   }
@@ -3870,10 +4237,12 @@ body {
     transform: translateX(-100%);
     transition: transform 0.25s ease;
     padding: 20px;
-    padding-top: 64px; /* room for the toggle button */
+    padding-top: calc(64px + env(safe-area-inset-top, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
     gap: 20px;
     align-items: stretch;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
   }
 
   .sidebar.sidebar-minimized .app-title,
@@ -3890,33 +4259,69 @@ body {
     transform: translateX(0);
   }
 
+  /* ── Main content area ── */
   .main {
     padding: 16px;
-    padding-top: 64px; /* room for the toggle button */
+    padding-top: calc(64px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+    padding-right: calc(16px + env(safe-area-inset-right, 0px));
     width: 100%;
     min-height: 100vh;
+    min-height: 100dvh;
   }
 
   .main h2 {
     font-size: 1.2rem;
   }
 
-  /* Stack todo items vertically */
+  /* ── Sticky toolbar on mobile ── */
+  .main-toolbar {
+    position: sticky;
+    top: calc(64px + env(safe-area-inset-top, 0px));
+    z-index: 50;
+    background: var(--bg);
+    margin: -16px -16px 12px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ── Todo item card layout for mobile ── */
   .todo-item {
     flex-direction: column;
     align-items: flex-start;
     gap: 8px;
-    padding: 12px;
+    padding: 14px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    background: rgba(28, 31, 46, 0.4);
+  }
+
+  .todo-item:hover {
+    background: rgba(28, 31, 46, 0.4);
   }
 
   .todo-content {
     width: 100%;
   }
 
+  /* Status pills: horizontal scroll strip on mobile */
+  .status-pills {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    padding-bottom: 2px;
+  }
+  .status-pills::-webkit-scrollbar {
+    display: none;
+  }
+
   .todo-meta {
     width: 100%;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px;
+    justify-content: space-between;
   }
 
   /* Touch-friendly tap targets: min 44px for interactive elements */
@@ -3930,6 +4335,7 @@ body {
 
   /* Always show action buttons on mobile (no hover) */
   .todo-meta .btn-run,
+  .todo-meta .btn-plan,
   .todo-meta .btn-delete,
   .todo-meta .btn-unpin {
     opacity: 1;
@@ -3968,19 +4374,84 @@ body {
     padding: 12px;
   }
 
-  /* Add todo form stacks vertically */
+  /* ── Search bar on mobile ── */
+  .search-input {
+    min-height: 44px;
+    font-size: 1rem; /* prevent iOS zoom on focus */
+    padding: 10px 36px 10px 14px;
+  }
+
+  .search-clear {
+    min-width: 36px;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+  }
+
+  /* ── Tag filter bar: horizontal scroll on mobile ── */
+  .tag-filter-bar {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    padding-bottom: 4px;
+    margin-left: -16px;
+    margin-right: -16px;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .tag-filter-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .tag-filter-pill {
+    min-height: 32px;
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* ── Section headers: sticky for context while scrolling ── */
+  .section-header {
+    position: sticky;
+    top: calc(108px + env(safe-area-inset-top, 0px));
+    z-index: 40;
+    background: var(--bg);
+    padding-top: 4px;
+    padding-bottom: 4px;
+    margin-left: -16px;
+    margin-right: -16px;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .done-group-header {
+    position: sticky;
+    top: calc(140px + env(safe-area-inset-top, 0px));
+    z-index: 35;
+    background: var(--bg);
+  }
+
+  /* ── Add todo form: stacks vertically ── */
   .add-todo {
     flex-direction: column;
   }
 
   .add-todo textarea {
     width: 100%;
+    min-height: 44px;
+    font-size: 1rem; /* prevent iOS zoom */
   }
 
   .add-todo-project-select {
     width: 100%;
     max-width: 100%;
     min-height: 44px;
+    font-size: 1rem;
   }
 
   .add-todo-split-btn {
@@ -3997,7 +4468,104 @@ body {
     min-width: 44px;
   }
 
-  /* Dashboard metrics wrap */
+  /* ── Run output panel: mobile-optimized ── */
+  .run-output {
+    border-radius: 8px;
+    padding: 10px;
+    margin-left: -4px;
+    margin-right: -4px;
+  }
+
+  .run-output pre {
+    font-size: 0.72rem;
+    max-height: 300px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Always show output toolbar on mobile (no hover needed) */
+  .output-toolbar {
+    opacity: 1;
+    position: sticky;
+    top: 0;
+    right: 0;
+    float: right;
+    background: rgba(10, 12, 18, 0.9);
+    border-radius: 4px;
+    padding: 2px;
+    margin-bottom: 4px;
+  }
+
+  .output-toolbar-btn {
+    min-width: 36px;
+    min-height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+  }
+
+  /* Output tabs: scrollable when many tabs */
+  .output-tabs {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .output-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .output-tab {
+    min-height: 36px;
+    padding: 6px 14px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Code blocks inside rendered markdown output */
+  .run-output code {
+    word-break: break-all;
+  }
+
+  .run-output pre code {
+    word-break: normal;
+  }
+
+  /* ── Followup bar on mobile ── */
+  .followup-bar {
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px;
+    margin-left: -4px;
+    margin-right: -4px;
+  }
+
+  .followup-input {
+    min-height: 44px;
+    font-size: 1rem; /* prevent iOS zoom */
+    padding: 8px 10px;
+  }
+
+  .followup-input-row {
+    flex-wrap: wrap;
+  }
+
+  .followup-image-previews {
+    gap: 8px;
+  }
+
+  .followup-image-thumb {
+    width: 56px;
+    height: 56px;
+  }
+
+  .followup-image-remove {
+    width: 22px;
+    height: 22px;
+    font-size: 12px;
+  }
+
+  /* ── Dashboard metrics wrap ── */
   .dash-metrics {
     flex-wrap: wrap;
     gap: 8px;
@@ -4018,7 +4586,7 @@ body {
     grid-template-columns: 1fr;
   }
 
-  /* Activity chart: hide labels on very narrow */
+  /* Activity chart: smaller labels */
   .dash-activity-label {
     font-size: 0.45rem;
   }
@@ -4030,18 +4598,27 @@ body {
     gap: 8px;
   }
 
-  /* Insights dropdown full width */
+  /* ── Insights dropdown: full width ── */
   .insights-dropdown {
-    width: calc(100vw - 32px);
-    max-width: 380px;
-    right: -8px;
+    position: fixed;
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-width: 100%;
+    max-height: 60vh;
+    border-radius: 16px 16px 0 0;
+    z-index: 10001;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 
-  /* Toast container */
+  /* ── Toast container ── */
   .toast-container {
     left: 16px;
     right: 16px;
     max-width: none;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   }
 
   /* Shortcuts hint bigger on touch */
@@ -4049,9 +4626,11 @@ body {
     width: 44px;
     height: 44px;
     font-size: 1rem;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    right: calc(16px + env(safe-area-inset-right, 0px));
   }
 
-  /* Confirm dialog touch-friendly buttons */
+  /* ── Confirm dialog: touch-friendly ── */
   .confirm-actions button {
     min-height: 44px;
     padding: 12px 24px;
@@ -4074,13 +4653,69 @@ body {
     cursor: default;
   }
 
-  /* Followup bar stacks */
-  .followup-bar {
-    flex-direction: column;
+  /* ── Todo images: responsive ── */
+  .todo-image-grid {
+    gap: 6px;
   }
 
-  .followup-input {
+  .todo-image-thumb {
+    width: 80px;
+    height: 80px;
+  }
+
+  /* ── Offline / demo banners ── */
+  .offline-banner,
+  .demo-banner {
+    padding-left: calc(12px + env(safe-area-inset-left, 0px));
+    padding-right: calc(12px + env(safe-area-inset-right, 0px));
+    font-size: 0.8rem;
+  }
+
+  /* ── Keyboard shortcuts overlay: full screen on mobile ── */
+  .shortcuts-dialog {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 16px 16px 0 0;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 80vh;
+    overflow-y: auto;
+    padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .shortcuts-overlay {
+    align-items: flex-end;
+  }
+
+  /* ── Todo text editing on mobile ── */
+  .todo-text-input {
+    font-size: 1rem; /* prevent iOS zoom */
     min-height: 44px;
+    padding: 8px 10px;
+  }
+
+  /* ── Timestamp and badges: compact row ── */
+  .todo-timestamp {
+    font-size: 0.72rem;
+  }
+
+  .badge-run,
+  .badge-source,
+  .badge-autopilot {
+    font-size: 0.85rem;
+    min-width: 28px;
+    min-height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Toggle button safe area */
+  .sidebar-toggle {
+    top: calc(12px + env(safe-area-inset-top, 0px));
+    left: calc(12px + env(safe-area-inset-left, 0px));
   }
 }
 
@@ -4088,20 +4723,53 @@ body {
 
 @media (max-width: 480px) {
   .main {
-    padding: 12px;
-    padding-top: 60px;
+    padding: 10px;
+    padding-top: calc(56px + env(safe-area-inset-top, 0px));
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   }
 
   .main h2 {
     font-size: 1.05rem;
   }
 
+  /* Toolbar tighter on small screens */
+  .main-toolbar {
+    margin: -10px -10px 10px;
+    padding: 6px 10px;
+    top: calc(56px + env(safe-area-inset-top, 0px));
+  }
+
+  .view-toggle-btn {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+    min-height: 40px;
+  }
+
+  /* ── Todo item: compact card ── */
+  .todo-item {
+    padding: 12px 10px;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+
+  .todo-text {
+    font-size: 0.88rem;
+  }
+
+  .status-pill {
+    min-height: 32px;
+    padding: 4px 10px;
+    font-size: 0.7rem;
+  }
+
+  /* ── Dashboard: extra compact ── */
   .dash-metrics {
     gap: 6px;
   }
 
   .dash-metric {
     padding: 8px;
+    min-width: calc(50% - 3px);
   }
 
   .dash-metric-value {
@@ -4126,11 +4794,138 @@ body {
     gap: 4px;
   }
 
-  .todo-text {
-    font-size: 0.88rem;
+  /* ── Dashboard project cards ── */
+  .dash-project-card {
+    padding: 12px;
   }
 
+  .dash-project-name {
+    font-size: 0.9rem;
+  }
+
+  /* ── Output panel: tighter ── */
+  .run-output {
+    padding: 8px;
+  }
+
+  .run-output pre {
+    font-size: 0.68rem;
+    max-height: 250px;
+  }
+
+  /* ── Section headers ── */
+  .section-header {
+    top: calc(96px + env(safe-area-inset-top, 0px));
+    margin-left: -10px;
+    margin-right: -10px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .done-group-header {
+    top: calc(128px + env(safe-area-inset-top, 0px));
+  }
+
+  /* ── Tag filter bar ── */
+  .tag-filter-bar {
+    margin-left: -10px;
+    margin-right: -10px;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  /* ── Followup bar: tighter ── */
+  .followup-bar {
+    padding: 6px 8px;
+  }
+
+  .followup-image-thumb {
+    width: 48px;
+    height: 48px;
+  }
+
+  /* ── Shortcuts dialog ── */
   .shortcuts-dialog {
     padding: 16px 20px;
+    padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .shortcut-key {
+    min-width: 60px;
+    font-size: 0.7rem;
+  }
+
+  .shortcut-desc {
+    font-size: 0.8rem;
+  }
+
+  /* ── Search bar ── */
+  .search-input {
+    font-size: 1rem;
+    padding: 8px 32px 8px 10px;
+  }
+}
+
+/* ── Extra small screens (≤360px) — narrow phones ────────── */
+
+@media (max-width: 360px) {
+  .main {
+    padding: 8px;
+    padding-top: calc(52px + env(safe-area-inset-top, 0px));
+  }
+
+  .main-toolbar {
+    margin: -8px -8px 8px;
+    padding: 4px 8px;
+    top: calc(52px + env(safe-area-inset-top, 0px));
+  }
+
+  .todo-item {
+    padding: 10px 8px;
+  }
+
+  .todo-text {
+    font-size: 0.84rem;
+  }
+
+  .dash-metric {
+    min-width: 100%;
+  }
+
+  .section-header {
+    margin-left: -8px;
+    margin-right: -8px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+
+  .tag-filter-bar {
+    margin-left: -8px;
+    margin-right: -8px;
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+/* ── Landscape mobile ────────────────────────────────────── */
+
+@media (max-width: 768px) and (orientation: landscape) {
+  .main {
+    padding-top: calc(52px + env(safe-area-inset-top, 0px));
+  }
+
+  .main-toolbar {
+    top: calc(52px + env(safe-area-inset-top, 0px));
+  }
+
+  /* Output panel gets more height in landscape */
+  .run-output pre {
+    max-height: 200px;
+  }
+
+  /* Dashboard metrics fit better in landscape */
+  .dash-metric {
+    min-width: calc(25% - 6px);
+    flex: 1 1 calc(25% - 6px);
   }
 }
