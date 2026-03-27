@@ -2529,6 +2529,19 @@ body {
 }
 .btn-cli-resume:hover { color: var(--blue); border-color: var(--blue); }
 
+.todo-run-cost {
+  font-size: 0.7rem;
+  font-family: monospace;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bg-hover);
+  color: var(--green);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: default;
+  margin-left: auto;
+}
+
 .btn-dequeue {
   font-size: 0.75rem !important;
   color: var(--yellow, #e5c07b) !important;

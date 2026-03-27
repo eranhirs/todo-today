@@ -9,7 +9,10 @@ export interface Project {
   name: string;
   source_path: string;
   auto_run_quota: number;
+  scheduled_auto_run_quota: number;
+  autopilot_starts_at: string | null;
   todo_quota: number;
+  run_model: string | null;  // null = use global setting
   created_at: string;
 }
 
@@ -22,6 +25,7 @@ export interface Todo {
   completed_by_run: boolean;
   emoji: string | null;
   session_id: string | null;
+  source_session_id: string | null;
   created_at: string;
   completed_at: string | null;
   rejected_at: string | null;
@@ -37,12 +41,18 @@ export interface Todo {
   plan_file: string | null;
   manual: boolean;
   is_command: boolean;
+  priority: number | null;  // 1=critical, 2=high, 3=medium, 4=low, null=no priority
   sort_order: number;
   user_ordered: boolean;
   stale_reason: string | null;
   images: { filename: string; added_at: string; source: "creation" | "followup" }[];
   pending_followup: string | null;
   red_flags: { label: string; explanation: string; excerpt: string; resolved: boolean; resolved_at?: string; source?: "pattern" | "ai" }[];
+  run_cost_usd: number | null;
+  run_input_tokens: number | null;
+  run_output_tokens: number | null;
+  run_cache_read_tokens: number | null;
+  run_duration_ms: number | null;
 }
 
 export interface Insight {
@@ -91,7 +101,7 @@ export interface Settings {
   token_budget_usd: number;
 }
 
-export type SettingsUpdate = Partial<Omit<Settings, "run_model">>;
+export type SettingsUpdate = Partial<Settings>;
 
 export interface Metadata {
   last_analysis: AnalysisEntry | null;
@@ -103,6 +113,9 @@ export interface Metadata {
   total_input_tokens: number;
   total_output_tokens: number;
   total_analyses: number;
+  total_run_cost_usd: number;
+  total_run_input_tokens: number;
+  total_run_output_tokens: number;
   analysis_interval_minutes: number;
   analysis_model: string;
   insights: Insight[];
@@ -134,6 +147,7 @@ export interface FullState {
   has_more_completed: boolean;
   completed_by_project: Record<string, number>;
   unread_counts: Record<string, number>;  // {"_total": N, "<project_id>": N}
+  session_autopilot: Record<string, number>;  // session_id → remaining quota
 }
 
 export interface CompletedPage {

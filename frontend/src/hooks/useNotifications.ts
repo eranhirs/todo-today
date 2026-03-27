@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Project, Todo } from "../types";
 import { api } from "../api";
+import { getDisplayName } from "../utils/displayNames";
 
 const TOAST_DURATION = 12_000;
 const TITLE_FLASH_INTERVAL = 1_000;
@@ -136,7 +137,7 @@ export function useNotifications() {
     }
   }, [notify]);
 
-  const notifyHookEvents = useCallback(async () => {
+  const notifyHookEvents = useCallback(async (projects: Project[]) => {
     try {
       const events = await api.getHookEvents();
       const prev = knownHookStates.current;
@@ -150,9 +151,14 @@ export function useNotifications() {
         const prevState = prev.get(key);
 
         if (prevState === entry.state) continue;
-        if (isFirstPoll && entry.state === "ended") continue;
+        // Skip "ended" entirely — notifyRunCompletions already handles run
+        // completions with richer context (todo text + project name).
+        if (entry.state === "ended") continue;
 
-        const project = entry.project_name || "unknown project";
+        // Resolve display name: find the project by backend name, then check localStorage
+        const backendName = entry.project_name || "unknown project";
+        const matchedProject = projects.find((p) => p.name === backendName);
+        const project = (matchedProject && getDisplayName(matchedProject.id)) || backendName;
         let msg: string;
         let type: ToastType;
 
@@ -165,17 +171,12 @@ export function useNotifications() {
           const detail = entry.detail ? `: ${entry.detail}` : "";
           msg = `[${project}] Waiting for user input${detail}`;
           type = "warning";
-        } else if (entry.state === "ended") {
-          const detail = entry.detail ? `: ${entry.detail}` : "";
-          msg = `[${project}] Session finished${detail}`;
-          type = "success";
         } else {
           continue;
         }
 
         const icon = entry.state === "waiting_for_tool_approval" ? NOTIF_ICONS.approval
-          : entry.state === "waiting_for_user" ? NOTIF_ICONS.user_input
-          : NOTIF_ICONS.ended;
+          : NOTIF_ICONS.user_input;
         notify(msg, type, icon);
       }
 
@@ -195,9 +196,12 @@ export function useNotifications() {
       if (!nowRunning.has(id)) {
         const todo = todos.find((t) => t.id === id);
         if (todo) {
+          // Skip notification for paused (stopped) runs — the pause action
+          // already shows its own toast, so a "run completed" would be redundant.
+          if (todo.run_status === "stopped") continue;
           const isError = todo.run_status === "error";
           const project = projects.find((p) => p.id === todo.project_id);
-          const projectLabel = project ? ` [${project.name}]` : "";
+          const projectLabel = project ? ` [${getDisplayName(project.id) || project.name}]` : "";
           const msg = isError ? `Run failed${projectLabel}: ${todo.text}` : `Run completed${projectLabel}: ${todo.text}`;
           notify(msg, isError ? "error" : "success", isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success);
         }

@@ -160,10 +160,10 @@ export const api = {
   dequeueTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/dequeue`, { method: "POST" }),
 
-  followupTodo: (id: string, message: string, images: string[] = [], planOnly = false) =>
+  followupTodo: (id: string, message: string, images: string[] = [], planOnly?: boolean) =>
     request<{ status: string }>(`/todos/${id}/followup`, {
       method: "POST",
-      body: JSON.stringify({ message, images, plan_only: planOnly }),
+      body: JSON.stringify({ message, images, ...(planOnly !== undefined && { plan_only: planOnly }) }),
     }),
 
   editFollowup: (id: string, message: string) =>
@@ -179,6 +179,12 @@ export const api = {
     request<{ status: string }>(`/todos/${id}/btw`, {
       method: "POST",
       body: JSON.stringify({ message }),
+    }),
+
+  setSessionAutopilot: (id: string, quota: number) =>
+    request<{ status: string; session_id: string; quota: number }>(`/todos/${id}/session-autopilot`, {
+      method: "POST",
+      body: JSON.stringify({ quota }),
     }),
 
   wakeUpClaude: (model?: string, force?: boolean, sessionKeys?: string[]) =>
@@ -249,7 +255,7 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
 
-  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number; todo_quota?: number }) =>
+  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number; scheduled_auto_run_quota?: number; autopilot_starts_at?: string; clear_scheduled_autopilot?: boolean; todo_quota?: number; run_model?: string; clear_run_model?: boolean }) =>
     request<Project>(`/projects/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),

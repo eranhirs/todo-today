@@ -105,7 +105,7 @@ def _format_new_messages(messages: list[dict]) -> str:
     """Format new messages as follow-up-style blocks.
 
     Groups messages into (user, assistant+) pairs, each rendered as:
-      \\n\\n--- Resumed in CLI ---\\n**You:** {user_text}\\n{assistant_text}
+      \\n\\n--- Resumed in CLI ---\\n**You:** {user_text}\\n\\n{assistant_text}
 
     This matches the follow-up separator format that the frontend parses.
     """
@@ -116,10 +116,8 @@ def _format_new_messages(messages: list[dict]) -> str:
     def flush():
         nonlocal current_user, current_assistant_parts
         if current_user is not None:
-            # First line of user msg only (frontend expects single line after **You:**)
-            user_first_line = current_user.split("\n")[0]
             assistant_text = "\n\n".join(current_assistant_parts)
-            block = f"\n\n--- Resumed in CLI ---\n**You:** {user_first_line}\n"
+            block = f"\n\n--- Resumed in CLI ---\n**You:** {current_user}\n\n"
             if assistant_text:
                 block += assistant_text
             blocks.append(block)
@@ -171,7 +169,7 @@ def sync_cli_sessions() -> int:
         return 0
 
     for info in todos_to_check:
-        encoded = info["source_path"].replace("/", "-")
+        encoded = info["source_path"].replace("/", "-").replace(".", "-")
         jsonl_path = _CLAUDE_PROJECTS / encoded / f"{info['session_id']}.jsonl"
         if not jsonl_path.is_file():
             continue

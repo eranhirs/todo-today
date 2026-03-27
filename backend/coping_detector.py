@@ -156,6 +156,18 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "\"Negligible\"",
         "Model dismissed something as negligible — let the user decide what matters.",
     ),
+    # ── Surprise: unexpected outcome ─────────────────────────────
+    (
+        re.compile(r"[A-Za-z][^.!?\n]{15,}!"),
+        "Exclamation!",
+        "Sentence ends with '!' — Claude sounds surprised. Check what happened.",
+    ),
+    # ── Strategy change: mid-course correction ───────────────────
+    (
+        re.compile(r"(?:^|\n)\s*Wait\b", re.IGNORECASE),
+        "\"Wait\"",
+        "Claude changed strategy mid-way — review why the original approach failed.",
+    ),
 ]
 
 

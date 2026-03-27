@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -20,7 +21,7 @@ from .cli_sync import sync_cli_sessions
 from .event_bus import EventType, bus
 from .git_checker import check_for_updates, skips_remaining as git_skips_remaining
 from .models import _now
-from .run_manager import is_todo_running, start_todo_run
+from .run_manager import _is_session_autopilot_eligible, is_todo_running, start_todo_run
 from .storage import StorageContext
 
 log = logging.getLogger(__name__)
@@ -70,6 +71,8 @@ async def _auto_run_todos() -> bool:
         return False
     _autopilot_running = True
     started_any = False
+    # Activate any time-based scheduled autopilot quotas before running
+    _activate_scheduled_autopilot()
     await bus.emit_event(EventType.AUTOPILOT_STARTED)
     try:
         started_any = await _auto_run_todos_inner()
@@ -145,6 +148,41 @@ async def _auto_run_todos_inner() -> bool:
                     p.auto_run_quota = max(0, p.auto_run_quota - 1)
                     log.info("Autopilot: started todo, decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
                     break
+
+    # --- Session-scoped autopilot pass ---
+    with StorageContext(read_only=True) as ctx:
+        session_ap = dict(ctx.metadata.session_autopilot)
+        all_todos = list(ctx.store.todos)
+        projects = {p.id: p for p in ctx.store.projects}
+
+    if session_ap:
+        for t in all_todos:
+            if t.status != "next" or t.run_status in ("queued", "running") or t.manual:
+                continue
+            if not t.source_session_id:
+                continue
+            ap_session = _is_session_autopilot_eligible(t, all_todos, session_ap)
+            if not ap_session:
+                continue
+            proj = projects.get(t.project_id)
+            if not proj or not proj.source_path:
+                continue
+            # Check project not already busy
+            if any(x.project_id == t.project_id and x.run_status == "running" for x in all_todos):
+                continue
+
+            err = start_todo_run(t.id, autopilot=True)
+            if err:
+                continue
+            started_any = True
+            with StorageContext() as ctx:
+                remaining = ctx.metadata.session_autopilot.get(ap_session, 0)
+                if remaining > 1:
+                    ctx.metadata.session_autopilot[ap_session] = remaining - 1
+                else:
+                    ctx.metadata.session_autopilot.pop(ap_session, None)
+            break  # One per cycle
+
     return started_any
 
 
@@ -272,6 +310,34 @@ async def trigger_analysis(
     return {"status": "ok", "entry": entry.model_dump()}
 
 
+def _activate_scheduled_autopilot() -> bool:
+    """Transfer scheduled_auto_run_quota → auto_run_quota for projects whose autopilot_starts_at has passed.
+
+    Called before autopilot runs. Checks each project's scheduled start time
+    against the current time and activates if due. Returns True if any were activated.
+    """
+    now = datetime.utcnow()
+    activated = False
+    with StorageContext() as ctx:
+        for p in ctx.store.projects:
+            if p.scheduled_auto_run_quota > 0 and p.autopilot_starts_at:
+                try:
+                    starts_at = datetime.fromisoformat(p.autopilot_starts_at.replace("Z", "+00:00").replace("+00:00", ""))
+                except ValueError:
+                    log.warning("Invalid autopilot_starts_at for project %s: %s", p.id, p.autopilot_starts_at)
+                    continue
+                if now >= starts_at:
+                    p.auto_run_quota = p.scheduled_auto_run_quota
+                    log.info(
+                        "Autopilot scheduled quota activated for project %s: %d (was scheduled for %s)",
+                        p.id, p.auto_run_quota, p.autopilot_starts_at,
+                    )
+                    p.scheduled_auto_run_quota = 0
+                    p.autopilot_starts_at = None
+                    activated = True
+    return activated
+
+
 async def queue_hook_analysis(session_key: str) -> dict:
     """Queue a session for analysis triggered by a hook event.
 
@@ -392,6 +458,27 @@ def queue_run_session_analysis(session_key: str) -> None:
         )
 
 
+async def _autopilot_activation_job() -> None:
+    """Lightweight 1-minute job: activate scheduled autopilot quotas independently of analysis.
+
+    This ensures scheduled autopilot fires even when heartbeat_enabled is False,
+    since _analysis_job skips entirely in that case and would never call
+    _activate_scheduled_autopilot.
+    """
+    if DEMO_MODE:
+        return
+    # Don't interfere if analysis is already running (it handles activation itself)
+    if _analysis_lock.locked():
+        return
+    activated = _activate_scheduled_autopilot()
+    if activated:
+        log.info("Autopilot activation job: scheduled quota activated, starting autopilot")
+        try:
+            await _auto_run_todos()
+        except Exception:
+            log.exception("Autopilot failed after activation job")
+
+
 def start_scheduler() -> None:
     global _event_loop
     _event_loop = asyncio.get_event_loop()
@@ -411,6 +498,14 @@ def start_scheduler() -> None:
         "interval",
         minutes=5,
         id="git_update_check",
+        max_instances=1,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _autopilot_activation_job,
+        "interval",
+        minutes=1,
+        id="autopilot_activation",
         max_instances=1,
         replace_existing=True,
     )

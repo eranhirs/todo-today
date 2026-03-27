@@ -3,40 +3,38 @@ import { isUnread, type Project, type Todo } from "../types";
 import { api } from "../api";
 import { AddTodo } from "./AddTodo";
 import { TodoItem } from "./TodoItem";
-import { parseTags } from "../utils/tags";
+import { parseTags, PRIORITY_INFO } from "../utils/tags";
 import { type CommandInfo } from "../utils/commands";
 import { getDisplayName, setDisplayName } from "../utils/displayNames";
+import { getSectionExpanded, setSectionExpanded } from "../utils/sectionState";
 import { matchesTodo } from "../utils/todoSearch";
+import { useAppContext } from "../contexts/AppContext";
 
 interface Props {
   todos: Todo[];
   projects: Project[];
   selectedProjectId: string | null;
   projectSummaries: Record<string, string>;
-  onRefresh: () => void;
-  addToast: (text: string, type?: "info" | "warning" | "success" | "error", options?: { onUndo?: () => void; duration?: number }) => void;
-  onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   focusedTodoId?: string | null;
   editingTodoId?: string | null;
   addInputRef?: React.RefObject<HTMLTextAreaElement | null>;
-  isOffline?: boolean;
   completedTotal?: number;
   hasMoreCompleted?: boolean;
   onLoadMoreCompleted?: (projectId?: string | null) => void;
   loadingMoreCompleted?: boolean;
   unreadCounts?: Record<string, number>;
-  addPendingDelete?: (id: string) => void;
-  removePendingDelete?: (id: string) => void;
-  addOptimisticOverride?: (id: string, fields: Partial<Todo>) => void;
-  removeOptimisticOverride?: (id: string) => void;
-  addPendingNewTodo?: (todo: Todo) => void;
-  removePendingNewTodo?: (id: string) => void;
+  globalRunModel?: string;
+  sessionAutopilot?: Record<string, number>;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, onRefresh, addToast, onOptimisticUpdate, focusedTodoId, editingTodoId, addInputRef, isOffline = false, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride, addPendingNewTodo, removePendingNewTodo }: Props) {
-  const [showUpNext, setShowUpNext] = useState(true);
-  const [showBacklog, setShowBacklog] = useState(true);
-  const [showDone, setShowDone] = useState(true);
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {} }: Props) {
+  const { addToast, onRefresh, onOptimisticUpdate, optimistic, isOffline } = useAppContext();
+  const [showUpNext, setShowUpNextRaw] = useState(() => getSectionExpanded("upnext", true));
+  const [showBacklog, setShowBacklogRaw] = useState(() => getSectionExpanded("backlog", true));
+  const [showDone, setShowDoneRaw] = useState(() => getSectionExpanded("done", true));
+  const setShowUpNext = (v: boolean) => { setShowUpNextRaw(v); setSectionExpanded("upnext", v); };
+  const setShowBacklog = (v: boolean) => { setShowBacklogRaw(v); setSectionExpanded("backlog", v); };
+  const setShowDone = (v: boolean) => { setShowDoneRaw(v); setSectionExpanded("done", v); };
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [excludedTags, setExcludedTags] = useState<Set<string>>(new Set());
   const [filterUnread, setFilterUnread] = useState(false);
@@ -44,11 +42,15 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const [searchResults, setSearchResults] = useState<Todo[] | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [filterCommands, setFilterCommands] = useState(false);
+  const [selectedPriorities, setSelectedPriorities] = useState<Set<number>>(new Set());
   const [allCommands, setAllCommands] = useState<CommandInfo[]>([]);
   const completedSentinelRef = useRef<HTMLDivElement>(null);
   // When unread filter is active and the user opens a todo's output (marking it read),
   // keep that todo visible until a different output is opened.
   const [stickyTodoId, setStickyTodoId] = useState<string | null>(null);
+
+  // Autopilot optimistic update pending state
+  const [autopilotPending, setAutopilotPending] = useState(false);
 
   // Project title rename state
   const [renamingTitle, setRenamingTitle] = useState(false);
@@ -244,6 +246,28 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     [projectFiltered]
   );
 
+  // Count todos by priority level (only active, non-completed)
+  const priorityCounts = useMemo(() => {
+    const counts: Record<number, number> = {};
+    for (const t of projectFiltered) {
+      if (t.priority !== null && t.status !== "completed") {
+        counts[t.priority] = (counts[t.priority] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [projectFiltered]);
+
+  const hasPriorities = Object.keys(priorityCounts).length > 0 || selectedPriorities.size > 0;
+
+  const togglePriority = useCallback((level: number) => {
+    setSelectedPriorities((prev) => {
+      const next = new Set(prev);
+      if (next.has(level)) next.delete(level);
+      else next.add(level);
+      return next;
+    });
+  }, []);
+
   // Apply search + tag + unread filters
   // When searching, use backend results (searches ALL todos including unpaginated completed)
   const filtered = useMemo(() => {
@@ -281,14 +305,23 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     if (filterCommands) {
       result = result.filter((t) => t.is_command);
     }
+    if (selectedPriorities.size > 0) {
+      result = result.filter((t) => t.priority !== null && selectedPriorities.has(t.priority));
+    }
     return result;
-  }, [projectFiltered, searchQuery, searchResults, selectedProjectId, selectedTags, excludedTags, filterUnread, stickyTodoId, filterCommands]);
+  }, [projectFiltered, searchQuery, searchResults, selectedProjectId, selectedTags, excludedTags, filterUnread, stickyTodoId, filterCommands, selectedPriorities]);
 
   // Sort helper: pinned (user_ordered) items first by sort_order,
-  // then unpinned items by created_at descending (newest first)
+  // then unpinned items by priority (lower number = higher priority, null = lowest),
+  // then by created_at descending (newest first)
   const sortByOrder = (a: Todo, b: Todo) => {
     if (a.user_ordered !== b.user_ordered) return a.user_ordered ? -1 : 1;
     if (a.user_ordered) return a.sort_order - b.sort_order;
+    // Priority sorting: items with priority come before those without;
+    // among prioritized items, lower number (higher urgency) comes first
+    const pa = a.priority ?? 999;
+    const pb = b.priority ?? 999;
+    if (pa !== pb) return pa - pb;
     return b.created_at.localeCompare(a.created_at);
   };
 
@@ -321,6 +354,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
 
   const projectName = (id: string) => getDisplayName(id) ?? projects.find((p) => p.id === id)?.name ?? "Unknown";
   const projectSourcePath = (id: string) => projects.find((p) => p.id === id)?.source_path ?? "";
+  const projectRunModel = (id: string) => projects.find((p) => p.id === id)?.run_model || globalRunModel;
 
   const summary = selectedProjectId ? projectSummaries[selectedProjectId] : null;
 
@@ -432,13 +466,13 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       })
     );
     for (const [id, fields] of reorderOverrides) {
-      addOptimisticOverride?.(id, fields);
+      optimistic.addOptimisticOverride(id, fields);
     }
 
     // Persist to backend
     const clearOverrides = () => {
       for (const [id] of reorderOverrides) {
-        removeOptimisticOverride?.(id);
+        optimistic.removeOptimisticOverride(id);
       }
     };
     api.reorderTodos(ids, dragId).then(() => {
@@ -449,7 +483,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       addToast("Failed to reorder todos", "error");
       onRefresh();
     });
-  }, [dropTargetId, dropPosition, onOptimisticUpdate, onRefresh, addToast, addOptimisticOverride, removeOptimisticOverride]);
+  }, [dropTargetId, dropPosition, onOptimisticUpdate, onRefresh, addToast, optimistic]);
 
   const handleDragEnd = useCallback(() => {
     dragItemId.current = null;
@@ -475,7 +509,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       >
         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
+        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} />
       </div>
     ));
 
@@ -544,13 +578,39 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               </span>
             )}
           </label>
+          <label className="project-settings-item">
+            <span className="project-settings-label">Run model</span>
+            <span
+              className="help-tooltip"
+              title={"Override the global run model for this project. Use \"global\" to inherit the global setting. " +
+                "Sonnet and Haiku are cheaper but less capable than Opus."}
+            >?</span>
+            <select
+              className={`project-settings-select${selectedProject.run_model ? " quota-active" : ""}`}
+              value={selectedProject.run_model || ""}
+              onChange={async (e) => {
+                const val = e.target.value;
+                if (val === "") {
+                  await api.updateProject(selectedProject.id, { clear_run_model: true });
+                } else {
+                  await api.updateProject(selectedProject.id, { run_model: val });
+                }
+                onRefresh();
+              }}
+            >
+              <option value="">global</option>
+              <option value="opus">opus</option>
+              <option value="sonnet">sonnet</option>
+              <option value="haiku">haiku</option>
+            </select>
+          </label>
         </div>
       )}
 
       {selectedProjectId ? (
-        <AddTodo projectId={selectedProjectId} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} addPendingNewTodo={addPendingNewTodo} removePendingNewTodo={removePendingNewTodo} />
+        <AddTodo projectId={selectedProjectId} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} inputRef={addInputRef} />
       ) : (
-        <AddTodo projects={projects} allTags={allTags} allTodos={todos} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} inputRef={addInputRef} isOffline={isOffline} addPendingNewTodo={addPendingNewTodo} removePendingNewTodo={removePendingNewTodo} />
+        <AddTodo projects={projects} allTags={allTags} allTodos={todos} allCommands={allCommands} inputRef={addInputRef} />
       )}
 
       <div className="search-bar">
@@ -567,8 +627,23 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         )}
       </div>
 
-      {(allTags.length > 0 || unreadCount > 0 || filterUnread || commandCount > 0 || filterCommands) && (
+      {(allTags.length > 0 || unreadCount > 0 || filterUnread || commandCount > 0 || filterCommands || hasPriorities) && (
         <div className="tag-filter-bar">
+          {hasPriorities && ([1, 2, 3, 4] as const).map((level) => {
+            const info = PRIORITY_INFO[level];
+            const count = priorityCounts[level] ?? 0;
+            if (count === 0 && !selectedPriorities.has(level)) return null;
+            return (
+              <button
+                key={`p${level}`}
+                className={`tag-filter-pill priority-filter priority-${level}${selectedPriorities.has(level) ? " active" : ""}`}
+                onClick={() => togglePriority(level)}
+                style={selectedPriorities.has(level) ? { borderColor: info.color, background: info.color + "18" } : {}}
+              >
+                {info.short} {info.label} ({count})
+              </button>
+            );
+          })}
           {(unreadCount > 0 || filterUnread) && (
             <button
               className={`tag-filter-pill unread-filter${filterUnread ? " active" : ""}`}
@@ -614,8 +689,8 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               </button>
             )
           )}
-          {(selectedTags.size > 0 || excludedTags.size > 0 || filterUnread || filterCommands) && (
-            <button className="tag-filter-clear" onClick={() => { clearTags(); setFilterUnread(false); setFilterCommands(false); }}>Clear</button>
+          {(selectedTags.size > 0 || excludedTags.size > 0 || filterUnread || filterCommands || selectedPriorities.size > 0) && (
+            <button className="tag-filter-clear" onClick={() => { clearTags(); setFilterUnread(false); setFilterCommands(false); setSelectedPriorities(new Set()); }}>Clear</button>
           )}
         </div>
       )}
@@ -626,27 +701,121 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
           {(showUpNext || searchQuery) ? "▾" : "▸"} Up Next ({upNext.length})
         </button>
         {selectedProject && (
-          <label className="autopilot-inline" title={selectedProject.auto_run_quota > 0 ? `Autopilot: will auto-run ${selectedProject.auto_run_quota} todo(s) on next analysis, then stop` : "Autopilot off"}>
-            <span className="autopilot-inline-label">🚀 Autopilot</span>
-            <select
-              className={`autopilot-inline-select${selectedProject.auto_run_quota > 0 ? " autopilot-active" : ""}`}
-              value={selectedProject.auto_run_quota}
-              onChange={async (e) => {
-                await api.updateProject(selectedProject.id, { auto_run_quota: Number(e.target.value) });
-                onRefresh();
-              }}
-            >
-              <option value={0}>off</option>
-              {(() => {
-                const presets = [1, 2, 3, 5, 10, 20, 50];
-                const current = selectedProject.auto_run_quota;
-                const all = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
-                return all.map((n) => (
-                  <option key={n} value={n}>{n === current && current > 0 ? `${n} left` : String(n)}</option>
-                ));
-              })()}
-            </select>
-          </label>
+          <div className={`autopilot-inline-wrapper${autopilotPending ? " autopilot-pending" : ""}`}>
+            <label className="autopilot-inline" title={
+              selectedProject.auto_run_quota > 0
+                ? `Autopilot: will auto-run ${selectedProject.auto_run_quota} todo(s) on next analysis, then stop`
+                : selectedProject.scheduled_auto_run_quota > 0
+                  ? `Autopilot: ${selectedProject.scheduled_auto_run_quota} todo(s) scheduled for ${selectedProject.autopilot_starts_at ? new Date(selectedProject.autopilot_starts_at).toLocaleString() : "next quota reset"}`
+                  : "Autopilot off"
+            }>
+              <span className="autopilot-inline-label">🚀 Autopilot</span>
+              <select
+                className={`autopilot-inline-select${selectedProject.auto_run_quota > 0 ? " autopilot-active" : ""}${selectedProject.scheduled_auto_run_quota > 0 && selectedProject.auto_run_quota === 0 ? " autopilot-scheduled" : ""}`}
+                disabled={autopilotPending}
+                value={
+                  selectedProject.auto_run_quota > 0
+                    ? String(selectedProject.auto_run_quota)
+                    : selectedProject.scheduled_auto_run_quota > 0
+                      ? `sched_${selectedProject.scheduled_auto_run_quota}`
+                      : "0"
+                }
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  const pid = selectedProject.id;
+                  setAutopilotPending(true);
+                  try {
+                    if (val.startsWith("sched_")) {
+                      const n = Number(val.slice(6));
+                      const now = new Date();
+                      const next2am = new Date(now);
+                      next2am.setUTCHours(2, 0, 0, 0);
+                      if (next2am <= now) next2am.setUTCDate(next2am.getUTCDate() + 1);
+                      const startsAt = next2am.toISOString().replace(/\.\d{3}Z$/, "Z");
+                      optimistic.addOptimisticProjectOverride(pid, { auto_run_quota: 0, scheduled_auto_run_quota: n, autopilot_starts_at: startsAt });
+                      await api.updateProject(pid, { auto_run_quota: 0, scheduled_auto_run_quota: n, autopilot_starts_at: startsAt });
+                    } else {
+                      const n = Number(val);
+                      optimistic.addOptimisticProjectOverride(pid, { auto_run_quota: n, scheduled_auto_run_quota: 0, autopilot_starts_at: null });
+                      await api.updateProject(pid, { auto_run_quota: n, clear_scheduled_autopilot: true });
+                    }
+                  } finally {
+                    optimistic.removeOptimisticProjectOverride(pid);
+                    setAutopilotPending(false);
+                    onRefresh();
+                  }
+                }}
+              >
+                <option value="0">off</option>
+                <optgroup label="Start now">
+                  {(() => {
+                    const presets = [1, 2, 3, 5, 10, 20, 50];
+                    const current = selectedProject.auto_run_quota;
+                    const all = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
+                    return all.map((n) => (
+                      <option key={n} value={String(n)}>{n === current && current > 0 ? `${n} left` : String(n)}</option>
+                    ));
+                  })()}
+                </optgroup>
+                <optgroup label="Schedule">
+                  {(() => {
+                    const presets = [1, 2, 3, 5, 10, 20, 50];
+                    const current = selectedProject.scheduled_auto_run_quota;
+                    const all = current > 0 && !presets.includes(current) ? [...presets, current].sort((a, b) => a - b) : presets;
+                    return all.map((n) => (
+                      <option key={`sched_${n}`} value={`sched_${n}`}>{n === current && current > 0 ? `${n} scheduled` : String(n)}</option>
+                    ));
+                  })()}
+                </optgroup>
+              </select>
+            </label>
+            {selectedProject.scheduled_auto_run_quota > 0 && selectedProject.autopilot_starts_at && (
+              <span className="autopilot-schedule-info">
+                <input
+                  type="datetime-local"
+                  className="autopilot-schedule-time"
+                  disabled={autopilotPending}
+                  value={(() => {
+                    const d = new Date(selectedProject.autopilot_starts_at!);
+                    const pad = (n: number) => String(n).padStart(2, "0");
+                    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                  })()}
+                  onChange={async (e) => {
+                    if (!e.target.value) return;
+                    const local = new Date(e.target.value);
+                    const startsAt = local.toISOString().replace(/\.\d{3}Z$/, "Z");
+                    const pid = selectedProject.id;
+                    setAutopilotPending(true);
+                    optimistic.addOptimisticProjectOverride(pid, { autopilot_starts_at: startsAt });
+                    try {
+                      await api.updateProject(pid, { autopilot_starts_at: startsAt });
+                    } finally {
+                      optimistic.removeOptimisticProjectOverride(pid);
+                      setAutopilotPending(false);
+                      onRefresh();
+                    }
+                  }}
+                />
+                <button
+                  className="autopilot-schedule-cancel"
+                  title="Cancel scheduled autopilot"
+                  disabled={autopilotPending}
+                  onClick={async () => {
+                    const pid = selectedProject.id;
+                    setAutopilotPending(true);
+                    optimistic.addOptimisticProjectOverride(pid, { scheduled_auto_run_quota: 0, autopilot_starts_at: null });
+                    try {
+                      await api.updateProject(pid, { clear_scheduled_autopilot: true });
+                    } finally {
+                      optimistic.removeOptimisticProjectOverride(pid);
+                      setAutopilotPending(false);
+                      onRefresh();
+                    }
+                  }}
+                >x</button>
+              </span>
+            )}
+          </div>
         )}
       </div>
       {(showUpNext || searchQuery) && (
@@ -701,7 +870,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                     {items.map((t) => (
                       <div key={t.id}>
                         {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} onRefresh={onRefresh} addToast={addToast} onOptimisticUpdate={onOptimisticUpdate} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} addPendingDelete={addPendingDelete} removePendingDelete={removePendingDelete} addOptimisticOverride={addOptimisticOverride} removeOptimisticOverride={removeOptimisticOverride} />
+                        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} />
                       </div>
                     ))}
                   </div>

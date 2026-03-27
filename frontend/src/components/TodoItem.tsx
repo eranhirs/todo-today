@@ -5,18 +5,17 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { TodoRunControls } from "./TodoRunControls";
 import { TodoOutput } from "./TodoOutput";
-import { parseTags, stripTagsFromText } from "../utils/tags";
+import { parseTags, stripTagsFromText, stripPriorityFromText, PRIORITY_INFO } from "../utils/tags";
 import { type CommandInfo, stripCommandsFromText } from "../utils/commands";
 import { filterMentionSuggestions } from "../utils/todoSearch";
+import { formatTime, formatDate, timeAgo } from "../utils/formatting";
+import { useAppContext } from "../contexts/AppContext";
 
 interface Props {
   todo: Todo;
   allTags?: string[];
   allTodos?: Todo[];
   allCommands?: CommandInfo[];
-  onRefresh: () => void;
-  addToast: (text: string, type?: "info" | "warning" | "success" | "error", options?: { onUndo?: () => void; duration?: number }) => void;
-  onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   isFocused?: boolean;
   triggerEdit?: boolean;
   projectBusy?: boolean;
@@ -25,10 +24,8 @@ interface Props {
   disabled?: boolean;
   sourcePath?: string;
   onOutputOpen?: (todoId: string) => void;
-  addPendingDelete?: (id: string) => void;
-  removePendingDelete?: (id: string) => void;
-  addOptimisticOverride?: (id: string, fields: Partial<Todo>) => void;
-  removeOptimisticOverride?: (id: string) => void;
+  runModel?: string;
+  sessionAutopilot?: Record<string, number>;
 }
 
 const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
@@ -41,30 +38,9 @@ const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
   { value: "rejected", label: "Rejected", icon: "⊘" },
 ];
 
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
 
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
-}
-
-function timeAgo(iso: string): string {
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  const weeks = Math.floor(days / 7);
-  return `${weeks}w ago`;
-}
-
-export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, addPendingDelete, removePendingDelete, addOptimisticOverride, removeOptimisticOverride }: Props) {
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, runModel = "opus", sessionAutopilot = {} }: Props) {
+  const { addToast, onRefresh, onOptimisticUpdate, optimistic } = useAppContext();
   const commands = allCommands ?? [];
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState(todo.text);
@@ -147,16 +123,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
       if (willShow) {
         onOutputOpen?.(todo.id);
         if (isUnread(todo)) {
-          addOptimisticOverride?.(todo.id, { is_read: true });
+          optimistic.addOptimisticOverride(todo.id, { is_read: true });
           onOptimisticUpdate((todos) =>
             todos.map((t) => t.id === todo.id ? { ...t, is_read: true } : t)
           );
           try {
             await api.updateTodo(todo.id, { is_read: true });
-            removeOptimisticOverride?.(todo.id);
+            optimistic.removeOptimisticOverride(todo.id);
             onRefresh();
           } catch {
-            removeOptimisticOverride?.(todo.id);
+            optimistic.removeOptimisticOverride(todo.id);
             /* silent — not critical */
           }
         }
@@ -182,16 +158,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     const prevStatus = todo.status;
     const prevReason = todo.stale_reason;
     const override = { status: newStatus, stale_reason: newStatus === "stale" ? todo.stale_reason : null } as Partial<Todo>;
-    addOptimisticOverride?.(todo.id, override);
+    optimistic.addOptimisticOverride(todo.id, override);
     onOptimisticUpdate((todos) =>
       todos.map((t) => t.id === todo.id ? { ...t, ...override } : t)
     );
     try {
       await api.updateTodo(todo.id, { status: newStatus });
-      removeOptimisticOverride?.(todo.id);
+      optimistic.removeOptimisticOverride(todo.id);
       onRefresh();
     } catch {
-      removeOptimisticOverride?.(todo.id);
+      optimistic.removeOptimisticOverride(todo.id);
       onOptimisticUpdate((todos) =>
         todos.map((t) => t.id === todo.id ? { ...t, status: prevStatus, stale_reason: prevReason } : t)
       );
@@ -209,7 +185,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     // Optimistically hide the item immediately and mark as pending delete
     // so polling doesn't bring it back during the undo window
     const snapshot = { ...todo };
-    addPendingDelete?.(snapshot.id);
+    optimistic.addPendingDelete(snapshot.id);
     onOptimisticUpdate((todos) => todos.filter((t) => t.id !== todo.id));
 
     let undone = false;
@@ -217,7 +193,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
 
     const doDelete = async () => {
       if (undone) return;
-      removePendingDelete?.(snapshot.id);
+      optimistic.removePendingDelete(snapshot.id);
       try {
         await api.deleteTodo(snapshot.id);
         onRefresh();
@@ -241,8 +217,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
           clearTimeout(deleteTimerRef.current);
           deleteTimerRef.current = null;
         }
-        // Remove from pending deletes and restore the item
-        removePendingDelete?.(snapshot.id);
+        optimistic.removePendingDelete(snapshot.id);
         onOptimisticUpdate((todos) => [...todos, snapshot]);
         onRefresh();
       },
@@ -254,16 +229,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
       addToast("You're offline — changes aren't available right now", "warning");
       return;
     }
-    addOptimisticOverride?.(todo.id, { user_ordered: false });
+    optimistic.addOptimisticOverride(todo.id, { user_ordered: false });
     onOptimisticUpdate((todos) =>
       todos.map((t) => t.id === todo.id ? { ...t, user_ordered: false } : t)
     );
     try {
       await api.updateTodo(todo.id, { user_ordered: false });
-      removeOptimisticOverride?.(todo.id);
+      optimistic.removeOptimisticOverride(todo.id);
       onRefresh();
     } catch {
-      removeOptimisticOverride?.(todo.id);
+      optimistic.removeOptimisticOverride(todo.id);
       onOptimisticUpdate((todos) =>
         todos.map((t) => t.id === todo.id ? { ...t, user_ordered: true } : t)
       );
@@ -284,16 +259,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
     const trimmed = editText.trim();
     if (trimmed && trimmed !== todo.text) {
       const prevText = todo.text;
-      addOptimisticOverride?.(todo.id, { text: trimmed });
+      optimistic.addOptimisticOverride(todo.id, { text: trimmed });
       onOptimisticUpdate((todos) =>
         todos.map((t) => t.id === todo.id ? { ...t, text: trimmed } : t)
       );
       try {
         await api.updateTodo(todo.id, { text: trimmed, source: "user" });
-        removeOptimisticOverride?.(todo.id);
+        optimistic.removeOptimisticOverride(todo.id);
         onRefresh();
       } catch {
-        removeOptimisticOverride?.(todo.id);
+        optimistic.removeOptimisticOverride(todo.id);
         onOptimisticUpdate((todos) =>
           todos.map((t) => t.id === todo.id ? { ...t, text: prevText } : t)
         );
@@ -459,7 +434,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
   const tags = useMemo(() => parseTags(todo.text), [todo.text]);
 
   const renderedText = useMemo(() => {
-    let displayText = stripCommandsFromText(stripTagsFromText(todo.text));
+    let displayText = stripCommandsFromText(stripPriorityFromText(stripTagsFromText(todo.text)));
     // Convert @[title](id) mention references to HTML before markdown parsing,
     // so marked doesn't misinterpret them as markdown links (which breaks if
     // the title contains ] or other special chars).
@@ -575,6 +550,15 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
             ))}
           </span>
         )}
+        {todo.priority !== null && PRIORITY_INFO[todo.priority] && (
+          <span
+            className={`priority-badge priority-${todo.priority}`}
+            title={`Priority: ${PRIORITY_INFO[todo.priority].label}`}
+            style={{ borderColor: PRIORITY_INFO[todo.priority].color, color: PRIORITY_INFO[todo.priority].color }}
+          >
+            {PRIORITY_INFO[todo.priority].short}
+          </span>
+        )}
         {isPending && <span className="pending-badge" title="Not sent — added while offline">not sent</span>}
         {todo.manual && <span className="manual-badge" title="Manual task — for human execution, cannot be run by Claude">manual</span>}
         {todo.is_command && <span className="command-badge" title="Skill/command execution">cmd</span>}
@@ -627,16 +611,16 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
             onClick={async (e) => {
               e.stopPropagation();
               const newVal = !todo.is_read;
-              addOptimisticOverride?.(todo.id, { is_read: newVal });
+              optimistic.addOptimisticOverride(todo.id, { is_read: newVal });
               onOptimisticUpdate((todos) =>
                 todos.map((t) => t.id === todo.id ? { ...t, is_read: newVal } : t)
               );
               try {
                 await api.updateTodo(todo.id, { is_read: newVal });
-                removeOptimisticOverride?.(todo.id);
+                optimistic.removeOptimisticOverride(todo.id);
                 onRefresh();
               } catch {
-                removeOptimisticOverride?.(todo.id);
+                optimistic.removeOptimisticOverride(todo.id);
                 onOptimisticUpdate((todos) =>
                   todos.map((t) => t.id === todo.id ? { ...t, is_read: !newVal } : t)
                 );
@@ -647,6 +631,9 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
         )}
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
+        )}
+        {todo.source_session_id && sessionAutopilot[todo.source_session_id] > 0 && !isRunning && (
+          <span className="badge badge-session-autopilot" title={`Part of session autopilot chain (${sessionAutopilot[todo.source_session_id]} remaining)`}>🔗</span>
         )}
         {todo.red_flags && todo.red_flags.length > 0 && (() => {
           const unresolved = todo.red_flags.filter((f) => !f.resolved).length;
@@ -669,7 +656,40 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
           );
         })()}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        {!todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} />}
+        {!todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} runModel={runModel} />}
+        {todo.session_id && !isRunning && !isQueued && (() => {
+          const sessionKey = todo.session_id!;
+          const activeQuota = sessionAutopilot[sessionKey] ?? 0;
+          return (
+            <select
+              className={`session-autopilot-select${activeQuota > 0 ? " session-autopilot-active" : ""}`}
+              value={String(activeQuota)}
+              title={activeQuota > 0 ? `Session autopilot: ${activeQuota} remaining — descendants of this session will auto-run` : "Session autopilot — auto-run descendants of this session"}
+              onChange={async (e) => {
+                const quota = Number(e.target.value);
+                try {
+                  await api.setSessionAutopilot(todo.id, quota);
+                  onRefresh();
+                  if (quota > 0) {
+                    addToast(`Session autopilot enabled (${quota} runs)`, "success");
+                  } else {
+                    addToast("Session autopilot disabled", "info");
+                  }
+                } catch {
+                  addToast("Failed to set session autopilot", "error");
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <option value="0">--</option>
+              <option value="1">1</option>
+              <option value="3">3</option>
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="20">20</option>
+            </select>
+          );
+        })()}
         {todo.user_ordered && (
           <button className="btn-icon btn-unpin" onClick={unpinOrder} title="Unpin order — let the system reorder this item">📌</button>
         )}
@@ -740,9 +760,22 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, onRef
             title={`Resume in CLI — copies: cd ${sourcePath} && claude --resume ${todo.session_id}`}
           >Resume in CLI</button>
         )}
+        {todo.run_cost_usd != null && todo.run_cost_usd > 0 && (
+          <span
+            className="todo-run-cost"
+            title={[
+              `Input: ${((todo.run_input_tokens ?? 0) / 1000).toFixed(1)}k tokens`,
+              `Output: ${((todo.run_output_tokens ?? 0) / 1000).toFixed(1)}k tokens`,
+              todo.run_cache_read_tokens ? `Cache read: ${((todo.run_cache_read_tokens) / 1000).toFixed(1)}k tokens` : "",
+              todo.run_duration_ms ? `Duration: ${(todo.run_duration_ms / 1000).toFixed(0)}s` : "",
+            ].filter(Boolean).join("\n")}
+          >
+            ${todo.run_cost_usd < 0.01 ? todo.run_cost_usd.toFixed(3) : todo.run_cost_usd.toFixed(2)}
+          </span>
+        )}
       </div>
     )}
-    <TodoOutput todo={todo} showOutput={showOutput} onRefresh={onRefresh} addToast={addToast} disabled={disabled} allCommands={allCommands} />
+    <TodoOutput todo={todo} showOutput={showOutput} disabled={disabled} allCommands={allCommands} />
     </>
   );
 }

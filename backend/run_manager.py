@@ -1,7 +1,7 @@
 """Subprocess lifecycle management for Claude todo runs.
 
 Handles spawning, output tailing, recovery after server restart, and
-per-project queue logic. Extracted from routers/todos.py.
+per-project queue logic.
 """
 
 from __future__ import annotations
@@ -21,6 +21,14 @@ from typing import Optional
 from .coping_detector import detect_coping_phrases
 from .event_bus import EventType, bus
 from .models import _now
+from .output_parser import (
+    detect_exit_plan_mode,
+    detect_plan_file,
+    detect_plan_mode,
+    extract_assistant_text,
+    extract_run_costs,
+    parse_output_file,
+)
 from .storage import DATA_DIR, StorageContext
 
 log = logging.getLogger(__name__)
@@ -214,42 +222,37 @@ def _runs_in_window(project_id: str, todos: list, hours: int = 24) -> int:
 # ── Helpers ──────────────────────────────────────────────────────
 
 
+def _accumulate_costs_on_todo(t, costs: dict) -> None:
+    """Add run cost/token usage to a todo (accumulates for follow-ups)."""
+    t.run_cost_usd = (t.run_cost_usd or 0.0) + costs["cost"]
+    t.run_input_tokens = (t.run_input_tokens or 0) + costs["input_tokens"]
+    t.run_output_tokens = (t.run_output_tokens or 0) + costs["output_tokens"]
+    t.run_cache_read_tokens = (t.run_cache_read_tokens or 0) + costs["cache_read_tokens"]
+    t.run_duration_ms = (t.run_duration_ms or 0) + costs["duration_ms"]
+
+
+def _accumulate_costs_on_metadata(metadata, costs: dict) -> None:
+    """Add run costs to global metadata totals."""
+    if costs["cost"] > 0 or costs["input_tokens"] > 0 or costs["output_tokens"] > 0:
+        metadata.total_run_cost_usd += costs["cost"]
+        metadata.total_run_input_tokens += costs["input_tokens"]
+        metadata.total_run_output_tokens += costs["output_tokens"]
+
+
 def _flush_progress(todo_id: str, output: str, flush_lines: int | None = None) -> None:
     """Write current accumulated output to the store."""
     with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                t.run_output = cap_output(output)
-                if flush_lines is not None:
-                    t.run_flush_lines = flush_lines
-                break
+        t = ctx.get_todo(todo_id)
+        if t is not None:
+            t.run_output = cap_output(output)
+            if flush_lines is not None:
+                t.run_flush_lines = flush_lines
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
 
-def _extract_assistant_text(line_json: dict) -> Optional[str]:
-    """Extract text content from a stream-json assistant message."""
-    if line_json.get("type") != "assistant":
-        return None
-    msg = line_json.get("message", {})
-    content = msg.get("content", [])
-    parts = []
-    for block in content:
-        if isinstance(block, dict):
-            if block.get("type") == "text":
-                parts.append(block["text"])
-            elif block.get("type") == "tool_use":
-                name = block.get("name", "tool")
-                inp = block.get("input", {})
-                # Show tool calls concisely
-                if name == "Bash":
-                    parts.append(f"$ {inp.get('command', '')}")
-                elif name in ("Edit", "Write"):
-                    parts.append(f"[{name}: {inp.get('file_path', '')}]")
-                elif name == "Read":
-                    parts.append(f"[Read: {inp.get('file_path', '')}]")
-                else:
-                    parts.append(f"[{name}]")
-    return "\n".join(parts) if parts else None
+# Backward-compatible alias — callers that imported _extract_assistant_text
+# from run_manager continue to work.
+_extract_assistant_text = extract_assistant_text
 
 
 def _is_quota_error(output: str) -> bool:
@@ -269,349 +272,26 @@ def _handle_quota_error(todo_id: str, error_output: str, output_file: Path) -> N
         "Quota/rate-limit error for todo %s — resetting to 'next' for retry on next heartbeat",
         todo_id,
     )
+    _update_session_msg_count(todo_id)
     with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                t.status = "next"
-                t.run_status = None
-                t.run_output = f"[Quota/rate-limit error — will retry on next heartbeat]\n\n{error_output[:2000]}"
-                t.run_pid = None
-                t.run_output_file = None
-                break
+        t = ctx.get_todo(todo_id)
+        if t is not None:
+            t.status = "next"
+            t.run_status = None
+            t.run_output = f"[Quota/rate-limit error — will retry on next heartbeat]\n\n{error_output[:2000]}"
+            t.run_pid = None
+            t.run_output_file = None
     process_manager.cleanup_output_file(output_file)
 
 
-def _detect_plan_file(
-    stream_objects: list[dict],
-    source_path: str = "",
-    run_started_at: str | None = None,
-) -> Optional[str]:
-    """Scan stream objects for a Write tool_use targeting .claude/plans/.
-
-    Falls back to scanning the filesystem at ``{source_path}/.claude/plans/``
-    for files modified after *run_started_at* when the stream-object scan
-    returns nothing (e.g. reconnect picked up only a tail of output).
-
-    Returns the file path if found, else None.
-    """
-    # Primary: stream-object detection
-    for obj in stream_objects:
-        if obj.get("type") != "assistant":
-            continue
-        for block in obj.get("message", {}).get("content", []):
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                if block.get("name") == "Write":
-                    file_path = block.get("input", {}).get("file_path", "")
-                    if ".claude/plans/" in file_path:
-                        return file_path
-
-    # Fallback: filesystem scan
-    if source_path and run_started_at:
-        plans_dir = Path(source_path) / ".claude" / "plans"
-        if plans_dir.is_dir():
-            try:
-                cutoff = datetime.fromisoformat(run_started_at)
-            except (ValueError, TypeError):
-                return None
-            best: tuple[datetime, str] | None = None
-            try:
-                for entry in plans_dir.iterdir():
-                    if not entry.is_file():
-                        continue
-                    mtime = datetime.fromtimestamp(entry.stat().st_mtime)
-                    if mtime >= cutoff:
-                        if best is None or mtime > best[0]:
-                            best = (mtime, str(entry))
-            except OSError:
-                pass
-            if best is not None:
-                log.info("Detected plan file via filesystem fallback: %s", best[1])
-                return best[1]
-
-    return None
+# Backward-compatible aliases for detection functions (now in output_parser)
+_detect_plan_file = detect_plan_file
+_detect_exit_plan_mode = detect_exit_plan_mode
+_detect_plan_mode = detect_plan_mode
 
 
-def _detect_exit_plan_mode(stream_lines: list[dict]) -> bool:
-    """Check if any assistant message called ExitPlanMode.
-
-    Previously only checked the last assistant message, but after Claude calls
-    ExitPlanMode the CLI returns a tool_result (is_error) and Claude often
-    writes another assistant message responding to it — burying the
-    ExitPlanMode call in an earlier turn.
-    """
-    for obj in stream_lines:
-        if obj.get("type") != "assistant":
-            continue
-        for block in obj.get("message", {}).get("content", []):
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                if block.get("name") == "ExitPlanMode":
-                    return True
-    return False
-
-
-def _detect_plan_mode(stream_lines: list[dict]) -> bool:
-    """Check if any assistant message called EnterPlanMode.
-
-    Serves as a fallback signal: if Claude entered plan mode but never called
-    ExitPlanMode (e.g. the CLI exited before it could), we still know a plan
-    was written and should auto-accept.
-    """
-    for obj in stream_lines:
-        if obj.get("type") != "assistant":
-            continue
-        for block in obj.get("message", {}).get("content", []):
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                if block.get("name") == "EnterPlanMode":
-                    return True
-    return False
-
-
-# ── Concurrent BTW runner ────────────────────────────────────────
-
-
-def _flush_btw_progress(todo_id: str, output: str, is_continuation: bool = False) -> None:
-    """Write current accumulated btw output to the store."""
-    with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                if is_continuation and t.btw_output:
-                    # Replace content after the last separator with current progress
-                    sep = "\n\n--- BTW ---\n"
-                    last_sep = t.btw_output.rfind(sep)
-                    if last_sep >= 0:
-                        t.btw_output = cap_output(t.btw_output[:last_sep] + sep + output)
-                    else:
-                        t.btw_output = cap_output(t.btw_output + sep + output)
-                else:
-                    t.btw_output = cap_output(output)
-                break
-    bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
-
-
-def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", main_session_id: str = "", btw_session_id: str | None = None) -> None:
-    """Background thread: run a concurrent /btw Claude session alongside the main run.
-
-    First call: forks the main session via --resume --fork-session so Claude has
-    the full conversation history. The forked session is persisted and its ID is
-    saved as btw_session_id.
-
-    Subsequent calls: resumes the existing btw_session_id so messages stay in the
-    same conversational thread rather than opening a new tab.
-    """
-    output_file = _RUNS_DIR / f"{todo_id}_btw.jsonl"
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        is_continuation = btw_session_id is not None
-
-        prompt = (
-            f"The user has a mid-task question. Answer concisely — this is a /btw "
-            f"side-channel that won't be added to the main conversation:\n\n"
-            f"{message}"
-        )
-        accumulated: list[str] = []
-
-        # Store btw metadata on todo — append separator for continuations
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.btw_output_file = str(output_file)
-                    t.btw_status = "running"
-                    if is_continuation and t.btw_output:
-                        t.btw_output += f"\n\n--- BTW ---\n**You:** {message}\n"
-                    else:
-                        t.btw_output = f"**You:** {message}\n"
-                    t.pending_btw = None
-                    break
-
-        # Ensure clean output file
-        output_file.write_text("")
-
-        if is_continuation:
-            # Resume the existing btw session
-            cmd = [
-                "claude", "-p", "--output-format", "stream-json", "--verbose",
-                "--dangerously-skip-permissions",
-                "--model", model,
-                "--resume", btw_session_id,
-            ]
-        else:
-            # Fork from main session to start a new btw conversation
-            cmd = [
-                "claude", "-p", "--output-format", "stream-json", "--verbose",
-                "--dangerously-skip-permissions",
-                "--model", model,
-                "--resume", main_session_id,
-                "--fork-session",
-            ]
-
-        fout = open(output_file, "a")
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=fout,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=source_path,
-            env=env,
-            start_new_session=True,
-        )
-        proc.stdin.write(prompt)
-        proc.stdin.close()
-        fout.close()
-
-        # Store PID
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.btw_pid = proc.pid
-                    break
-
-        # Tail the output file
-        last_flush = time.monotonic()
-        file_pos = 0
-        result_session_id: str | None = None
-
-        while True:
-            alive = _pid_alive(proc.pid)
-
-            try:
-                with open(output_file, "r") as f:
-                    f.seek(file_pos)
-                    new_data = f.read()
-                    file_pos = f.tell()
-            except FileNotFoundError:
-                new_data = ""
-
-            for line in new_data.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "result":
-                    # Capture session_id from result for future continuation
-                    result_session_id = obj.get("session_id")
-                    continue
-                text = _extract_assistant_text(obj)
-                if text:
-                    accumulated.append(text)
-
-            now = time.monotonic()
-            if now - last_flush >= _FLUSH_INTERVAL and accumulated:
-                this_msg_output = f"**You:** {message}\n\n" + "\n".join(accumulated)
-                _flush_btw_progress(todo_id, this_msg_output, is_continuation=is_continuation)
-                last_flush = now
-
-            if not alive:
-                break
-            time.sleep(0.5)
-
-        # Final flush
-        output_text = "\n".join(accumulated)
-        proc.wait(timeout=60)
-        returncode = proc.returncode
-
-        if returncode != 0:
-            stderr_out = proc.stderr.read() if proc.stderr else ""
-            if stderr_out:
-                log.error("BTW Claude stderr for todo %s: %s", todo_id, stderr_out[:2000])
-                output_text += f"\n\nstderr: {stderr_out[:2000]}"
-
-        this_msg_output = f"**You:** {message}\n\n" + output_text
-
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    if is_continuation and t.btw_output:
-                        # Find the last "--- BTW ---" separator and replace everything after it
-                        sep = "\n\n--- BTW ---\n"
-                        last_sep = t.btw_output.rfind(sep)
-                        if last_sep >= 0:
-                            t.btw_output = cap_output(t.btw_output[:last_sep] + sep + this_msg_output)
-                        else:
-                            t.btw_output = cap_output(t.btw_output + sep + this_msg_output)
-                    else:
-                        t.btw_output = cap_output(this_msg_output)
-                    t.btw_status = "error" if returncode != 0 else "done"
-                    t.btw_pid = None
-                    t.btw_output_file = None
-                    # Save session ID for continuation (prefer result, fall back to existing)
-                    if result_session_id:
-                        t.btw_session_id = result_session_id
-                    break
-
-        bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
-
-    except Exception as e:
-        log.exception("BTW run error for todo %s", todo_id)
-        with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.btw_status = "error"
-                    t.btw_output = (t.btw_output or "") + f"\n\n--- Error ---\n{e}"
-                    t.btw_pid = None
-                    t.btw_output_file = None
-                    break
-    finally:
-        process_manager.cleanup_output_file(output_file)
-        _btw_threads.pop(todo_id, None)
-
-
-# Track btw threads separately from main run threads
-_btw_threads: dict[str, threading.Thread] = {}
-
-
-def is_btw_running(todo_id: str) -> bool:
-    """Check if a btw side-channel is active for a todo."""
-    return todo_id in _btw_threads and _btw_threads[todo_id].is_alive()
-
-
-def start_btw(todo_id: str, message: str) -> str | None:
-    """Start a concurrent btw session for a running todo. Returns None on success, or error string."""
-    if is_btw_running(todo_id):
-        return "btw already running"
-
-    with StorageContext(read_only=True) as ctx:
-        todo = None
-        source_path = None
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                todo = t
-                break
-        if todo is None:
-            return "todo not found"
-        if todo.run_status != "running":
-            return "todo not running"
-
-        for p in ctx.store.projects:
-            if p.id == todo.project_id:
-                source_path = p.source_path
-                break
-        if not source_path:
-            return "no source_path"
-
-        main_session_id = todo.session_id
-        if not main_session_id:
-            return "no session"
-        btw_session_id = todo.btw_session_id
-        # Resolve model: per-project override > global setting
-        project = None
-        for p in ctx.store.projects:
-            if p.id == todo.project_id:
-                project = p
-                break
-        run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
-
-    thread = threading.Thread(
-        target=run_btw_for_todo,
-        args=(todo_id, message, source_path, run_model, main_session_id, btw_session_id),
-        daemon=True,
-    )
-    thread.start()
-    _btw_threads[todo_id] = thread
-    return None
+# ── BTW (by-the-way) sessions — delegated to btw_manager ────────
+from .btw_manager import is_btw_running, run_btw_for_todo, start_btw  # noqa: E402, F401
 
 
 # ── Subprocess invocation & tailing ──────────────────────────────
@@ -667,11 +347,10 @@ def _invoke_claude(
 
     # Store PID on the todo so we can reconnect after restart
     with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                t.run_pid = proc.pid
-                t.run_output_file = str(output_file)
-                break
+        t = ctx.get_todo(todo_id)
+        if t is not None:
+            t.run_pid = proc.pid
+            t.run_output_file = str(output_file)
 
     # Tail the output file while the process runs
     final_result, stream_objects = _tail_output_file(
@@ -767,24 +446,22 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
     followup_plan_only = False
     session_id = None
     with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                if t.pending_followup:
-                    followup_msg = t.pending_followup
-                    followup_images = list(t.pending_followup_images)
-                    followup_plan_only = t.pending_followup_plan_only
-                    session_id = t.session_id
-                    t.pending_followup = None
-                    t.pending_followup_images = []
-                    t.pending_followup_plan_only = False
-                    t.run_status = "running"
-                    t.status = "in_progress"
-                    t.completed_at = None
-                    # Append the follow-up message to output now that it's actually starting
-                    n_imgs = len(followup_images)
-                    img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
-                    t.run_output = (t.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {followup_msg}{img_suffix}\n"
-                break
+        t = ctx.get_todo(todo_id)
+        if t is not None and t.pending_followup:
+            followup_msg = t.pending_followup
+            followup_images = list(t.pending_followup_images)
+            followup_plan_only = t.pending_followup_plan_only
+            session_id = t.session_id
+            t.pending_followup = None
+            t.pending_followup_images = []
+            t.pending_followup_plan_only = False
+            t.run_status = "running"
+            t.status = "in_progress"
+            t.completed_at = None
+            # Append the follow-up message to output now that it's actually starting
+            n_imgs = len(followup_images)
+            img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+            t.run_output = (t.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {followup_msg}{img_suffix}\n\n"
 
     if followup_msg and session_id:
         process_manager.spawn_thread(
@@ -813,11 +490,12 @@ def _resolve_todo_references(todo_text: str) -> str:
         for m in matches:
             ref_title = m.group(1)
             ref_id = m.group(2)
-            ref_todo = next((t for t in ctx.store.todos if t.id == ref_id), None)
+            ref_todo = ctx.get_todo(ref_id)
             if ref_todo and ref_todo.run_output:
                 # Extract the last Claude response (after the last follow-up separator)
                 sep_re = re.compile(
-                    r'\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* .+\n'
+                    r'\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* .+?\n\n',
+                    re.DOTALL,
                 )
                 last_sep_end = 0
                 for sep_m in sep_re.finditer(ref_todo.run_output):
@@ -882,12 +560,11 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
         # Store output file path and session_id on todo; capture run_started_at
         run_started_at: str | None = None
         with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_output_file = str(output_file)
-                    t.session_id = session_id
-                    run_started_at = t.run_started_at
-                    break
+            t = ctx.get_todo(todo_id)
+            if t is not None:
+                t.run_output_file = str(output_file)
+                t.session_id = session_id
+                run_started_at = t.run_started_at
 
         bus.emit_event_sync(EventType.RUN_STARTED, todo_id=todo_id, todo_text=todo_text, project_id=project_id)
 
@@ -918,7 +595,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             # but this is expected and should trigger auto-accept, not an error.
             # Also detect EnterPlanMode as a fallback: if Claude entered plan
             # mode but never explicitly exited, we still auto-accept.
-            entered_plan = _detect_exit_plan_mode(stream_objects) or _detect_plan_mode(stream_objects)
+            entered_plan = detect_exit_plan_mode(stream_objects) or detect_plan_mode(stream_objects)
             if not plan_only and entered_plan and attempt < max_retries:
                 continue
 
@@ -938,6 +615,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
         err_str = str(e)
+        _update_session_msg_count(todo_id)
         if _is_already_stopped(todo_id):
             log.info("Ignoring exception for todo %s — already stopped/paused by user", todo_id)
             process_manager.cleanup_output_file(output_file)
@@ -945,14 +623,13 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             _handle_quota_error(todo_id, err_str, output_file)
         else:
             with StorageContext() as ctx:
-                for t in ctx.store.todos:
-                    if t.id == todo_id:
-                        t.run_status = "error"
-                        t.run_output = err_str
-                        t.run_pid = None
-                        t.run_output_file = None
-                        t.is_read = False
-                        break
+                t = ctx.get_todo(todo_id)
+                if t is not None:
+                    t.run_status = "error"
+                    t.run_output = err_str
+                    t.run_pid = None
+                    t.run_output_file = None
+                    t.is_read = False
             process_manager.cleanup_output_file(output_file)
     finally:
         # Trigger analysis directly — don't rely solely on hook curl
@@ -981,11 +658,10 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
         # Use the already-updated output (includes user message) as the header
         run_started_at: str | None = None
         with StorageContext(read_only=True) as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    existing_output = t.run_output or ""
-                    run_started_at = t.run_started_at
-                    break
+            t = ctx.get_todo(todo_id)
+            if t is not None:
+                existing_output = t.run_output or ""
+                run_started_at = t.run_started_at
             else:
                 existing_output = ""
 
@@ -1010,21 +686,21 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
             plan_only=plan_only,
         )
 
-        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, source_path=source_path, run_started_at=run_started_at)
+        _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, stream_objects=stream_objects, source_path=source_path, run_started_at=run_started_at)
 
     except Exception as e:
         log.exception("Claude follow-up error for todo %s", todo_id)
+        _update_session_msg_count(todo_id)
         if _is_already_stopped(todo_id):
             log.info("Ignoring follow-up exception for todo %s — already stopped/paused by user", todo_id)
         else:
             with StorageContext() as ctx:
-                for t in ctx.store.todos:
-                    if t.id == todo_id:
-                        t.run_status = "error"
-                        t.run_output = (t.run_output or "") + f"\n\n--- Follow-up Error ---\n{e}"
-                        t.run_pid = None
-                        t.run_output_file = None
-                        break
+                t = ctx.get_todo(todo_id)
+                if t is not None:
+                    t.run_status = "error"
+                    t.run_output = (t.run_output or "") + f"\n\n--- Follow-up Error ---\n{e}"
+                    t.run_pid = None
+                    t.run_output_file = None
         process_manager.cleanup_output_file(output_file)
     finally:
         process_manager.unregister_thread(todo_id)
@@ -1038,10 +714,8 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
 def _is_already_stopped(todo_id: str) -> bool:
     """Check if a todo's run was already stopped/paused by the user."""
     with StorageContext(read_only=True) as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                return t.run_status == "stopped"
-    return False
+        t = ctx.get_todo(todo_id)
+        return t.run_status == "stopped" if t is not None else False
 
 
 def _count_session_messages(session_id: str, source_path: str) -> int | None:
@@ -1072,6 +746,24 @@ def _count_session_messages(session_id: str, source_path: str) -> int | None:
     return count
 
 
+def _update_session_msg_count(todo_id: str) -> None:
+    """Update session_msg_count on a todo to match the current JSONL file.
+
+    Called from all run-exit paths (success, error, stopped, exception, quota)
+    to prevent sync_cli_sessions from misidentifying app-generated messages
+    as 'Resumed in CLI'.
+    """
+    with StorageContext() as ctx:
+        t = ctx.get_todo(todo_id)
+        if t is not None and t.session_id:
+            p = ctx.get_project(t.project_id)
+            source = p.source_path if p else ""
+            if source:
+                count = _count_session_messages(t.session_id, source)
+                if count is not None:
+                    t.session_msg_count = count
+
+
 def _finalize_run(
     todo_id: str,
     final_result: Optional[dict],
@@ -1088,16 +780,25 @@ def _finalize_run(
     # If the user already paused/stopped this run, don't overwrite the status
     if _is_already_stopped(todo_id):
         log.info("Skipping finalize for todo %s — already stopped/paused by user", todo_id)
+        _update_session_msg_count(todo_id)
         process_manager.cleanup_output_file(output_file)
         return
     # Detect plan file written during the run
-    plan_file = _detect_plan_file(stream_objects or [], source_path=source_path, run_started_at=run_started_at)
+    plan_file = detect_plan_file(stream_objects or [], source_path=source_path, run_started_at=run_started_at)
 
     # For plan_only runs that wrote a plan file or entered plan mode, suppress
     # errors — Claude may exit non-zero after writing the plan (e.g. permission
     # denials for tools it tried after writing), but the plan itself is valid.
-    entered_plan = _detect_plan_mode(stream_objects or [])
+    entered_plan = detect_plan_mode(stream_objects or [])
     suppress_error = plan_only and (plan_file is not None or entered_plan)
+
+    # Extract cost/token usage from all result events (summed across plan retries)
+    costs = extract_run_costs(stream_objects or [])
+    run_cost = costs["cost"]
+    run_input_tokens = costs["input_tokens"]
+    run_output_tokens = costs["output_tokens"]
+    run_cache_read_tokens = costs["cache_read_tokens"]
+    run_duration_ms = costs["duration_ms"]
 
     if returncode != 0 and not suppress_error:
         stderr_msg = f"Exit code {returncode}"
@@ -1106,16 +807,20 @@ def _finalize_run(
         if output_so_far:
             stderr_msg = output_so_far + "\n\n--- ERROR ---\n" + stderr_msg
         with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    t.run_status = "error"
-                    t.run_output = cap_output(session_header + stderr_msg)
-                    t.run_pid = None
-                    t.run_output_file = None
-                    # Still save plan_file even on error — the plan may be valid
-                    if plan_file:
-                        t.plan_file = plan_file
-                    break
+            t = ctx.get_todo(todo_id)
+            if t is not None:
+                t.run_status = "error"
+                t.run_output = cap_output(session_header + stderr_msg)
+                t.run_pid = None
+                t.run_output_file = None
+                # Still save plan_file even on error — the plan may be valid
+                if plan_file:
+                    t.plan_file = plan_file
+                # Store run cost even on error — tokens were consumed
+                _accumulate_costs_on_todo(t, costs)
+            # Accumulate into metadata
+            _accumulate_costs_on_metadata(ctx.metadata, costs)
+        _update_session_msg_count(todo_id)
         bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id, exit_code=returncode)
         process_manager.cleanup_output_file(output_file)
         return
@@ -1179,44 +884,30 @@ def _finalize_run(
     # Scan output for coping phrases
     red_flags = detect_coping_phrases(output_text)
 
+    _update_session_msg_count(todo_id)
+
     with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                t.run_output = cap_output(session_header + output_text)
-                t.run_pid = None
-                t.run_output_file = None
-                t.is_read = False
-                t.red_flags = red_flags
-                if plan_file:
-                    t.plan_file = plan_file
-                # Record session message count for CLI resume sync
-                if t.session_id:
-                    source = ""
-                    for p in ctx.store.projects:
-                        if p.id == t.project_id:
-                            source = p.source_path
-                            break
-                    if source:
-                        count = _count_session_messages(t.session_id, source)
-                        if count is not None:
-                            t.session_msg_count = count
-                if had_errors:
-                    t.run_status = "error"
-                    bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)
-                elif plan_only:
-                    # Plan-only runs are done once the plan is produced
-                    t.run_status = "done"
-                    t.status = "completed"
-                    t.completed_at = _now()
-                    t.completed_by_run = True
-                    bus.emit_event_sync(EventType.RUN_COMPLETED, todo_id=todo_id)
-                else:
-                    t.run_status = "done"
-                    t.status = "completed"
-                    t.completed_at = _now()
-                    t.completed_by_run = True
-                    bus.emit_event_sync(EventType.RUN_COMPLETED, todo_id=todo_id)
-                break
+        t = ctx.get_todo(todo_id)
+        if t is not None:
+            t.run_output = cap_output(session_header + output_text)
+            t.run_pid = None
+            t.run_output_file = None
+            t.is_read = False
+            t.red_flags = red_flags
+            if plan_file:
+                t.plan_file = plan_file
+            _accumulate_costs_on_todo(t, costs)
+            if had_errors:
+                t.run_status = "error"
+                bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)
+            else:
+                t.run_status = "done"
+                t.status = "completed"
+                t.completed_at = _now()
+                t.completed_by_run = True
+                bus.emit_event_sync(EventType.RUN_COMPLETED, todo_id=todo_id)
+
+        _accumulate_costs_on_metadata(ctx.metadata, costs)
 
     process_manager.cleanup_output_file(output_file)
 
@@ -1242,20 +933,17 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
     source_path = ""
     run_started_at: str | None = None
     with StorageContext(read_only=True) as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                existing_output = t.run_output or ""
-                flush_lines = t.run_flush_lines
-                proj_id = t.project_id
-                is_plan_only = t.plan_only
-                run_started_at = t.run_started_at
-                break
+        t = ctx.get_todo(todo_id)
+        if t is not None:
+            existing_output = t.run_output or ""
+            flush_lines = t.run_flush_lines
+            proj_id = t.project_id
+            is_plan_only = t.plan_only
+            run_started_at = t.run_started_at
         # Resolve source_path from the project
         if proj_id:
-            for p in ctx.store.projects:
-                if p.id == proj_id:
-                    source_path = p.source_path
-                    break
+            p = ctx.get_project(proj_id)
+            source_path = p.source_path if p else ""
 
     # Recover any output written to the file between the last flush and
     # server death.  Re-read the entire file to extract text lines, then
@@ -1310,7 +998,7 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
             # detection (EnterPlanMode, ExitPlanMode, Write to .claude/plans/)
             # works even when the server restarted mid-run and _tail_output_file
             # only captured objects from the restart point onward.
-            _, _, all_stream_objects = parse_output_file_result(str(output_file))
+            _, _, all_stream_objects = parse_output_file(str(output_file))
 
             _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=is_plan_only, stream_objects=all_stream_objects, source_path=source_path, run_started_at=run_started_at)
 
@@ -1320,14 +1008,13 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
                 log.info("Ignoring reconnect exception for todo %s — already stopped/paused by user", todo_id)
             else:
                 with StorageContext() as ctx:
-                    for t in ctx.store.todos:
-                        if t.id == todo_id:
-                            t.run_status = "error"
-                            existing = t.run_output or ""
-                            t.run_output = cap_output(existing + f"\n\n[Reconnect failed: {e}]") if existing else f"[Reconnect failed: {e}]"
-                            t.run_pid = None
-                            t.run_output_file = None
-                            break
+                    t = ctx.get_todo(todo_id)
+                    if t is not None:
+                        t.run_status = "error"
+                        existing = t.run_output or ""
+                        t.run_output = cap_output(existing + f"\n\n[Reconnect failed: {e}]") if existing else f"[Reconnect failed: {e}]"
+                        t.run_pid = None
+                        t.run_output_file = None
             process_manager.cleanup_output_file(output_file)
         finally:
             process_manager.unregister_thread(todo_id)
@@ -1338,45 +1025,8 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
     process_manager.spawn_thread(todo_id, _watcher)
 
 
-def parse_output_file_result(output_file_str: str) -> tuple[Optional[dict], list[str], list[dict]]:
-    """Parse a completed output file to extract final result, accumulated text, and stream objects.
-
-    Used when the subprocess finished while the server was down, or to
-    recover full stream context after a server restart.
-    Returns (final_result, accumulated_texts, stream_objects).
-    """
-    output_file = Path(output_file_str)
-    final_result = None
-    accumulated: list[str] = []
-    stream_objects: list[dict] = []
-
-    if not output_file.exists():
-        return None, [], []
-
-    try:
-        with open(output_file, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                stream_objects.append(obj)
-
-                if obj.get("type") == "result":
-                    final_result = obj
-                    continue
-
-                text = _extract_assistant_text(obj)
-                if text:
-                    accumulated.append(text)
-    except Exception:
-        log.debug("Could not parse output file %s", output_file)
-
-    return final_result, accumulated, stream_objects
+# Backward-compatible alias — parse_output_file_result now lives in output_parser
+parse_output_file_result = parse_output_file
 
 
 # ── Queue & status ───────────────────────────────────────────────
@@ -1394,12 +1044,7 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         return "already running"
 
     with StorageContext() as ctx:
-        todo = None
-        source_path = None
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                todo = t
-                break
+        todo = ctx.get_todo(todo_id)
         if todo is None:
             return "todo not found"
 
@@ -1410,10 +1055,8 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         if todo.run_status == "running":
             return "already running"
 
-        for p in ctx.store.projects:
-            if p.id == todo.project_id:
-                source_path = p.source_path
-                break
+        project = ctx.get_project(todo.project_id)
+        source_path = project.source_path if project else None
         if not source_path:
             return "no source_path"
 
@@ -1427,11 +1070,7 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
                 break
 
         # Enforce daily run quota for fresh runs (not follow-ups on already-run todos)
-        todo_quota = 0
-        for p in ctx.store.projects:
-            if p.id == todo.project_id:
-                todo_quota = p.todo_quota
-                break
+        todo_quota = project.todo_quota if project else 0
         if todo_quota > 0 and todo.run_started_at is None:
             if _runs_in_window(todo.project_id, ctx.store.todos) >= todo_quota:
                 return "run_quota_exceeded"
@@ -1462,11 +1101,6 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         todo_text = todo.text
         proj_id = todo.project_id
         # Resolve model: per-project override > global setting
-        project = None
-        for p in ctx.store.projects:
-            if p.id == todo.project_id:
-                project = p
-                break
         run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
         is_plan_only = todo.plan_only
         todo_images = [img.filename for img in todo.images] if todo.images else None
@@ -1497,13 +1131,8 @@ def _process_queue(project_id: str) -> None:
 
         # Pick next candidate and transition to running
         candidate = queued[0]
-        source_path = None
-        todo_quota = 0
-        for p in ctx.store.projects:
-            if p.id == project_id:
-                source_path = p.source_path
-                todo_quota = p.todo_quota
-                break
+        project = ctx.get_project(project_id)
+        source_path = project.source_path if project else None
         if not source_path:
             # Can't run — clear all queued items for this project
             for t in queued:
@@ -1527,11 +1156,6 @@ def _process_queue(project_id: str) -> None:
         todo_id = candidate.id
         todo_text = candidate.text
         # Resolve model: per-project override > global setting
-        project = None
-        for p in ctx.store.projects:
-            if p.id == project_id:
-                project = p
-                break
         run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
         is_plan_only = candidate.plan_only
         todo_images = [img.filename for img in candidate.images] if candidate.images else None
@@ -1614,13 +1238,9 @@ def autopilot_continue(project_id: str) -> None:
                 return  # still busy (manual queue drained into a run)
 
         # Check autopilot quota
-        quota = 0
-        todo_quota = 0
-        for p in ctx.store.projects:
-            if p.id == project_id:
-                quota = p.auto_run_quota
-                todo_quota = p.todo_quota
-                break
+        project = ctx.get_project(project_id)
+        quota = project.auto_run_quota if project else 0
+        todo_quota = project.todo_quota if project else 0
 
         # Enforce daily run quota (applies to both project and session autopilot)
         if todo_quota > 0 and _runs_in_window(project_id, ctx.store.todos) >= todo_quota:
@@ -1645,11 +1265,10 @@ def autopilot_continue(project_id: str) -> None:
             err = start_todo_run(todo.id, autopilot=True)
             if not err:
                 with StorageContext() as ctx:
-                    for p in ctx.store.projects:
-                        if p.id == project_id:
-                            p.auto_run_quota = max(0, p.auto_run_quota - 1)
-                            log.info("Autopilot continue: decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
-                            break
+                    p = ctx.get_project(project_id)
+                    if p is not None:
+                        p.auto_run_quota = max(0, p.auto_run_quota - 1)
+                        log.info("Autopilot continue: decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
                 return
             log.info("Autopilot continue: could not start todo %s: %s", todo.id, err)
 
@@ -1693,51 +1312,51 @@ def autopilot_continue(project_id: str) -> None:
 def dequeue_todo_run(todo_id: str) -> str | None:
     """Remove a todo from the run queue. Returns None on success, or an error string."""
     with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                if t.run_status != "queued":
-                    return "not queued"
-                t.run_status = "done" if t.session_id else None
-                t.run_trigger = None
-                t.queued_at = None
-                t.pending_followup = None
-                t.pending_followup_images = []
-                t.pending_followup_plan_only = False
-                return None
-    return "todo not found"
+        t = ctx.get_todo(todo_id)
+        if t is None:
+            return "todo not found"
+        if t.run_status != "queued":
+            return "not queued"
+        t.run_status = "done" if t.session_id else None
+        t.run_trigger = None
+        t.queued_at = None
+        t.pending_followup = None
+        t.pending_followup_images = []
+        t.pending_followup_plan_only = False
+        return None
 
 
 def cancel_pending_followup(todo_id: str) -> str | None:
     """Cancel a pending/queued follow-up message. Returns None on success, or an error string."""
     with StorageContext() as ctx:
-        for t in ctx.store.todos:
-            if t.id == todo_id:
-                if not t.pending_followup:
-                    return "no pending followup"
+        t = ctx.get_todo(todo_id)
+        if t is None:
+            return "todo not found"
+        if not t.pending_followup:
+            return "no pending followup"
 
-                msg = t.pending_followup
-                n_imgs = len(t.pending_followup_images)
-                img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+        msg = t.pending_followup
+        n_imgs = len(t.pending_followup_images)
+        img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
 
-                # Remove followup images from todo's image list
-                followup_fnames = set(t.pending_followup_images)
-                if followup_fnames:
-                    t.images = [img for img in t.images if not (img.source == "followup" and img.filename in followup_fnames)]
+        # Remove followup images from todo's image list
+        followup_fnames = set(t.pending_followup_images)
+        if followup_fnames:
+            t.images = [img for img in t.images if not (img.source == "followup" and img.filename in followup_fnames)]
 
-                t.pending_followup = None
-                t.pending_followup_images = []
-                t.pending_followup_plan_only = False
+        t.pending_followup = None
+        t.pending_followup_images = []
+        t.pending_followup_plan_only = False
 
-                # Remove the queued follow-up line from run_output
-                if t.run_output:
-                    queued_line = f"\n\n--- Follow-up (queued) ---\n**You:** {msg}{img_suffix}\n"
-                    t.run_output = t.run_output.replace(queued_line, "")
+        # Remove the queued follow-up line from run_output
+        if t.run_output:
+            queued_line = f"\n\n--- Follow-up (queued) ---\n**You:** {msg}{img_suffix}\n\n"
+            t.run_output = t.run_output.replace(queued_line, "")
 
-                # If the todo was only queued for this follow-up, un-queue it
-                if t.run_status == "queued":
-                    t.run_status = "done"
-                    t.run_trigger = None
-                    t.queued_at = None
+        # If the todo was only queued for this follow-up, un-queue it
+        if t.run_status == "queued":
+            t.run_status = "done"
+            t.run_trigger = None
+            t.queued_at = None
 
-                return None
-    return "todo not found"
+        return None

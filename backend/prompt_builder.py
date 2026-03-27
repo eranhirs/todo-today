@@ -17,54 +17,89 @@ from .tags import parse_tags
 log = logging.getLogger(__name__)
 
 
+_TODO_FIELDS_TO_STRIP = {
+    "run_output", "run_pid", "run_output_file", "btw_output", "btw_pid",
+    "btw_output_file", "btw_session_id", "pending_followup", "pending_followup_images",
+    "pending_followup_plan_only", "pending_btw", "run_flush_lines", "images",
+    "red_flags", "plan_file", "session_msg_count",
+}
+
+
+def _slim_todo(t: dict) -> dict:
+    """Strip large/internal fields from a todo dict before including in prompt."""
+    return {k: v for k, v in t.items() if k not in _TODO_FIELDS_TO_STRIP and v is not None}
+
+
+# Static instructions placed at the beginning of every prompt for cache-friendliness.
+# The Claude API caches matching prefixes, so keeping this identical across calls
+# means only the dynamic data (todos, sessions) costs fresh input tokens.
+_STATIC_INSTRUCTIONS = """You analyze Claude Code sessions to update a todo list. Return a JSON object with these fields:
+
+1. `completed_todo_ids`: IDs of todos the sessions show are done.
+2. `status_updates`: [{id, status, reason?}]. Statuses: "next","in_progress","completed","consider","waiting","stale". Never use "rejected". Include `reason` when setting "stale".
+3. `new_todos`: [{text, status, session_id?}]. Auto-assigned to the project. Types: "completed" (only if NO existing todo covers this work), "next" (actionable), "consider" (ideas). No "Next:"/"Consider:" prefixes.
+4. `project_summaries`: {project_id: "1-2 sentence summary"}.
+5. `insights`: problems/risks/missed opportunities only (not praise). [{text}]. Max 1. Empty list if nothing wrong.
+6. `modified_todos`: [{id, text?, status?}]. Use actively — update existing todos rather than creating new ones with different wording.
+7. `dismiss_insight_ids`: IDs of stale insights to dismiss.
+8. `red_flags`: [{todo_id, label, explanation}]. Label = generic anti-pattern name (e.g. "Over-engineering", "Scope creep", "Silent failure"). Only flag genuine problems.
+
+## Rules (ranked by importance)
+
+1. **NEVER duplicate.** Before creating any new_todo, scan ALL existing todos. If one covers the same work (even approximately), use modified_todos or status_updates instead. This is the most important rule.
+2. **Rejected todos are off-limits.** Never re-suggest them or include their IDs in any action.
+3. **User-created todos (source="user") are protected.** Only action allowed: set status to "stale" via status_updates. Cannot change text or mark completed.
+4. **Completed todos are permanent.** Never mark completed todos as "stale".
+5. **Don't rename to past tense.** "Add dark mode" stays "Add dark mode" when completed.
+6. **Prefix todo text with a relevant emoji** (🐛 bug, ✨ feature, ♻️ refactor, 🧪 test, 📝 docs, etc.).
+7. **Use existing hashtags only.** Append relevant ones from the Existing Hashtags list. Don't invent new ones. Preserve existing hashtags when modifying text.
+8. **Add emoji/hashtags to existing todos** via modified_todos when they lack them.
+9. **"waiting" todos** only for sessions needing user action (waiting_for_user or waiting_for_tool_approval). Format: "Respond to Claude: <description>". Clean up stale waiting todos.
+10. **Extract suggestions individually** as separate "consider" todos, not as a single "review suggestions" item.
+11. **Todos vs insights**: new_todos = tasks to do; insights = things to know. Don't mix.
+
+Write a brief analysis (2-4 sentences), then output JSON in a ```json fenced code block."""
+
+
 def _build_project_prompt(
     project: "Project",
     todos: list[dict],
     insights: list[dict],
     sessions: list[dict],
 ) -> str:
-    """Build an analysis prompt scoped to a single project."""
-    parts = ["You are analyzing Claude Code sessions to update a todo list.\n"]
+    """Build an analysis prompt scoped to a single project.
 
-    parts.append(f"## Project\n")
-    parts.append(f"ID: {project.id}")
-    parts.append(f"Name: {project.name}")
-    parts.append(f"Source: {project.source_path}\n")
+    Structure: static instructions first (cache-friendly prefix), then dynamic data.
+    """
+    parts = [_STATIC_INSTRUCTIONS, ""]
+
+    parts.append(f"## Project: {project.name} (ID: {project.id})\nSource: {project.source_path}\n")
 
     # Only show todos relevant to the sessions being analyzed (or unlinked todos).
-    # This prevents Claude from seeing todos for *other* sessions and creating
-    # duplicates with slightly different wording.
     active_session_ids = {s["session_id"] for s in sessions}
     relevant_todos = [
-        t for t in todos
+        _slim_todo(t) for t in todos
         if t.get("status") != "rejected" and (not t.get("session_id") or t["session_id"] in active_session_ids)
     ]
 
-    # Collect rejected todos separately — these inform Claude what NOT to re-suggest
     rejected_todos = [t for t in todos if t.get("status") == "rejected"]
 
     if relevant_todos:
-        parts.append("## Current Todos for This Project\n")
+        parts.append("## Current Todos\n")
         parts.append(json.dumps(relevant_todos, indent=2))
         parts.append("")
 
     if rejected_todos:
-        parts.append("## Rejected Todos (DO NOT re-suggest these)\n")
-        parts.append("The user explicitly rejected these ideas. Do not suggest them again or create new todos covering the same topics.\n")
+        parts.append("## Rejected Todos (DO NOT re-suggest)\n")
         parts.append(json.dumps([{"id": t["id"], "text": t["text"]} for t in rejected_todos], indent=2))
         parts.append("")
 
-    # Collect all existing hashtags so Claude knows which tags it may reuse.
-    # Unknown tags are stripped by result_applier, so this list defines the boundary.
     all_tags: set[str] = set()
     for t in todos:
         all_tags.update(parse_tags(t.get("text", "")))
     if all_tags:
-        sorted_tags = sorted(all_tags)
         parts.append("## Existing Hashtags\n")
-        parts.append("These hashtags are already in use. Reuse them on new and modified todos when relevant. "
-                      "Do NOT invent new hashtags — only use tags from this list.\n")
-        parts.append(" ".join(f"#{tag}" for tag in sorted_tags))
+        parts.append(" ".join(f"#{tag}" for tag in sorted(all_tags)))
         parts.append("")
 
     if insights:
@@ -81,44 +116,6 @@ def _build_project_prompt(
         if state_info:
             parts.append(_format_session_state_line(state_info))
         parts.append("")
-
-    parts.append(f"""## Instructions
-
-You are analyzing sessions for project "{project.name}" (ID: {project.id}).
-
-Based on the session activity above, return a JSON object with:
-1. `completed_todo_ids`: IDs of existing todos that the sessions show are completed (backward compat shortcut — these get status set to "completed")
-2. `status_updates`: change the status of existing todos. Each has `id`, `status`, and an optional `reason`. Valid statuses: "next", "in_progress", "completed", "consider", "waiting", "stale". Do NOT use "rejected" — only the user can reject a todo. Use this for any status transition (e.g. marking something in_progress, stale, etc.). When setting status to "stale", always include a `reason` (a brief explanation of why the todo is no longer relevant, e.g. "Session moved past this", "Superseded by newer implementation", "Work was completed in a different approach").
-3. `new_todos`: concrete actionable tasks. Each has `text`, `status` (one of: "next", "in_progress", "completed", "consider", "waiting", "stale"), and an optional `session_id` (the session ID that prompted this todo — include it for "waiting" todos so we can link back to the source session). All todos will be assigned to project {project.id} automatically — do NOT include a `project_id` field. There are several kinds:
-   - **Completed work** (`status: "completed"`): ONLY for work accomplished in sessions that has NO corresponding existing todo at all. If any existing todo covers the same topic/work, update it instead — do NOT create a new todo.
-   - **Next steps** (`status: "next"`): actionable tasks for future work
-   - **Ideas** (`status: "consider"`): things worth evaluating but not yet committed to
-   - Do NOT prefix todo text with "Next:", "Consider:", etc. — the `status` field handles this
-4. `project_summaries`: a dict with a single entry: `{{"{project.id}": "1-2 sentence summary of current work"}}`
-5. `insights`: critical observations that could change how the user works — NOT praise, NOT descriptions of what was done, NOT "nice pattern" commentary. Only flag problems, risks, or missed opportunities. Each has `text` only. Return an empty list unless you spot something genuinely wrong or risky. Max 1 item.
-6. `modified_todos`: existing todos whose text or status should change. Each has `id` and optionally `text` and/or `status`. **Use this actively** — when a session progresses past what an existing todo describes, update or mark it stale rather than creating a new todo with slightly different wording.
-7. `dismiss_insight_ids`: IDs of existing insights (from the Active Insights section above) that are no longer relevant — e.g. the issue was resolved, the risk no longer applies, or the insight is outdated given recent session activity. Only dismiss insights you're confident are stale.
-8. `red_flags`: semantic red flags you want to raise on specific todos. Each has `todo_id` (the ID of the todo to flag), `label` (a short generic phenomenon name), and `explanation` (1 sentence explaining the concern). The `label` must describe a general anti-pattern or phenomenon — NOT specific details. Think of it like a category name. Good labels: "Over-engineering", "Scope creep", "Silent failure", "Premature abstraction", "Unnecessary complexity", "Unilateral action", "Unilateral acceptance", "Incomplete implementation", "Missing error handling", "Tight coupling", "Magic values". Bad labels: "Added extra Redis cache layer", "Changed the auth flow without asking". The explanation field is where you describe the specific concern. Only raise flags when you genuinely see a problem in the session activity.
-
-Important:
-- **NEVER create a new todo that covers the same work as an existing todo — regardless of status.** If an existing todo already describes the work (even approximately), use `completed_todo_ids`, `status_updates`, or `modified_todos` to update it. Do NOT create a rephrased version. This applies to ALL statuses — completed, next, in_progress, consider, etc. For example: if an existing todo says "Put the reject option as a status", do NOT create "Removed reject button — now uses status pills" or "Implement reject as a status option". Just update the existing todo.
-- **Do NOT rename todos to past tense.** When marking a todo as completed, leave its text as-is. The status field already indicates completion — rewriting "Add dark mode" to "Added dark mode" is unnecessary.
-- **Adding emoji and hashtags is always welcome.** Use `modified_todos` to add an emoji or relevant hashtags to any existing todo that lacks them, regardless of its status. This is purely cosmetic and does not count as a status change.
-- Only mark existing todos as completed (via completed_todo_ids or status_updates) if the session clearly shows the work is done
-- Keep todo text concise and actionable — no "Next:" or "Consider:" prefixes
-- **Prefix every todo `text` with a single relevant emoji** that represents the nature of the work (e.g. 🐛 for bug fixes, ✨ for new features, ♻️ for refactoring, 🧪 for tests, 📝 for docs, 🔧 for config, 🎨 for styling, 🚀 for deployment, etc.). The emoji will be parsed out automatically.
-- **Use hashtags for categorization.** Append relevant hashtags from the "Existing Hashtags" section to todo text (e.g. "✨ Add dark mode toggle #frontend #ui"). Apply this to both new todos AND when editing existing todos via `modified_todos` — if an existing todo has no hashtags but a relevant one exists, add it. Only use hashtags that already exist — unknown tags will be stripped automatically. If no existing hashtag fits, omit hashtags rather than inventing new ones. When modifying an existing todo's text, preserve any hashtags it already has.
-- Only create a `"waiting"` todo when a session needs user action: `waiting_for_user` (Claude asked a question) or `waiting_for_tool_approval` (Claude wants to run a tool and needs approval). Use the format "Respond to Claude: <brief description of what it's asking or wants to do>". Do NOT create waiting todos for `active` sessions (a tool ran and Claude is continuing) — those don't need user action.
-- Don't duplicate existing todos or existing insights
-- **Rejected todos are off-limits.** If a todo appears in the "Rejected Todos" section, the user explicitly said no. Do NOT create new todos that cover the same idea, even with different wording. Do NOT include rejected todo IDs in any action list.
-- **Supersession rule**: Before creating ANY `new_todo`, carefully scan ALL existing todos for one covering the same topic or work. If one exists — regardless of its current status — use `modified_todos` or `status_updates` to update it. Do NOT create a new todo. This is the single most important rule: existing todos should be updated, not duplicated.
-- **"Waiting" cleanup**: If a session's state has moved past `waiting_for_tool_approval` or `waiting_for_user`, mark any existing "waiting" todo for that session as "stale" via `status_updates`.
-- `new_todos` are tasks (things to do); `insights` are observations (things to know) — don't mix them
-- **Extract suggestions as todos**: When a session produces a list of concrete suggestions, ideas, or improvement proposals, extract each one as an individual `consider` todo. Don't summarize them as a single "review suggestions" item — the user wants each idea tracked separately so they can act on them independently.
-- **Completed todos are permanent history.** NEVER mark a completed todo as "stale" — completed work must remain visible as a record of accomplishments. Do not include completed todo IDs in `status_updates` with status "stale" or in `modified_todos` with status "stale".
-- **User-created todos (source="user") are protected.** The ONLY action you may take on them is setting their status to "stale" via `status_updates`. You CANNOT change their text or any other status. Do NOT include user-created todo IDs in `completed_todo_ids` or `modified_todos`.
-
-First, write a brief analysis of what you observe in the sessions (2-4 sentences). Then output the JSON inside a ```json fenced code block.""")
 
     return "\n".join(parts)
 

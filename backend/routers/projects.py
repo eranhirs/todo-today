@@ -56,8 +56,21 @@ async def update_project(project_id: str, body: ProjectUpdate) -> Project:
                         p.source_path = body.source_path
                     if body.auto_run_quota is not None:
                         p.auto_run_quota = max(0, min(50, body.auto_run_quota))
+                    if body.clear_scheduled_autopilot:
+                        p.scheduled_auto_run_quota = 0
+                        p.autopilot_starts_at = None
+                    else:
+                        if body.scheduled_auto_run_quota is not None:
+                            p.scheduled_auto_run_quota = max(0, min(50, body.scheduled_auto_run_quota))
+                        if body.autopilot_starts_at is not None:
+                            p.autopilot_starts_at = body.autopilot_starts_at
                     if body.todo_quota is not None:
                         p.todo_quota = max(0, body.todo_quota)
+                    if body.clear_run_model:
+                        p.run_model = None
+                    elif body.run_model is not None:
+                        if body.run_model in ("opus", "sonnet", "haiku"):
+                            p.run_model = body.run_model
                     bus.emit_event_sync(EventType.PROJECT_UPDATED, project_id=p.id)
                     return p
         return None

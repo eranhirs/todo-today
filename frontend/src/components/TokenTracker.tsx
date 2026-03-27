@@ -109,6 +109,7 @@ export function TokenTracker({ metadata, onRefresh: _ }: Props) {
 
   const persistentlyUnavailable = failCount.current >= MAX_CONSECUTIVE_FAILURES;
   const hasUsage = usage !== null;
+  const hasBars = hasUsage && (usage.five_hour || usage.seven_day || usage.seven_day_sonnet || usage.seven_day_opus);
   const sessionPct = hasUsage && usage.five_hour?.utilization != null
     ? Math.floor(usage.five_hour.utilization) : null;
 
@@ -144,6 +145,10 @@ export function TokenTracker({ metadata, onRefresh: _ }: Props) {
               <button className="btn-link" onClick={() => fetchUsage(true)} style={{ marginLeft: 8 }}>
                 Retry
               </button>
+              {" · "}
+              <a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer" className="btn-link">
+                View on claude.ai
+              </a>
             </div>
           )}
 
@@ -172,17 +177,36 @@ export function TokenTracker({ metadata, onRefresh: _ }: Props) {
                   Extra usage: {usage.extra_usage.is_enabled ? "enabled" : "not enabled"}
                 </div>
               )}
+              {!hasBars && (
+                <div className="usage-unavailable">
+                  Usage data not available.{" "}
+                  <a href="https://claude.ai/settings/usage" target="_blank" rel="noopener noreferrer" className="btn-link">
+                    View on claude.ai
+                  </a>
+                </div>
+              )}
             </>
           )}
 
           {/* App token stats */}
           {metadata.total_analyses > 0 && (
             <div className="usage-app-stats">
-              <div className="usage-app-stats-label">App analysis totals</div>
+              <div className="usage-app-stats-label">Analysis totals</div>
               <div className="usage-app-stats-row">
                 <span>${metadata.total_cost_usd.toFixed(2)}</span>
                 <span>{metadata.total_analyses} runs</span>
                 <span>{((metadata.total_input_tokens + metadata.total_output_tokens) / 1000).toFixed(0)}k tokens</span>
+              </div>
+            </div>
+          )}
+
+          {/* Run cost stats */}
+          {(metadata.total_run_cost_usd > 0 || metadata.total_run_input_tokens > 0) && (
+            <div className="usage-app-stats">
+              <div className="usage-app-stats-label">Run totals</div>
+              <div className="usage-app-stats-row">
+                <span>${metadata.total_run_cost_usd.toFixed(2)}</span>
+                <span>{((metadata.total_run_input_tokens + metadata.total_run_output_tokens) / 1000).toFixed(0)}k tokens</span>
               </div>
             </div>
           )}

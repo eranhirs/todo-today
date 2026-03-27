@@ -9,7 +9,7 @@ import tempfile
 import threading
 from pathlib import Path
 
-from .models import Metadata, TodoStore
+from .models import Metadata, Project, Todo, TodoStore
 
 
 # Python 3.8 compatibility: asyncio.to_thread was added in 3.9
@@ -119,3 +119,23 @@ class StorageContext:
             save_store(self.store)
             save_metadata(self.metadata)
         _lock.release()
+
+    # ── Query helpers ─────────────────────────────────────────────
+
+    def get_todo(self, todo_id: str) -> Todo | None:
+        """Find a todo by ID. Returns a reference to the in-memory object (mutable)."""
+        for t in self.store.todos:
+            if t.id == todo_id:
+                return t
+        return None
+
+    def get_project(self, project_id: str) -> Project | None:
+        """Find a project by ID. Returns a reference to the in-memory object (mutable)."""
+        for p in self.store.projects:
+            if p.id == project_id:
+                return p
+        return None
+
+    def find_todos(self, predicate) -> list[Todo]:
+        """Return all todos matching a predicate function."""
+        return [t for t in self.store.todos if predicate(t)]

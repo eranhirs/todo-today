@@ -5,6 +5,7 @@ import { apiErrorMessage } from "../errors";
 import { type CommandInfo, stripCommandsFromText } from "../utils/commands";
 import { stripTagsFromText } from "../utils/tags";
 import { filterMentionSuggestions } from "../utils/todoSearch";
+import { useAppContext } from "../contexts/AppContext";
 
 type AddMode = "add" | "add-run" | "add-plan";
 
@@ -22,14 +23,8 @@ interface Props {
   allTags?: string[];
   allTodos?: Todo[];
   allCommands?: CommandInfo[];
-  onRefresh: () => void;
-  addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
-  onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   disabled?: boolean;
-  isOffline?: boolean;
-  addPendingNewTodo?: (todo: Todo) => void;
-  removePendingNewTodo?: (id: string) => void;
 }
 
 
@@ -38,7 +33,8 @@ function getTodoDisplayTitle(todo: Todo): string {
   return stripCommandsFromText(stripTagsFromText(todo.text)).trim();
 }
 
-export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allCommands, onRefresh, addToast, onOptimisticUpdate, inputRef, disabled = false, isOffline = false, addPendingNewTodo, removePendingNewTodo }: Props) {
+export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allCommands, inputRef, disabled = false }: Props) {
+  const { addToast, onRefresh, onOptimisticUpdate, optimistic, isOffline } = useAppContext();
   const commands = allCommands ?? [];
   const draftKey = projectId ?? "__all__";
   const [text, setText] = useState(() => addTodoDrafts.get(draftKey) ?? "");
@@ -358,6 +354,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       completed_by_run: false,
       emoji: null,
       session_id: null,
+      source_session_id: null,
       created_at: new Date().toISOString(),
       completed_at: null,
       original_text: null,
@@ -372,6 +369,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       plan_file: null,
       manual: false,
       is_command: false,
+      priority: null,
       sort_order: -Infinity,
       user_ordered: false,
       stale_reason: null,
@@ -379,8 +377,13 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       images: imageFilenames.map((f) => ({ filename: f, added_at: new Date().toISOString(), source: "creation" as const })),
       pending_followup: null,
       red_flags: [],
+      run_cost_usd: null,
+      run_input_tokens: null,
+      run_output_tokens: null,
+      run_cache_read_tokens: null,
+      run_duration_ms: null,
     };
-    addPendingNewTodo?.(placeholder);
+    optimistic.addPendingNewTodo(placeholder);
     onOptimisticUpdate((todos) => [placeholder, ...todos]);
     setText("");
     addTodoDrafts.delete(draftKey);
@@ -408,10 +411,10 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
           addToast(`Added todo but failed to run: ${apiErrorMessage(err)}`, "error");
         }
       }
-      removePendingNewTodo?.(tempId);
+      optimistic.removePendingNewTodo(tempId);
       onRefresh();
     } catch {
-      removePendingNewTodo?.(tempId);
+      optimistic.removePendingNewTodo(tempId);
       onOptimisticUpdate((todos) => todos.filter((t) => t.id !== tempId));
       setText(trimmed);
       addToast(`Failed to add "${todoText}"`, "error");

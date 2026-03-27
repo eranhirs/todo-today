@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import type { Metadata, SessionInfo, Settings } from "../types";
 import { api } from "../api";
+import { timeAgo, epochTimeAgo } from "../utils/formatting";
 
 interface Props {
   metadata: Metadata;
@@ -10,26 +11,8 @@ interface Props {
   onRefresh: () => void;
 }
 
-function timeAgo(iso: string): string {
-  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return `${Math.floor(diff / 86400)}d ago`;
-}
-
 const INTERVAL_OPTIONS = [1, 2, 5, 10, 15, 30, 60];
 const MODEL_OPTIONS = ["haiku", "sonnet", "opus"];
-
-function formatTime(epoch: number): string {
-  const d = new Date(epoch * 1000);
-  const now = Date.now();
-  const diffMs = now - d.getTime();
-  const diffH = diffMs / 3600000;
-  if (diffH < 1) return `${Math.floor(diffMs / 60000)}m ago`;
-  if (diffH < 24) return `${Math.floor(diffH)}h ago`;
-  return `${Math.floor(diffH / 24)}d ago`;
-}
 
 export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunning, onRefresh }: Props) {
   const [waking, setWaking] = useState(false);
@@ -240,7 +223,7 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
       </div>
       {anyAnalysisEnabled && (
         <div className="status-detail" style={{ opacity: 0.6, fontSize: "0.7rem" }}>
-          Analysis model ({[settings.heartbeat_enabled && "scheduled", settings.hook_analysis_enabled && "hooks"].filter(Boolean).join(" + ")}). Autopilot uses opus.
+          Analysis model ({[settings.heartbeat_enabled && "scheduled", settings.hook_analysis_enabled && "hooks"].filter(Boolean).join(" + ")}). Runs use {settings.run_model}.
         </div>
       )}
       {isOverride && anyAnalysisEnabled && (
@@ -347,10 +330,10 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
                             <span
                               className="session-meta"
                               title={s.last_analyzed_mtime
-                                ? `Last analyzed: ${formatTime(s.last_analyzed_mtime)}`
+                                ? `Last analyzed: ${epochTimeAgo(s.last_analyzed_mtime)}`
                                 : "Never analyzed"}
                             >
-                              {s.message_count} msgs · {formatTime(s.mtime)}
+                              {s.message_count} msgs · {epochTimeAgo(s.mtime)}
                               {s.state && s.state !== "unknown" && (
                                 <span className={`session-state-badge state-${s.state}`} title={`Source: ${s.state_source || "jsonl"}`}>
                                   {s.state.replace(/_/g, " ")}
@@ -374,9 +357,37 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
       </div>
       {anyAnalysisEnabled && metadata.total_analyses > 0 && (
         <div className="usage-totals">
-          Total: {metadata.total_analyses} analyses | ${metadata.total_cost_usd.toFixed(2)} | {((metadata.total_input_tokens + metadata.total_output_tokens) / 1000).toFixed(1)}k tokens
+          <div>Total: {metadata.total_analyses} analyses | ${metadata.total_cost_usd.toFixed(2)} | {((metadata.total_input_tokens + metadata.total_output_tokens) / 1000).toFixed(1)}k tokens</div>
+          {metadata.history.length >= 2 && (() => {
+            const sorted = [...metadata.history].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+            const firstDate = new Date(sorted[0].timestamp);
+            const lastDate = new Date(sorted[sorted.length - 1].timestamp);
+            const days = Math.max(1, (lastDate.getTime() - firstDate.getTime()) / 86400000);
+            const avgPerDay = metadata.total_cost_usd / days;
+            return (
+              <div style={{ opacity: 0.6, fontSize: "0.65rem" }}>
+                ~${avgPerDay.toFixed(2)}/day avg
+              </div>
+            );
+          })()}
         </div>
       )}
+      <div className="run-model-section">
+        <span className="hooks-label">Run model:</span>
+        <select
+          className="model-select"
+          value={settings.run_model}
+          onChange={async (e) => {
+            await api.updateSettings({ run_model: e.target.value });
+            onRefresh();
+          }}
+          title="Model used for todo runs and follow-ups. Per-project overrides take precedence."
+        >
+          {MODEL_OPTIONS.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+      </div>
       <div className="hooks-section">
         <span className="hooks-label">
           Hooks: {hooksInstalled === null ? "..." : hooksInstalled ? "installed" : "not installed"}

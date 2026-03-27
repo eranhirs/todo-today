@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FullState, Todo } from "../types";
 import { api } from "../api";
 import type { ToastType } from "./useNotifications";
+import type { OptimisticActions } from "./useOptimistic";
 
 const STATUS_KEYS: Record<string, Todo["status"]> = {
   "1": "next",
@@ -14,16 +15,13 @@ const STATUS_KEYS: Record<string, Todo["status"]> = {
 
 interface UseKeyboardShortcutsOptions {
   state: FullState | null;
-  view: "list" | "dashboard";
+  view: "list" | "dashboard" | "skills";
   selectedProject: string | null;
   setState: React.Dispatch<React.SetStateAction<FullState | null>>;
   refresh: () => Promise<void>;
   addToast: (text: string, type?: ToastType) => void;
   isOffline?: boolean;
-  addOptimisticOverride?: (id: string, fields: Partial<Todo>) => void;
-  removeOptimisticOverride?: (id: string) => void;
-  addPendingDelete?: (id: string) => void;
-  removePendingDelete?: (id: string) => void;
+  optimistic: OptimisticActions;
 }
 
 export function useKeyboardShortcuts({
@@ -34,10 +32,7 @@ export function useKeyboardShortcuts({
   refresh,
   addToast,
   isOffline = false,
-  addOptimisticOverride,
-  removeOptimisticOverride,
-  addPendingDelete,
-  removePendingDelete,
+  optimistic,
 }: UseKeyboardShortcutsOptions) {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [focusedTodoId, setFocusedTodoId] = useState<string | null>(null);
@@ -174,23 +169,15 @@ export function useKeyboardShortcuts({
       if (STATUS_KEYS[e.key] && focusedTodoId) {
         e.preventDefault();
         const newStatus = STATUS_KEYS[e.key];
-        const override = { status: newStatus } as Partial<Todo>;
-        addOptimisticOverride?.(focusedTodoId, override);
-        setState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            todos: prev.todos.map((t) =>
-              t.id === focusedTodoId ? { ...t, ...override } : t
-            ),
-          };
-        });
-        api.updateTodo(focusedTodoId, { status: newStatus }).then(() => {
-          removeOptimisticOverride?.(focusedTodoId);
-          refresh();
-        }).catch(() => {
-          removeOptimisticOverride?.(focusedTodoId);
-          refresh();
+        const tid = focusedTodoId;
+        const prevStatus = todos.find((t) => t.id === tid)?.status ?? "next";
+        optimistic.applyTodoUpdate({
+          todoId: tid,
+          fields: { status: newStatus },
+          apiCall: () => api.updateTodo(tid, { status: newStatus }),
+          revertFields: { status: prevStatus },
+          setState,
+          onRefresh: refresh,
         });
         return;
       }
@@ -208,16 +195,16 @@ export function useKeyboardShortcuts({
         const idx = todos.findIndex((t) => t.id === idToDelete);
         const nextId = idx < todos.length - 1 ? todos[idx + 1].id : (idx > 0 ? todos[idx - 1].id : null);
         setFocusedTodoId(nextId);
-        addPendingDelete?.(idToDelete);
+        optimistic.addPendingDelete(idToDelete);
         setState((prev) => {
           if (!prev) return prev;
           return { ...prev, todos: prev.todos.filter((t) => t.id !== idToDelete) };
         });
         api.deleteTodo(idToDelete).then(() => {
-          removePendingDelete?.(idToDelete);
+          optimistic.removePendingDelete(idToDelete);
           refresh();
         }).catch(() => {
-          removePendingDelete?.(idToDelete);
+          optimistic.removePendingDelete(idToDelete);
           refresh();
         });
         return;
@@ -235,7 +222,7 @@ export function useKeyboardShortcuts({
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast, setState, isOffline, addOptimisticOverride, removeOptimisticOverride, addPendingDelete, removePendingDelete]);
+  }, [showShortcuts, focusedTodoId, getVisibleTodos, refresh, addToast, setState, isOffline, optimistic]);
 
   return {
     showShortcuts,

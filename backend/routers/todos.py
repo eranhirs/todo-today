@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from ..event_bus import EventType, bus
 from ..models import ImageAttachment, Todo, TodoCreate, TodoReorder, TodoUpdate, _now
-from ..tags import collect_all_tags, rename_tag_in_text, parse_tags
+from ..tags import collect_all_tags, rename_tag_in_text, parse_tags, parse_priority
 from ..run_manager import (
     OUTPUT_MAX_CHARS,
     _followup_claude_for_todo,
@@ -313,7 +313,8 @@ async def create_todo(body: TodoCreate) -> Todo:
     # Derive manual flag from /manual command in text (text is kept as-is)
     is_manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
     is_cmd = _is_command_todo(body.text, body.project_id)
-    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, is_command=is_cmd, images=image_attachments)
+    priority = parse_priority(body.text)
+    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, is_command=is_cmd, images=image_attachments, priority=priority)
     if todo.status == "completed":
         todo.completed_at = _now()
     def _do():
@@ -376,9 +377,10 @@ async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                     if body.text is not None:
                         t.text = body.text
                         t.original_text = None  # User chose this text — clear analyzer rename history
-                        # Re-derive manual flag and is_command from text content
+                        # Re-derive manual flag, is_command, and priority from text content
                         t.manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
                         t.is_command = _is_command_todo(body.text, t.project_id)
+                        t.priority = parse_priority(body.text)
                     if body.project_id is not None:
                         t.project_id = body.project_id
                     if body.status is not None:
@@ -653,7 +655,7 @@ async def dequeue_todo(todo_id: str) -> dict:
 class FollowupRequest(BaseModel):
     message: str
     images: List[str] = []
-    plan_only: bool = False
+    plan_only: Optional[bool] = None  # None = inherit from todo.plan_only
 
 
 class EditFollowupRequest(BaseModel):
@@ -683,8 +685,8 @@ async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
                         # Compute image suffix from pending images
                         n_imgs = len(t.pending_followup_images)
                         old_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
-                        old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{old_suffix}\n"
-                        new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{old_suffix}\n"
+                        old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{old_suffix}\n\n"
+                        new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{old_suffix}\n\n"
                         t.run_output = t.run_output.replace(old_line, new_line)
                     return {"status": "updated"}
             return {"error": "not_found"}
@@ -740,8 +742,17 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
             img_suffix = f" [+{len(body.images)} image{'s' if len(body.images) != 1 else ''}]" if body.images else ""
 
-            # If this todo is currently running, queue the follow-up to auto-start when it finishes
+            # Auto-preserve plan_only constraint: if the client didn't explicitly
+            # set plan_only, inherit from the todo's own plan_only value so that
+            # resuming a failed plan_only run doesn't silently grant full tool access.
+            resolved_plan_only = body.plan_only if body.plan_only is not None else todo.plan_only
+
+            # If this todo is currently running, queue the follow-up to auto-start when it finishes.
+            # Exception: plan-only follow-ups run immediately via a concurrent forked session.
             if todo.run_status == "running" or process_manager.is_todo_running(todo_id):
+                if resolved_plan_only:
+                    # Plan-only runs immediately by forking the session (like /btw)
+                    return {"status": "plan_concurrent"}
                 if todo.pending_followup:
                     return {"error": "followup_already_queued"}
                 # Persist any new images on the todo
@@ -750,7 +761,7 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                     todo.images = list(todo.images) + new_attachments
                 todo.pending_followup = body.message
                 todo.pending_followup_images = list(body.images)
-                todo.pending_followup_plan_only = body.plan_only
+                todo.pending_followup_plan_only = resolved_plan_only
                 return {"status": "queued"}
 
             session_id = todo.session_id
@@ -778,30 +789,37 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 new_attachments = [ImageAttachment(filename=f, source="followup") for f in body.images]
                 todo.images = list(todo.images) + new_attachments
 
-            if project_busy:
+            if project_busy and not resolved_plan_only:
                 # Queue the follow-up; store the pending message so _process_queue can use it
                 todo.status = "next"
                 todo.run_status = "queued"
                 todo.queued_at = _now()
                 todo.pending_followup = body.message
                 todo.pending_followup_images = list(body.images)
-                todo.pending_followup_plan_only = body.plan_only
+                todo.pending_followup_plan_only = resolved_plan_only
                 # Immediately show the user's follow-up message in the output
-                todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n"
+                todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n\n"
                 return {"status": "queued"}
 
             todo.run_status = "running"
             todo.status = "in_progress"
             # Immediately show the user's follow-up message in the output
-            todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}{img_suffix}\n"
+            todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}{img_suffix}\n\n"
+            # Resolve model: per-project override > global setting
+            project_obj = None
+            for p in ctx.store.projects:
+                if p.id == todo.project_id:
+                    project_obj = p
+                    break
+            resolved_model = (project_obj.run_model if project_obj and project_obj.run_model else None) or ctx.metadata.run_model
             return {
                 "status": "started",
                 "session_id": session_id,
                 "source_path": source_path,
                 "proj_id": todo.project_id,
-                "run_model": ctx.metadata.run_model,
+                "run_model": resolved_model,
                 "followup_images": list(body.images),
-                "plan_only": body.plan_only,
+                "plan_only": resolved_plan_only,
             }
 
     info = await run_in_thread(_do)
@@ -818,6 +836,15 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
     if info["status"] == "queued":
         return {"status": "queued"}
+
+    if info["status"] == "plan_concurrent":
+        # Plan-only follow-ups run immediately via forked session (like /btw)
+        err = start_btw(todo_id, body.message, plan_only=True)
+        if err == "btw already running":
+            raise HTTPException(status_code=409, detail="A concurrent session is already running — wait for it to finish")
+        if err:
+            raise HTTPException(status_code=500, detail=err)
+        return {"status": "started"}
 
     process_manager.spawn_thread(
         todo_id, _followup_claude_for_todo,
@@ -859,3 +886,48 @@ async def btw_todo(todo_id: str, body: BtwRequest) -> dict:
         raise HTTPException(status_code=500, detail=err)
 
     return {"status": "started"}
+
+
+class SessionAutopilotRequest(BaseModel):
+    quota: int = 0  # 0 to disable
+
+
+@router.post("/{todo_id}/session-autopilot")
+async def set_session_autopilot(todo_id: str, body: SessionAutopilotRequest) -> dict:
+    """Enable or disable session-scoped autopilot on a todo's session.
+
+    Uses the todo's session_id (if it has been run) or source_session_id
+    (if it hasn't) as the autopilot key. Descendants of that session
+    will be auto-run until the quota is exhausted.
+    """
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    def _do():
+        with StorageContext() as ctx:
+            todo = None
+            for t in ctx.store.todos:
+                if t.id == todo_id:
+                    todo = t
+                    break
+            if todo is None:
+                return {"error": "not_found"}
+
+            # Determine which session to autopilot
+            session_key = todo.session_id or todo.source_session_id
+            if not session_key:
+                return {"error": "no_session"}
+
+            if body.quota > 0:
+                ctx.metadata.session_autopilot[session_key] = body.quota
+            else:
+                ctx.metadata.session_autopilot.pop(session_key, None)
+
+            return {"status": "ok", "session_id": session_key, "quota": body.quota}
+
+    result = await run_in_thread(_do)
+    if result.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if result.get("error") == "no_session":
+        raise HTTPException(status_code=400, detail="Todo has no session — run it first")
+    return result

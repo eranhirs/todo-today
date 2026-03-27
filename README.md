@@ -61,6 +61,7 @@ For development with hot reload, see [DEVELOPMENT.md](DEVELOPMENT.md).
 ### Monitoring & History
 - **Dashboard** — bird's-eye view: active vs. completed counts, completion rate, analysis cost, status distribution, 14-day activity chart, and per-project workload
 - **Analysis history** — expandable entries showing what changed each run, with full prompt/reasoning/response
+- **Full activity log** — every session's transcript is captured and analyzed, giving you a searchable record of what Claude did and why — easy to recall and analyze past work
 - **Cost tracking** — per-run and cumulative cost in USD, token counts, and duration
 - **Notifications** — in-app toasts and browser notifications for completed tasks, session events, and new waiting todos
 - **Notification log** — scrollable history of recent notifications in the sidebar

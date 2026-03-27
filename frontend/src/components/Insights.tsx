@@ -1,15 +1,6 @@
 import type { Insight } from "../types";
 import { api } from "../api";
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString([], { month: "short", day: "numeric" });
-}
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
+import { formatDate, formatTime } from "../utils/formatting";
 
 interface Props {
   insights: Insight[];

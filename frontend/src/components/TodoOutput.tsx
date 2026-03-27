@@ -3,12 +3,11 @@ import type { Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
 import { type CommandInfo } from "../utils/commands";
+import { useAppContext } from "../contexts/AppContext";
 
 interface Props {
   todo: Todo;
   showOutput: boolean;
-  onRefresh: () => void;
-  addToast: (text: string, type?: "info" | "warning" | "success" | "error") => void;
   disabled?: boolean;
   allCommands?: CommandInfo[];
 }
@@ -118,10 +117,12 @@ function renderOutput(text: string) {
     const headerText = match.header;
     searchFrom = match.pos + match.full.length;
 
-    // Split the part into the user message (first line) and rest
-    const newlineIdx = parts[i].indexOf("\n");
-    const userMsg = newlineIdx === -1 ? parts[i] : parts[i].slice(0, newlineIdx);
-    const rest = newlineIdx === -1 ? "" : parts[i].slice(newlineIdx);
+    // Split the part into the user message (up to blank line) and rest.
+    // The backend terminates user messages with \n\n, so the first blank line
+    // marks the boundary between the user message and Claude's response.
+    const blankLineIdx = parts[i].indexOf("\n\n");
+    const userMsg = blankLineIdx === -1 ? parts[i] : parts[i].slice(0, blankLineIdx);
+    const rest = blankLineIdx === -1 ? "" : parts[i].slice(blankLineIdx);
 
     // Extract image badge if present (e.g. " [+2 images]")
     const imgBadgeMatch = userMsg.match(/ \[\+\d+ images?\]$/);
@@ -161,7 +162,8 @@ type OutputTab = "run" | "btw";
 const followupDrafts = new Map<string, string>();
 const btwDrafts = new Map<string, string>();
 
-export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = false, allCommands }: Props) {
+export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: Props) {
+  const { addToast, onRefresh } = useAppContext();
   const commands = allCommands ?? [];
   const [followupText, setFollowupText] = useState(() => followupDrafts.get(todo.id) ?? "");
   const [btwText, setBtwText] = useState(() => btwDrafts.get(todo.id) ?? "");
@@ -193,6 +195,23 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
   const followupRef = useRef<HTMLTextAreaElement>(null);
   const btwInputRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const [altHeld, setAltHeld] = useState(false);
+
+  // Track Alt key for follow-up button label
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.key === "Alt") setAltHeld(true); };
+    const up = (e: KeyboardEvent) => { if (e.key === "Alt") setAltHeld(false); };
+    const blur = () => setAltHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
 
   const [editingFollowup, setEditingFollowup] = useState(false);
   const [editFollowupText, setEditFollowupText] = useState("");
@@ -484,7 +503,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
     }
   };
 
-  const sendRunningMessage = async () => {
+  const sendRunningMessage = async (planOnly = false) => {
     if (disabled) {
       addToast("You're offline — messages aren't available right now", "warning");
       return;
@@ -512,16 +531,16 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
       // Default: queue as a follow-up that runs after the current run finishes
       try {
         const imageFilenames = pendingImages.map((img) => img.filename);
-        const result = await api.followupTodo(todo.id, raw, imageFilenames);
+        const result = await api.followupTodo(todo.id, raw, imageFilenames, planOnly);
         setBtwText("");
         btwDrafts.delete(todo.id);
         // Revoke preview URLs
         pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
         setPendingImages([]);
         if (result.status === "queued") {
-          addToast("Follow-up queued — will run when the current task finishes", "info");
+          addToast(`Follow-up queued — will ${planOnly ? "plan" : "run"} when the current task finishes`, "info");
         } else {
-          addToast("Follow-up sent", "info");
+          addToast(planOnly ? "Plan-only follow-up sent" : "Follow-up sent", "info");
         }
         onRefresh();
       } catch (err) {
@@ -809,7 +828,7 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
                   if (handleCmdKeyDown(e, btwInputRef, setBtwText, btwText)) return;
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
-                    sendRunningMessage();
+                    sendRunningMessage(e.altKey);
                   }
                   if (e.key === "Escape") {
                     e.preventDefault();
@@ -842,7 +861,12 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
                 </div>
               )}
             </div>
-            <button className="btn-icon btn-run" onClick={sendRunningMessage} disabled={disabled} title="Send message">↵</button>
+            <button
+              className={`btn-icon ${altHeld && activeTab === "run" ? "btn-plan" : "btn-run"}`}
+              onClick={() => sendRunningMessage(altHeld && activeTab === "run")}
+              disabled={disabled}
+              title={altHeld && activeTab === "run" ? "Queue plan-only follow-up (Alt+Enter)" : activeTab === "run" ? "Queue follow-up (Enter) · Hold ⌥ for plan-only" : "Send message (Enter)"}
+            >{altHeld && activeTab === "run" ? "📋" : "↵"}</button>
           </div>
         </div>
       )}
@@ -923,12 +947,11 @@ export function TodoOutput({ todo, showOutput, onRefresh, addToast, disabled = f
               )}
             </div>
             <button
-              className="btn-icon btn-plan"
-              onClick={() => sendFollowup(true)}
+              className={`btn-icon ${altHeld ? "btn-plan" : "btn-run"}`}
+              onClick={() => sendFollowup(altHeld)}
               disabled={disabled}
-              title="Send plan-only follow-up (Alt+Enter)"
-            >📋</button>
-            <button className="btn-icon btn-run" onClick={() => sendFollowup(false)} disabled={disabled} title="Send follow-up (Enter)">▶</button>
+              title={altHeld ? "Send plan-only follow-up (Alt+Enter)" : "Send follow-up (Enter) · Hold ⌥ for plan-only"}
+            >{altHeld ? "📋" : "▶"}</button>
           </div>
         </div>
       )}

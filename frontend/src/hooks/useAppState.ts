@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FullState, Project, Todo } from "../types";
 import { api, isStaticDemo } from "../api";
 import { ApiError } from "../errors";
+import { useOptimistic } from "./useOptimistic";
 
 // Slow fallback poll — SSE events drive real-time updates, this is just a safety net
 const POLL_INTERVAL = 30_000;
@@ -10,7 +11,7 @@ const COMPLETED_PAGE_SIZE = 50;
 interface UseAppStateOptions {
   notifyNewWaitingTodos: (todos: Todo[]) => void;
   notifyRunCompletions: (todos: Todo[], projects: Project[]) => void;
-  notifyHookEvents: () => void;
+  notifyHookEvents: (projects: Project[]) => void;
 }
 
 export function useAppState({
@@ -20,14 +21,7 @@ export function useAppState({
 }: UseAppStateOptions) {
   const [state, setState] = useState<FullState | null>(null);
   const [isOffline, setIsOffline] = useState(false);
-  // IDs of todos pending deletion (undo window active) — polling should hide these
-  const pendingDeleteIds = useRef<Set<string>>(new Set());
-  // In-flight optimistic field overrides — re-applied on top of polled data so
-  // polling doesn't flash stale values before the API call resolves.
-  const optimisticOverrides = useRef<Map<string, Partial<Todo>>>(new Map());
-  // Optimistic placeholder todos for in-flight creates — re-prepended on refresh
-  // so they don't vanish while the API call is still in progress.
-  const pendingNewTodos = useRef<Map<string, Todo>>(new Map());
+  const optimistic = useOptimistic();
   // Track how many completed todos we've loaded so far (for infinite scroll)
   const completedLoadedRef = useRef(COMPLETED_PAGE_SIZE);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -37,9 +31,11 @@ export function useAppState({
     return params.get("project");
   });
 
-  const [view, setView] = useState<"list" | "dashboard">(() => {
+  const [view, setView] = useState<"list" | "dashboard" | "skills">(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get("view") === "dashboard" ? "dashboard" : "list";
+    const v = params.get("view");
+    if (v === "dashboard" || v === "skills") return v;
+    return "list";
   });
 
   const selectProject = useCallback((id: string | null) => {
@@ -53,13 +49,13 @@ export function useAppState({
     window.history.replaceState({}, "", url.toString());
   }, []);
 
-  const switchView = useCallback((v: "list" | "dashboard") => {
+  const switchView = useCallback((v: "list" | "dashboard" | "skills") => {
     setView(v);
     const url = new URL(window.location.href);
-    if (v === "dashboard") {
-      url.searchParams.set("view", "dashboard");
-    } else {
+    if (v === "list") {
       url.searchParams.delete("view");
+    } else {
+      url.searchParams.set("view", v);
     }
     window.history.replaceState({}, "", url.toString());
   }, []);
@@ -90,13 +86,13 @@ export function useAppState({
       }
 
       // Filter out todos that are pending deletion (undo window still open)
-      const pendingIds = pendingDeleteIds.current;
+      const pendingIds = optimistic.pendingDeleteIds.current;
       if (pendingIds.size > 0) {
         data.todos = data.todos.filter((t) => !pendingIds.has(t.id));
       }
 
       // Re-apply in-flight optimistic overrides so polling doesn't flash stale values
-      const overrides = optimisticOverrides.current;
+      const overrides = optimistic.overrides.current;
       if (overrides.size > 0) {
         data.todos = data.todos.map((t) => {
           const ov = overrides.get(t.id);
@@ -104,8 +100,17 @@ export function useAppState({
         });
       }
 
+      // Re-apply in-flight optimistic project overrides
+      const projOverrides = optimistic.projectOverrides.current;
+      if (projOverrides.size > 0) {
+        data.projects = data.projects.map((p) => {
+          const ov = projOverrides.get(p.id);
+          return ov ? { ...p, ...ov } : p;
+        });
+      }
+
       // Re-prepend in-flight optimistic new todos so they don't vanish during create
-      const pending = pendingNewTodos.current;
+      const pending = optimistic.pendingNewTodos.current;
       if (pending.size > 0) {
         const serverIds = new Set(data.todos.map((t) => t.id));
         const stillPending = [...pending.values()].filter((t) => !serverIds.has(t.id));
@@ -133,7 +138,7 @@ export function useAppState({
       });
       notifyNewWaitingTodos(data.todos);
       notifyRunCompletions(data.todos, data.projects);
-      notifyHookEvents();
+      notifyHookEvents(data.projects);
       const waitingCount = data.todos.filter((t) => t.status === "waiting").length;
       document.title = waitingCount > 0 ? `(${waitingCount}) Claude Todos` : "Claude Todos";
     } catch (err) {
@@ -155,30 +160,6 @@ export function useAppState({
       setState((prev) => (prev ? { ...prev, todos: fn(prev.todos) } : prev)),
     []
   );
-
-  const addOptimisticOverride = useCallback((id: string, fields: Partial<Todo>) => {
-    optimisticOverrides.current.set(id, { ...optimisticOverrides.current.get(id), ...fields });
-  }, []);
-
-  const removeOptimisticOverride = useCallback((id: string) => {
-    optimisticOverrides.current.delete(id);
-  }, []);
-
-  const addPendingNewTodo = useCallback((todo: Todo) => {
-    pendingNewTodos.current.set(todo.id, todo);
-  }, []);
-
-  const removePendingNewTodo = useCallback((id: string) => {
-    pendingNewTodos.current.delete(id);
-  }, []);
-
-  const addPendingDelete = useCallback((id: string) => {
-    pendingDeleteIds.current.add(id);
-  }, []);
-
-  const removePendingDelete = useCallback((id: string) => {
-    pendingDeleteIds.current.delete(id);
-  }, []);
 
   // Load more completed todos (for infinite scroll)
   const loadMoreCompleted = useCallback(async (projectId?: string | null) => {
@@ -286,11 +267,6 @@ export function useAppState({
     isOffline,
     loadMoreCompleted,
     loadingMore,
-    addPendingDelete,
-    removePendingDelete,
-    addOptimisticOverride,
-    removeOptimisticOverride,
-    addPendingNewTodo,
-    removePendingNewTodo,
+    optimistic,
   };
 }

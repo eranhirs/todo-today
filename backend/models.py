@@ -83,6 +83,13 @@ class Todo(BaseModel):
     source_session_id: Optional[str] = None  # Session analyzed to create this todo (permanent, never overwritten)
     session_msg_count: Optional[int] = None  # JSONL user/assistant message count at last sync
 
+    # Run cost tracking — extracted from stream-json result
+    run_cost_usd: Optional[float] = None
+    run_input_tokens: Optional[int] = None
+    run_output_tokens: Optional[int] = None
+    run_cache_read_tokens: Optional[int] = None
+    run_duration_ms: Optional[int] = None
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_completed(cls, data: Any) -> Any:
@@ -199,6 +206,9 @@ class Metadata(BaseModel):
     hook_analysis_enabled: bool = True
     local_image_storage: bool = False
     token_budget_usd: float = 0.0
+    total_run_cost_usd: float = 0.0
+    total_run_input_tokens: int = 0
+    total_run_output_tokens: int = 0
     session_autopilot: Dict[str, int] = {}  # session_id → remaining quota
 
     def get_settings(self) -> Settings:

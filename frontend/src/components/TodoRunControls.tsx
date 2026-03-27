@@ -10,9 +10,10 @@ interface Props {
   atRunQuotaLimit?: boolean;
   quotaCountdown?: string;
   disabled?: boolean;
+  runModel?: string;
 }
 
-export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false }: Props) {
+export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, runModel = "opus" }: Props) {
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
 
@@ -98,13 +99,13 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
         className="btn-icon btn-plan"
         onClick={() => runWithClaude(true)}
         disabled={quotaBlocked}
-        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? "Plan with Claude (queued — another task is running)" : "Plan with Claude — analyze and outline an approach without making code changes"}
+        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? `Plan with Claude [${runModel}] (queued — another task is running)` : `Plan with Claude [${runModel}] — analyze and outline an approach without making code changes`}
       >📋</button>
       <button
         className="btn-icon btn-run"
         onClick={() => runWithClaude(false)}
         disabled={quotaBlocked}
-        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? "Run with Claude (queued — another task is running)" : "Run with Claude — implement this task, making code changes as needed"}
+        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? `Run with Claude [${runModel}] (queued — another task is running)` : `Run with Claude [${runModel}] — implement this task, making code changes as needed`}
       >▶</button>
     </>
   );

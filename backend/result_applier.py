@@ -13,7 +13,7 @@ from .models import (
     _now,
 )
 from .storage import StorageContext
-from .tags import filter_unknown_tags, parse_tags, strip_tags_from_text
+from .tags import filter_unknown_tags, parse_tags, parse_priority, strip_tags_from_text
 
 log = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ def _apply_result(
         if (project_id, text.lower()) in existing_texts:
             continue
 
-        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=nt.session_id, emoji=emoji)
+        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=nt.session_id, source_session_id=nt.session_id, emoji=emoji, priority=parse_priority(text))
         if nt.status == "completed":
             todo.completed_at = _now()
         ctx.store.todos.append(todo)
@@ -239,6 +239,7 @@ def _apply_result(
             if t.original_text is None:
                 t.original_text = t.text
             t.text = clean_text
+            t.priority = parse_priority(clean_text)
             if emoji:
                 t.emoji = emoji
             changed = True

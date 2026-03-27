@@ -33,6 +33,9 @@ function EntryDetail({ entry }: { entry: AnalysisEntry }) {
     <div className="history-detail">
       <div className="history-detail-row">
         Cost: ${entry.cost_usd.toFixed(4)} | Tokens: {formatTokens(entry.input_tokens)} in / {formatTokens(entry.output_tokens)} out / {formatTokens(entry.cache_read_tokens)} cache
+        {entry.cache_read_tokens > 0 && entry.input_tokens > 0 && (
+          <span style={{ opacity: 0.6 }}> ({Math.round(entry.cache_read_tokens / (entry.input_tokens + entry.cache_read_tokens) * 100)}% cached)</span>
+        )}
       </div>
       <div className="history-detail-row">
         Duration: {entry.duration_seconds}s | Prompt: {formatTokens(entry.prompt_length)} chars

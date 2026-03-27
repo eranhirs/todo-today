@@ -1,6 +1,7 @@
 import React from "react";
 import type { AnalysisEntry, Project, Todo } from "../types";
 import { getDisplayName } from "../utils/displayNames";
+import { getSectionExpanded, setSectionExpanded } from "../utils/sectionState";
 
 interface Props {
   todos: Todo[];
@@ -183,7 +184,19 @@ function FlagsDashboard({
   onSelectProject: (id: string) => void;
 }) {
   const [showResolved, setShowResolved] = React.useState(false);
-  const [expandedCategory, setExpandedCategory] = React.useState<string | null>(null);
+  const [expandedCategory, setExpandedCategoryRaw] = React.useState<string | null>(() => {
+    // Restore last-expanded flag category from localStorage
+    for (const cat of Object.keys(FLAG_CATEGORIES).reduce<Set<string>>((s, l) => { s.add(FLAG_CATEGORIES[l]); return s; }, new Set())) {
+      if (getSectionExpanded(`dash-flag-${cat}`, false)) return cat;
+    }
+    return null;
+  });
+  const setExpandedCategory = (cat: string | null) => {
+    // Clear previous, set new
+    if (expandedCategory) setSectionExpanded(`dash-flag-${expandedCategory}`, false);
+    if (cat) setSectionExpanded(`dash-flag-${cat}`, true);
+    setExpandedCategoryRaw(cat);
+  };
 
   const allFlags = todos.flatMap((t) =>
     (t.red_flags || []).map((f) => ({ ...f, todoId: t.id, projectId: t.project_id }))
@@ -766,6 +779,16 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
                 </div>
                 {proj.auto_run_quota > 0 && (
                   <span className="dash-autopilot-badge" title="Runs on next analysis cycle">🚀 {proj.auto_run_quota} left to run</span>
+                )}
+                {proj.auto_run_quota === 0 && proj.scheduled_auto_run_quota > 0 && (
+                  <span className="dash-autopilot-badge scheduled" title={proj.autopilot_starts_at ? `Activates at ${new Date(proj.autopilot_starts_at).toLocaleString()}` : "Scheduled"}>
+                    🕐 {proj.scheduled_auto_run_quota} @ {proj.autopilot_starts_at ? new Date(proj.autopilot_starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "??"}
+                  </span>
+                )}
+                {proj.run_model && (
+                  <span className="dash-model-badge" title={`This project uses ${proj.run_model} for runs (overrides global setting)`}>
+                    {proj.run_model}
+                  </span>
                 )}
               </div>
             );

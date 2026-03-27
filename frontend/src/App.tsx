@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { ProjectList } from "./components/ProjectList";
 import { TodoList } from "./components/TodoList";
 import { Dashboard } from "./components/Dashboard";
+import { SkillList } from "./components/SkillList";
 import { ClaudeStatus } from "./components/ClaudeStatus";
 import { UpdateHistory } from "./components/UpdateHistory";
 import { AutopilotHistory } from "./components/AutopilotHistory";
@@ -13,6 +14,8 @@ import { useNotifications, NOTIF_ICONS } from "./hooks/useNotifications";
 import { useAppState } from "./hooks/useAppState";
 import { useEventBus } from "./hooks/useEventBus";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { AppProvider, type AppContextValue } from "./contexts/AppContext";
+import { useClickOutside } from "./hooks/useClickOutside";
 import { isStaticDemo } from "./api";
 import "./App.css";
 
@@ -45,12 +48,7 @@ function App() {
     isOffline,
     loadMoreCompleted,
     loadingMore,
-    addPendingDelete,
-    removePendingDelete,
-    addOptimisticOverride,
-    removeOptimisticOverride,
-    addPendingNewTodo,
-    removePendingNewTodo,
+    optimistic,
   } = useAppState({
     notifyNewWaitingTodos,
     notifyRunCompletions,
@@ -73,30 +71,27 @@ function App() {
     refresh,
     addToast,
     isOffline,
-    addOptimisticOverride,
-    removeOptimisticOverride,
-    addPendingDelete,
-    removePendingDelete,
+    optimistic,
   });
 
   const [showInsightsDropdown, setShowInsightsDropdown] = useState(false);
   const insightsDropdownRef = useRef<HTMLDivElement | null>(null);
 
-  // Close insights dropdown on outside click
-  useEffect(() => {
-    if (!showInsightsDropdown) return;
-    const handler = (e: MouseEvent) => {
-      if (insightsDropdownRef.current && !insightsDropdownRef.current.contains(e.target as Node)) {
-        setShowInsightsDropdown(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showInsightsDropdown]);
+  const closeInsightsDropdown = useCallback(() => setShowInsightsDropdown(false), []);
+  useClickOutside(insightsDropdownRef, closeInsightsDropdown, showInsightsDropdown);
+
+  const appContextValue = useMemo<AppContextValue>(() => ({
+    addToast,
+    onRefresh: refresh,
+    onOptimisticUpdate: optimisticUpdate,
+    optimistic,
+    isOffline,
+  }), [addToast, refresh, optimisticUpdate, optimistic, isOffline]);
 
   if (!state) return <div className="loading">Loading...</div>;
 
   return (
+    <AppProvider value={appContextValue}>
     <div className="app">
       {isStaticDemo && (
         <div className="demo-banner">
@@ -235,6 +230,12 @@ function App() {
                   >
                     Dashboard
                   </button>
+                  <button
+                    className={`view-toggle-btn${view === "skills" ? " active" : ""}`}
+                    onClick={() => switchView("skills")}
+                  >
+                    Skills
+                  </button>
                 </div>
                 <div className="insights-bell-wrapper" ref={insightsDropdownRef}>
                   <button
@@ -270,30 +271,28 @@ function App() {
             onSelectProject={(id) => { selectProject(id); switchView("list"); }}
             completedTotal={state.completed_total}
           />
+        ) : view === "skills" ? (
+          <SkillList
+            todos={state.todos}
+            projects={state.projects}
+            selectedProjectId={selectedProject}
+          />
         ) : (
           <TodoList
             todos={state.todos}
             projects={state.projects}
             selectedProjectId={selectedProject}
             projectSummaries={state.metadata.project_summaries}
-            onRefresh={refresh}
-            addToast={addToast}
-            onOptimisticUpdate={optimisticUpdate}
             focusedTodoId={focusedTodoId}
             editingTodoId={editingTodoId}
             addInputRef={addInputRef}
-            isOffline={isOffline}
             completedTotal={selectedProject ? (state.completed_by_project?.[selectedProject] ?? 0) : state.completed_total}
             hasMoreCompleted={selectedProject ? ((state.completed_by_project?.[selectedProject] ?? 0) > state.todos.filter(t => t.project_id === selectedProject && t.status === "completed").length) : state.has_more_completed}
             onLoadMoreCompleted={loadMoreCompleted}
             loadingMoreCompleted={loadingMore}
             unreadCounts={state.unread_counts ?? {}}
-            addPendingDelete={addPendingDelete}
-            removePendingDelete={removePendingDelete}
-            addOptimisticOverride={addOptimisticOverride}
-            removeOptimisticOverride={removeOptimisticOverride}
-            addPendingNewTodo={addPendingNewTodo}
-            removePendingNewTodo={removePendingNewTodo}
+            globalRunModel={state.settings.run_model}
+            sessionAutopilot={state.session_autopilot ?? {}}
           />
         )}
       </main>
@@ -304,6 +303,7 @@ function App() {
         title="Keyboard shortcuts (?)"
       >?</button>
     </div>
+    </AppProvider>
   );
 }
 

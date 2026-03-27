@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -17,7 +18,7 @@ CLAUDE_DIR = Path.home() / ".claude" / "projects"
 # How far back to look for active sessions
 SESSION_MAX_AGE = timedelta(hours=24)
 # Max messages to extract per session for the prompt
-MAX_MESSAGES_PER_SESSION = 20
+MAX_MESSAGES_PER_SESSION = 12
 
 
 def _load_analysis_session_ids() -> set[str]:
@@ -34,9 +35,10 @@ def _is_analysis_session(session_id: str, analysis_ids: set[str]) -> bool:
 def _decode_project_dir(dirname: str) -> str:
     """Convert e.g. '-home-user-git-my-project' back to '/home/user/git/my-project'.
 
-    The encoding replaces '/' with '-', making it ambiguous with literal dashes
-    in directory names.  We resolve this by trying all possible splits and
-    picking the path that actually exists on disk.  Falls back to naive
+    Claude Code encodes project paths by replacing both '/' and '.' with '-',
+    making it ambiguous with literal dashes in directory names.  We resolve
+    this by trying all possible splits and separator combinations ('-' and '.')
+    and picking the path that actually exists on disk.  Falls back to naive
     replacement if no path exists (e.g. deleted project).
     """
     # Strip leading '-' which represents root '/'
@@ -44,29 +46,46 @@ def _decode_project_dir(dirname: str) -> str:
     if not parts:
         return "/" + dirname[1:]
 
-    # DFS: greedily join segments with '-' when the resulting path exists
+    def _segment_variants(idx: int, end: int) -> list[str]:
+        """Generate all ways to rejoin parts[idx:end] using '-' or '.' between each pair."""
+        subparts = parts[idx:end]
+        if len(subparts) == 1:
+            return subparts
+        n_seps = len(subparts) - 1
+        if n_seps > 4:
+            # Too many combinations — just try all-dash and all-dot
+            return ["-".join(subparts), ".".join(subparts)]
+        variants = []
+        for seps in itertools.product("-.", repeat=n_seps):
+            result = subparts[0]
+            for sep, part in zip(seps, subparts[1:]):
+                result += sep + part
+            variants.append(result)
+        return variants
+
+    # DFS: greedily join segments with '-' or '.' when the resulting path exists
     def _resolve(idx: int, prefix: str) -> str | None:
         if idx == len(parts):
             return prefix
-        # Try joining progressively more segments with '-' (longer names first)
+        # Try joining progressively more segments (longer names first)
         for end in range(len(parts), idx, -1):
-            segment = "-".join(parts[idx:end])
-            candidate = prefix + "/" + segment
-            # If this is a full path (end == len(parts)), accept it
-            if end == len(parts):
-                if Path(candidate).exists():
-                    return candidate
-            # If this is an intermediate directory, it must exist to continue
-            elif Path(candidate).is_dir():
-                result = _resolve(end, candidate)
-                if result is not None:
-                    return result
+            for segment in _segment_variants(idx, end):
+                candidate = prefix + "/" + segment
+                # If this is a full path (end == len(parts)), accept it
+                if end == len(parts):
+                    if Path(candidate).exists():
+                        return candidate
+                # If this is an intermediate directory, it must exist to continue
+                elif Path(candidate).is_dir():
+                    result = _resolve(end, candidate)
+                    if result is not None:
+                        return result
         return None
 
     resolved = _resolve(0, "")
     if resolved:
         return resolved
-    # Fallback: naive replacement (may be wrong for paths with dashes)
+    # Fallback: naive replacement (may be wrong for paths with dashes or dots)
     return "/" + dirname[1:].replace("-", "/")
 
 
@@ -165,14 +184,31 @@ def _parse_session_messages(path: Path) -> list[dict]:
                 if not role or not content:
                     continue
 
-                # Flatten content to text
+                # Flatten content to text, summarizing tool_use blocks
                 if isinstance(content, list):
                     text_parts = []
+                    tool_calls = []
                     for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text_parts.append(block["text"])
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                text_parts.append(block["text"])
+                            elif block.get("type") == "tool_use":
+                                name = block.get("name", "tool")
+                                inp = block.get("input", {})
+                                if name == "Bash":
+                                    tool_calls.append(f"$ {str(inp.get('command', ''))[:120]}")
+                                elif name in ("Edit", "Write", "Read"):
+                                    tool_calls.append(f"[{name}: {inp.get('file_path', '')}]")
+                                elif name == "Grep":
+                                    tool_calls.append(f"[Grep: {inp.get('pattern', '')}]")
+                                else:
+                                    tool_calls.append(f"[{name}]")
+                            elif block.get("type") == "tool_result":
+                                pass  # skip tool results — they're verbose and redundant
                         elif isinstance(block, str):
                             text_parts.append(block)
+                    if tool_calls:
+                        text_parts.append(" ".join(tool_calls))
                     text = "\n".join(text_parts)
                 elif isinstance(content, str):
                     text = content
@@ -184,7 +220,7 @@ def _parse_session_messages(path: Path) -> list[dict]:
 
                 messages.append({
                     "role": role,
-                    "text": text[:2000],  # truncate long messages
+                    "text": text[:1000],  # truncate long messages
                     "timestamp": entry.get("timestamp", ""),
                 })
     except Exception:

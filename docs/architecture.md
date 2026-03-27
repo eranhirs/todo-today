@@ -10,7 +10,8 @@ Claude Todos is a Claude-integrated todo app that bridges your Claude Code sessi
 2. **Scheduler** — periodic fallback (default 30m) scans recent Claude Code sessions from `~/.claude/projects/`
 3. **Claude analyzer** extracts session transcripts and asks Claude (via CLI) to identify completed work and suggest new tasks
 4. Results are applied to the todo store — marking todos complete, adding new ones, discovering new projects
-5. **Autopilot** — after each analysis, projects with `auto_run_quota > 0` start one "next" todo per project. When a run finishes, the next eligible todo auto-starts and the quota decrements by one. No queueing — each run triggers the next on completion. The cycle repeats: analysis discovers todos → Autopilot runs them → next analysis picks up the results.
+5. **Autopilot** — after each analysis, projects with `auto_run_quota > 0` start one "next" todo per project. When a run finishes, the next eligible todo auto-starts and the quota decrements by one. No queueing — each run triggers the next on completion. The cycle repeats: analysis discovers todos → Autopilot runs them → next analysis picks up the results. Users can also schedule autopilot for a specific time (e.g., quota reset at 2AM) by setting `scheduled_auto_run_quota` + `autopilot_starts_at` — the quota activates when the timestamp is reached, preventing autopilot from consuming quota during the current billing window. A dedicated 1-minute activation job ensures scheduled autopilot fires even when the analysis heartbeat is disabled.
+5c. **Session-Scoped Autopilot** — enables autopilot on a specific session's descendants rather than the whole project. Each todo stores a permanent `source_session_id` linking it to the session that created it. When session autopilot is enabled (via `POST /api/todos/{id}/session-autopilot`), the system walks up the ancestor chain at runtime to check eligibility. This allows the "ralph loop" pattern: keep running all work spawned by a root task until the chain is exhausted or quota runs out. Session autopilot runs as a second pass after project-level autopilot — independent, no double-counting. The `session_autopilot` dict (session_id → remaining quota) is stored in metadata and exposed in the frontend state.
 5b. **Daily Run Limits** — each project has an optional `todo_quota` (0 = unlimited). When set, no more than N todos can be run (executed by Claude) within a 24-hour sliding window. Todos can always be created freely. Follow-ups on already-run todos don't count against the limit. The quota is enforced at queue-insertion time only — changing the limit does not affect items already in the queue.
 6. **Event Bus** — centralized pub/sub system propagates events (hook updates, analysis completions, run lifecycle, queue drains) to all consumers. An SSE endpoint (`/api/events`) streams events to the frontend in real time, supplementing the 3s poll with instant updates.
 7. **Frontend** polls every 3 seconds as a baseline, with SSE event stream triggering immediate refreshes when state changes
@@ -39,6 +40,8 @@ claude_todos/
 │   ├── session_discovery.py # Discover sessions from ~/.claude/projects/
 │   ├── session_state.py     # Detect session state (hook-based + JSONL heuristic)
 │   ├── run_manager.py       # ProcessManager class — subprocess lifecycle, PID/zombie detection, thread tracking, queue logic
+│   ├── output_parser.py     # Stream-JSON parsing: extract text, detect plan mode, parse output files, extract costs
+│   ├── btw_manager.py       # BTW (by-the-way) concurrent side-channel session management
 │   ├── prompt_builder.py    # Build per-project analysis prompts, invoke Claude CLI
 │   ├── result_applier.py    # Apply Claude analysis results to the todo store
 │   ├── hook_state.py        # Reader for hook-based session state
@@ -128,7 +131,7 @@ When a todo is executed via the play button or autopilot, `run_manager.py` manag
 1. Todo status → `in_progress`, `run_status` → `running`
 2. A background thread spawns `claude -p --output-format stream-json --dangerously-skip-permissions`
 3. Output is tailed from a JSONL file in `data/runs/` and flushed to the todo store every 5 seconds
-4. On completion, `_finalize_run` applies the result: sets `run_status`, detects plan files, scans for coping phrases
+4. On completion, `_finalize_run` applies the result: sets `run_status`, detects plan files, scans for coping phrases / surprise (`!`) / strategy pivots (`Wait`), and extracts cost/token usage from stream-json `result` events
 
 ### Plan Mode Auto-Accept
 
@@ -139,6 +142,8 @@ Claude may enter plan mode during a run. When it calls `ExitPlanMode`, the auto-
 ### Plan File Detection
 
 When Claude writes a file to `.claude/plans/` during a run, `_detect_plan_file` scans the stream objects for `Write` tool calls targeting that path. The detected path is stored in `todo.plan_file`. Stream objects are accumulated across all auto-accept retry iterations so the plan file isn't lost when the second invocation replaces `stream_objects`. Plan files are also preserved on the todo even when the run ends in error — the plan itself may still be valid.
+
+When stream-object detection returns nothing (e.g. reconnect captured only a tail of output, or the stream objects were lost), `_detect_plan_file` falls back to scanning the filesystem at `{source_path}/.claude/plans/` for files modified after the todo's `run_started_at` timestamp, returning the most recently modified match. Both `source_path` and `run_started_at` are threaded through `_finalize_run` and the startup recovery path in `_cleanup_stale_runs`.
 
 ### Error Detection
 
@@ -158,16 +163,30 @@ When `plan_only: true`, the run restricts tools (disallows `Edit`, `Bash`, `Note
 
 ## Todo Sorting
 
-Todos are sorted within their section (Up Next, Backlog, Completed) using a two-tier scheme:
+Todos are sorted within their section (Up Next, Backlog, Completed) using a three-tier scheme:
 
-1. **Pinned items first** — todos with `user_ordered=true` (set by drag-and-drop) sort by `sort_order` ascending
-2. **Unpinned items second** — todos with `user_ordered=false` sort by `created_at` descending (newest first)
+1. **Pinned items first** — todos with `user_ordered=true` (set by drag-and-drop) sort by `sort_order` ascending. Pinning overrides priority.
+2. **By priority** — unpinned todos with a priority (`priority` field: 1=critical, 2=high, 3=medium, 4=low) sort higher-priority first. Todos without a priority sort after all prioritized items.
+3. **By creation date** — within the same priority level, todos sort by `created_at` descending (newest first)
 
 This logic is applied consistently in three places: `TodoList.tsx` (UI rendering), `useKeyboardShortcuts.ts` (arrow key navigation), and `scheduler.py` (autopilot candidate selection).
 
 Within each section, todos are further grouped by status priority (e.g., Up Next: waiting → in_progress → next; Backlog: consider → stale → rejected).
 
 When a todo is **unpinned** (via the pin toggle), the backend recalculates `sort_order` for all unpinned siblings by `created_at`, slotting them around pinned items that keep their positions.
+
+### Priority System
+
+Priorities are set via hashtag keywords in todo text:
+
+| Keyword | Level | Label |
+|---------|-------|-------|
+| `#p1` or `#critical` | 1 | Critical |
+| `#p2` or `#high` | 2 | High |
+| `#p3` or `#medium` | 3 | Medium |
+| `#p4` or `#low` | 4 | Low |
+
+Priority keywords are **not** treated as regular tags — they appear as colored priority badges instead of tag pills. Any other `#word` token remains a regular hashtag/tag. The priority is derived from the text on creation and update, stored in the `priority` field on the Todo model. The filter bar shows priority filter pills when any active todos have priorities set.
 
 ## Hooks Integration
 

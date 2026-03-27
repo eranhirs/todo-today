@@ -7,7 +7,7 @@
    - **Per-session**: `metadata.session_mtimes` maps each `"project_dir/session_id"` to its last-analyzed mtime. Only sessions whose file mtime exceeds the stored value are included. This avoids re-sending unchanged sessions to Claude, saving tokens/cost.
    - When `force=True`, both checks are bypassed.
 2. **Session Discovery** — scans `~/.claude/projects/` for JSONL session files modified in the last 24 hours (configurable via `max_age` param; `None` = no cutoff). Self-generated sessions (from `claude -p` subprocess calls) are excluded.
-3. **Message Extraction** — reads the last 20 user/assistant messages from each session (truncated to 2000 chars each)
+3. **Message Extraction** — reads the last 12 user/assistant messages from each session (truncated to 1000 chars each). Tool-use blocks are compressed to one-line summaries (e.g. `[Read: path]`, `$ command`) and tool-result blocks are stripped entirely to reduce token cost.
 4. **Session → Project Matching** (`_match_sessions_to_projects`):
    - Each session's `source_path` is matched against `Project.source_path` in the store
    - Unmatched sessions trigger auto-creation of a new project (name derived from the directory basename)
@@ -79,12 +79,25 @@ Each analysis records:
 
 ## Cumulative Usage
 
-Metadata tracks running totals:
+Metadata tracks running totals for **analyses**:
 - `total_analyses` — number of analyses run
-- `total_cost_usd` — cumulative API cost
-- `total_input_tokens` / `total_output_tokens` — cumulative token usage
+- `total_cost_usd` — cumulative analysis API cost
+- `total_input_tokens` / `total_output_tokens` — cumulative analysis token usage
 
-These are displayed in the ClaudeStatus component below the Wake button.
+And for **todo runs** (Run with Claude):
+- `total_run_cost_usd` — cumulative run API cost
+- `total_run_input_tokens` / `total_run_output_tokens` — cumulative run token usage
+
+These are displayed in the Usage panel (TokenTracker component).
+
+## Per-Todo Run Cost
+
+Each todo tracks the cost of its Claude run:
+- `run_cost_usd` — total API cost for all invocations (including follow-ups and plan retries)
+- `run_input_tokens` / `run_output_tokens` / `run_cache_read_tokens` — token breakdown
+- `run_duration_ms` — total CLI execution time
+
+Costs accumulate across follow-ups within the same todo. Values are extracted from the `result` events in the stream-json output. The cost badge appears next to the session ID when output is expanded, with a tooltip showing the full token breakdown.
 
 ## Per-Project Insights
 
@@ -185,7 +198,9 @@ Autopilot is configured per-project via the `auto_run_quota` field on the Projec
 - **0** (default) — Autopilot disabled for this project
 - **1+** — max todos to auto-run per cycle
 
-Set it from the project list sidebar in the UI (rocket icon dropdown) or via `PUT /api/projects/{id}` with `{ "auto_run_quota": N }`.
+**Scheduled autopilot** lets you pre-set a quota that activates at a specific time (e.g., when your Claude quota resets). Set `scheduled_auto_run_quota` with an `autopilot_starts_at` timestamp. When the time arrives, the scheduled quota transfers to `auto_run_quota` and the schedule clears. This prevents autopilot from consuming quota during the current billing window.
+
+Set it from the project list sidebar in the UI (rocket icon dropdown, "Schedule" group — defaults to next 2AM UTC) or via `PUT /api/projects/{id}` with `{ "scheduled_auto_run_quota": N, "autopilot_starts_at": "2026-03-26T02:00:00Z" }`.
 
 ### The loop
 

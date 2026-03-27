@@ -46,13 +46,16 @@ _REQUEST_TIMEOUT = 30  # seconds — safety net for any blocked request
 def _cleanup_stale_runs() -> None:
     """Smart cleanup: reconnect to surviving processes, parse finished ones, reset the rest."""
     # First pass: collect info (don't hold lock while spawning threads)
-    stale: list[tuple[str, int | None, str | None]] = []
+    stale: list[tuple[str, int | None, str | None, str, str | None]] = []
     with StorageContext(read_only=True) as ctx:
+        # Build project_id → source_path map for filesystem fallback
+        proj_source: dict[str, str] = {p.id: p.source_path for p in ctx.store.projects}
         for t in ctx.store.todos:
             if t.run_status == "running":
-                stale.append((t.id, t.run_pid, t.run_output_file))
+                source_path = proj_source.get(t.project_id, "")
+                stale.append((t.id, t.run_pid, t.run_output_file, source_path, t.run_started_at))
 
-    for todo_id, run_pid, run_output_file in stale:
+    for todo_id, run_pid, run_output_file, source_path, run_started_at in stale:
         if run_pid and process_manager.pid_alive(run_pid):
             # Process survived the restart — reconnect
             log.info("Reconnecting to surviving claude process for todo %s (pid %d)", todo_id, run_pid)
@@ -72,8 +75,8 @@ def _cleanup_stale_runs() -> None:
                 if final_result.get("permission_denials"):
                     had_errors = True
 
-            # Detect plan file from stream objects
-            plan_file = _detect_plan_file(stream_objects)
+            # Detect plan file from stream objects (with filesystem fallback)
+            plan_file = _detect_plan_file(stream_objects, source_path=source_path, run_started_at=run_started_at)
 
             with StorageContext() as ctx:
                 for t in ctx.store.todos:
@@ -270,6 +273,7 @@ async def full_state(request: Request):
                 has_more_completed=completed_total > COMPLETED_PAGE_SIZE,
                 completed_by_project=completed_by_project,
                 unread_counts=unread_counts,
+                session_autopilot=dict(ctx.metadata.session_autopilot),
             )
 
     result = await run_in_thread(_do)

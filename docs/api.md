@@ -38,10 +38,14 @@ Get a single project.
 ### `PUT /api/projects/{project_id}`
 Update project name, source_path, autopilot quota, or todo quota.
 ```json
-{ "name": "new-name", "auto_run_quota": 2, "todo_quota": 10 }
+{ "name": "new-name", "auto_run_quota": 2, "scheduled_auto_run_quota": 5, "autopilot_starts_at": "2026-03-26T02:00:00Z", "todo_quota": 10 }
 ```
 `auto_run_quota`: 0 = Autopilot disabled, 1+ = max todos to auto-run per cycle for this project.
+`scheduled_auto_run_quota`: 0 = none scheduled, 1+ = quota that activates at `autopilot_starts_at`. When activated, transfers to `auto_run_quota` and resets.
+`autopilot_starts_at`: ISO timestamp when `scheduled_auto_run_quota` should activate. Use with `scheduled_auto_run_quota` to defer autopilot until a quota reset time.
+`clear_scheduled_autopilot`: boolean — when true, clears both `scheduled_auto_run_quota` and `autopilot_starts_at`.
 `todo_quota`: 0 = unlimited, 1+ = max todo runs per 24-hour sliding window. When the limit is reached, new runs return HTTP 429. Todos can always be created freely. Follow-ups on already-run todos don't count against the limit.
+`run_model`: `null` = use global setting, `"opus"`/`"sonnet"`/`"haiku"` = override the global run model for this project. Use `clear_run_model: true` to reset to global.
 
 ### `DELETE /api/projects/{project_id}`
 Delete a project and all its todos.
@@ -84,7 +88,7 @@ Kick off a background Claude Code session to complete the todo. Claude runs in t
 
 Returns `{ "status": "started" }`.
 
-When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. The output is also scanned for "coping" phrases (e.g. "belt-and-suspenders", "defensive", "just in case") and any matches are stored in `red_flags` — an array of `{ label, explanation, excerpt }` objects. On failure, `run_status` is set to `"error"` and `run_output` contains the error message.
+When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. The output is also scanned for "coping" phrases (e.g. "belt-and-suspenders", "defensive", "just in case"), surprise indicators (sentences ending with `!`), and strategy pivots (lines starting with "Wait") — any matches are stored in `red_flags` — an array of `{ label, explanation, excerpt }` objects. Cost and token usage are extracted from the stream-json result and stored in `run_cost_usd`, `run_input_tokens`, `run_output_tokens`, `run_cache_read_tokens`, and `run_duration_ms`. Costs accumulate across follow-ups and plan retries. On failure, `run_status` is set to `"error"` and `run_output` contains the error message (costs are still tracked).
 
 Returns 409 if the todo is already running, 400 if the project has no `source_path`, 429 if the daily run limit is reached.
 
@@ -115,6 +119,14 @@ Send a `/btw` message that spawns a **concurrent** Claude session alongside the 
 ```
 Returns `{ "status": "started" }`. Returns 409 if the todo is not running or if a btw session is already active.
 
+### `POST /api/todos/{todo_id}/session-autopilot`
+Enable or disable session-scoped autopilot on a todo's session. Uses the todo's `session_id` (if it has been run) or `source_session_id` as the autopilot key. Descendants of that session will be auto-run until the quota is exhausted.
+```json
+{ "quota": 5 }
+```
+`quota`: 0 = disable session autopilot, 1+ = number of descendant todos to auto-run.
+Returns `{ "status": "ok", "session_id": "<key>", "quota": 5 }`. Returns 400 if the todo has no session, 404 if not found.
+
 ## Settings
 
 ### `GET /api/claude/settings`
@@ -132,11 +144,11 @@ Returns the current settings object:
 ### `PUT /api/claude/settings`
 Partial update — only supplied fields are changed. Returns the full updated settings object.
 ```json
-{ "analysis_interval_minutes": 15, "heartbeat_enabled": false }
+{ "analysis_interval_minutes": 15, "run_model": "sonnet" }
 ```
 If `analysis_interval_minutes` is changed, the scheduler is automatically rescheduled.
 
-The `run_model` field is read-only and cannot be changed via this endpoint.
+Both `analysis_model` and `run_model` can be changed. Valid model values: `"opus"`, `"sonnet"`, `"haiku"`. Per-project `run_model` overrides (set via `PUT /api/projects/{id}`) take precedence over the global setting.
 
 The settings object is also included in the `GET /api/state` response as `state.settings`.
 
