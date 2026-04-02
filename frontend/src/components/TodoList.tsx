@@ -325,11 +325,16 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     return b.created_at.localeCompare(a.created_at);
   };
 
-  // Up Next: waiting (first), then in_progress, then next — within same status, by sort_order
+  // Up Next: queued items first (still prioritized among themselves),
+  // then waiting, in_progress, next — within same group, by sort_order
   const upNextOrder = { waiting: 0, in_progress: 1, next: 2 } as const;
   const upNext = filtered
     .filter((t) => t.status === "waiting" || t.status === "in_progress" || t.status === "next")
     .sort((a, b) => {
+      // Queued items always sort to the top of Up Next
+      const aQueued = a.run_status === "queued" ? 0 : 1;
+      const bQueued = b.run_status === "queued" ? 0 : 1;
+      if (aQueued !== bQueued) return aQueued - bQueued;
       const oa = upNextOrder[a.status as keyof typeof upNextOrder] ?? 2;
       const ob = upNextOrder[b.status as keyof typeof upNextOrder] ?? 2;
       if (oa !== ob) return oa - ob;

@@ -2405,6 +2405,28 @@ body {
   to { transform: rotate(360deg); }
 }
 
+/* Pixel Dino running animation */
+.pixel-dino-f1,
+.pixel-dino-f2 {
+  animation: dino-frame 0.3s steps(1) infinite;
+}
+.pixel-dino-f1 { opacity: 1; }
+.pixel-dino-f2 { opacity: 0; }
+
+@keyframes dino-frame {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.pixel-dino-f2 {
+  animation-name: dino-frame-alt;
+}
+
+@keyframes dino-frame-alt {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
 .todo-queued {
   border-left-color: var(--yellow, #e5c07b) !important;
 }

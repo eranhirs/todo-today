@@ -9,9 +9,9 @@ const POLL_INTERVAL = 30_000;
 const COMPLETED_PAGE_SIZE = 50;
 
 interface UseAppStateOptions {
-  notifyNewWaitingTodos: (todos: Todo[]) => void;
-  notifyRunCompletions: (todos: Todo[], projects: Project[]) => void;
-  notifyHookEvents: (projects: Project[]) => void;
+  notifyNewWaitingTodos: (todos: Todo[], silent?: boolean) => void;
+  notifyRunCompletions: (todos: Todo[], projects: Project[], silent?: boolean) => void;
+  notifyHookEvents: (projects: Project[], silent?: boolean) => void;
 }
 
 export function useAppState({
@@ -59,6 +59,11 @@ export function useAppState({
     }
     window.history.replaceState({}, "", url.toString());
   }, []);
+
+  // When true, the next refresh will silently sync notification tracking refs
+  // without firing toasts or browser notifications (prevents stale notification
+  // bursts when returning to a backgrounded tab).
+  const returningFromHiddenRef = useRef(false);
 
   // Use a ref to always call the latest callbacks without re-creating the interval
   const refreshRef = useRef<(() => Promise<void>) | null>(null);
@@ -136,9 +141,11 @@ export function useAppState({
         }
         return data;
       });
-      notifyNewWaitingTodos(data.todos);
-      notifyRunCompletions(data.todos, data.projects);
-      notifyHookEvents(data.projects);
+      const silent = returningFromHiddenRef.current;
+      returningFromHiddenRef.current = false;
+      notifyNewWaitingTodos(data.todos, silent);
+      notifyRunCompletions(data.todos, data.projects, silent);
+      notifyHookEvents(data.projects, silent);
       const waitingCount = data.todos.filter((t) => t.status === "waiting").length;
       document.title = waitingCount > 0 ? `(${waitingCount}) Claude Todos` : "Claude Todos";
     } catch (err) {
@@ -240,7 +247,10 @@ export function useAppState({
       if (document.hidden) {
         stopPolling();
       } else {
-        // Single immediate refresh, then resume normal polling
+        // Suppress stale notifications on the first refresh after returning —
+        // events that occurred while the tab was hidden are no longer actionable
+        // and would otherwise burst as a wall of toasts + browser notifications.
+        returningFromHiddenRef.current = true;
         refresh();
         startPolling();
       }

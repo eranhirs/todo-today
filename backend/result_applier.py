@@ -139,6 +139,10 @@ def _apply_result(
         if su.status == "rejected":
             log.warning("status_updates: only users can reject todos, skipping %s", su.id)
             continue
+        # Drop waiting status for sessions that don't need user action
+        if su.status == "waiting" and t.session_id and t.session_id not in _actionable_sessions:
+            log.info("status_updates: dropping waiting status for non-actionable session %s (todo %s)", t.session_id, su.id)
+            continue
         if t.source == "user" and su.status != "stale":
             log.warning("status_updates: skipping non-stale status %r for user todo %s", su.status, su.id)
             continue
@@ -186,6 +190,12 @@ def _apply_result(
     for t in ctx.store.todos:
         known_tags.update(parse_tags(t.text))
 
+    # Build lookup of existing todos by session_id for waiting-status promotion
+    _todos_by_session: dict[str, Todo] = {}
+    for t in ctx.store.todos:
+        if t.session_id and t.project_id == project_id and t.status not in ("completed", "rejected", "stale"):
+            _todos_by_session[t.session_id] = t
+
     for nt in result.new_todos:
         # Strip leftover "Next:"/"Consider:" prefixes defensively
         text = re.sub(r"^(Next|Consider|Waiting|Stale):\s*", "", nt.text, flags=re.IGNORECASE)
@@ -199,6 +209,20 @@ def _apply_result(
         # Drop waiting todos for sessions that don't need user action
         if nt.status == "waiting" and nt.session_id and nt.session_id not in _actionable_sessions:
             log.info("Dropping waiting todo for non-actionable session %s: %s", nt.session_id, text)
+            continue
+
+        # Convert waiting new_todos into status updates on the existing session todo
+        # instead of creating duplicate "Respond to Claude" entries.
+        if nt.status == "waiting" and nt.session_id and nt.session_id in _todos_by_session:
+            existing_todo = _todos_by_session[nt.session_id]
+            if existing_todo.status != "waiting":
+                log.info("Promoting todo %s to waiting (session %s): %s", existing_todo.id, nt.session_id, text)
+                existing_todo.status = "waiting"
+                existing_todo.stale_reason = None
+                counters.todos_modified += 1
+                counters.modified_todo_texts.append(existing_todo.text)
+            else:
+                log.info("Todo %s already waiting for session %s, skipping new waiting todo", existing_todo.id, nt.session_id)
             continue
 
         if (project_id, text.lower()) in existing_texts:

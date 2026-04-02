@@ -110,6 +110,9 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 else:
                     t.btw_output = f"**You:** {message}\n\n"
                 t.pending_btw = None
+            # Pre-register known btw session ID so hook-triggered analysis skips it
+            if btw_session_id and btw_session_id not in ctx.metadata.analysis_session_ids:
+                ctx.metadata.analysis_session_ids.append(btw_session_id)
 
         # Ensure clean output file
         output_file.write_text("")
@@ -183,6 +186,11 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 if obj.get("type") == "result":
                     # Capture session_id from result for future continuation
                     result_session_id = obj.get("session_id")
+                    # Eagerly register so hook-triggered analysis skips this session
+                    if result_session_id:
+                        with StorageContext() as ctx:
+                            if result_session_id not in ctx.metadata.analysis_session_ids:
+                                ctx.metadata.analysis_session_ids.append(result_session_id)
                     continue
                 text = extract_assistant_text(obj)
                 if text:
@@ -230,6 +238,9 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 # Save session ID for continuation (prefer result, fall back to existing)
                 if result_session_id:
                     t.btw_session_id = result_session_id
+                    # Register btw session ID so analysis/hooks skip it
+                    if result_session_id not in ctx.metadata.analysis_session_ids:
+                        ctx.metadata.analysis_session_ids.append(result_session_id)
 
         bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 

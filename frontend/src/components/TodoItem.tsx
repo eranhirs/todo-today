@@ -10,6 +10,7 @@ import { type CommandInfo, stripCommandsFromText } from "../utils/commands";
 import { filterMentionSuggestions } from "../utils/todoSearch";
 import { formatTime, formatDate, timeAgo } from "../utils/formatting";
 import { useAppContext } from "../contexts/AppContext";
+import { PixelDino } from "./PixelDino";
 
 interface Props {
   todo: Todo;
@@ -553,8 +554,29 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         {todo.priority !== null && PRIORITY_INFO[todo.priority] && (
           <span
             className={`priority-badge priority-${todo.priority}`}
-            title={`Priority: ${PRIORITY_INFO[todo.priority].label}`}
-            style={{ borderColor: PRIORITY_INFO[todo.priority].color, color: PRIORITY_INFO[todo.priority].color }}
+            title={`Priority: ${PRIORITY_INFO[todo.priority].label} — click to remove`}
+            style={{ borderColor: PRIORITY_INFO[todo.priority].color, color: PRIORITY_INFO[todo.priority].color, cursor: "pointer" }}
+            onClick={async (e) => {
+              e.stopPropagation();
+              const newText = stripPriorityFromText(todo.text);
+              if (newText === todo.text) return;
+              const prevText = todo.text;
+              optimistic.addOptimisticOverride(todo.id, { text: newText, priority: null });
+              onOptimisticUpdate((todos) =>
+                todos.map((t) => t.id === todo.id ? { ...t, text: newText, priority: null } : t)
+              );
+              try {
+                await api.updateTodo(todo.id, { text: newText, source: "user" });
+                optimistic.removeOptimisticOverride(todo.id);
+                onRefresh();
+              } catch {
+                optimistic.removeOptimisticOverride(todo.id);
+                onOptimisticUpdate((todos) =>
+                  todos.map((t) => t.id === todo.id ? { ...t, text: prevText, priority: todo.priority } : t)
+                );
+                addToast("Failed to remove priority", "error");
+              }
+            }}
           >
             {PRIORITY_INFO[todo.priority].short}
           </span>
@@ -564,7 +586,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         {todo.is_command && <span className="command-badge" title="Skill/command execution">cmd</span>}
         {todo.plan_only && <span className="plan-only-badge" title={todo.plan_file ? `Plan file: ${todo.plan_file}` : "Plan only — agent will plan but not implement"}>{todo.plan_file ? "plan ✓" : "plan"}</span>}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
-        {isRunning && <span className="run-spinner" title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."}>⟳</span>}
+        {isRunning && <PixelDino title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."} />}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
       </div>
       <div className="todo-meta">

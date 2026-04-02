@@ -69,6 +69,11 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "Adding complexity out of uncertainty rather than understanding the problem.",
     ),
     (
+        re.compile(r"\bblast radius\b", re.IGNORECASE),
+        "\"Blast radius\"",
+        "Framing a change as dangerous to justify avoiding or circumventing it.",
+    ),
+    (
         re.compile(r"\bworkaround\b", re.IGNORECASE),
         "Workaround",
         "A workaround signals the root cause wasn't addressed.",
@@ -155,6 +160,30 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         re.compile(r"\bnegligible\b", re.IGNORECASE),
         "\"Negligible\"",
         "Model dismissed something as negligible — let the user decide what matters.",
+    ),
+    # ── Silent substitution: doing something we didn't agree on ─
+    (
+        re.compile(r"\bfall[- ]?back", re.IGNORECASE),
+        "Fallback",
+        "Model is silently substituting something — we didn't agree on a fallback.",
+    ),
+    # ── Dead code / deferred cleanup ──────────────────────────────
+    (
+        re.compile(r"\bdead code\b", re.IGNORECASE),
+        "Dead code",
+        "Mentions dead code — should be removed, not left behind.",
+    ),
+    # ── Complexity warning ────────────────────────────────────────
+    (
+        re.compile(r"\btricky (?:part|bit|thing|aspect|detail|edge|case|piece)\b", re.IGNORECASE),
+        "\"Tricky part\"",
+        "Model flagged something as tricky — review closely for correctness.",
+    ),
+    # ── Attention grab: Note: ─────────────────────────────────────
+    (
+        re.compile(r"(?:^|\n)\s*\**Note:?\**\s", re.IGNORECASE),
+        "\"Note:\"",
+        "Model is calling your attention to something — read it.",
     ),
     # ── Surprise: unexpected outcome ─────────────────────────────
     (

@@ -281,7 +281,7 @@ async def full_state(request: Request):
     # the next poll will catch up.
     version_after = str(get_state_version())
     return JSONResponse(
-        content=result.model_dump(mode="json"),
+        content=result.model_dump(mode="json", exclude={"todos": {"__all__": {"run_output_base"}}}),
         headers={"ETag": f'"{version_after}"'},
     )
 

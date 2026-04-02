@@ -21,7 +21,7 @@ _TODO_FIELDS_TO_STRIP = {
     "run_output", "run_pid", "run_output_file", "btw_output", "btw_pid",
     "btw_output_file", "btw_session_id", "pending_followup", "pending_followup_images",
     "pending_followup_plan_only", "pending_btw", "run_flush_lines", "images",
-    "red_flags", "plan_file", "session_msg_count",
+    "red_flags", "plan_file", "session_last_synced_ts", "run_output_base",
 }
 
 
@@ -54,7 +54,7 @@ _STATIC_INSTRUCTIONS = """You analyze Claude Code sessions to update a todo list
 6. **Prefix todo text with a relevant emoji** (🐛 bug, ✨ feature, ♻️ refactor, 🧪 test, 📝 docs, etc.).
 7. **Use existing hashtags only.** Append relevant ones from the Existing Hashtags list. Don't invent new ones. Preserve existing hashtags when modifying text.
 8. **Add emoji/hashtags to existing todos** via modified_todos when they lack them.
-9. **"waiting" todos** only for sessions needing user action (waiting_for_user or waiting_for_tool_approval). Format: "Respond to Claude: <description>". Clean up stale waiting todos.
+9. **"waiting" status**: when a session needs user action (waiting_for_user or waiting_for_tool_approval), use `status_updates` to set the existing todo to "waiting" — do NOT create a new todo. Only create a new "waiting" todo if no existing todo is linked to that session. Clean up stale waiting todos.
 10. **Extract suggestions individually** as separate "consider" todos, not as a single "review suggestions" item.
 11. **Todos vs insights**: new_todos = tasks to do; insights = things to know. Don't mix.
 

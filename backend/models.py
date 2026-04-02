@@ -81,7 +81,8 @@ class Todo(BaseModel):
     plan_file: Optional[str] = None  # Path to .claude/plans/ file written during plan_only run
     priority: Optional[int] = None  # 1=critical, 2=high, 3=medium, 4=low, None=no priority
     source_session_id: Optional[str] = None  # Session analyzed to create this todo (permanent, never overwritten)
-    session_msg_count: Optional[int] = None  # JSONL user/assistant message count at last sync
+    session_last_synced_ts: Optional[str] = None  # ISO-8601 timestamp of last synced message (baseline for CLI reimport)
+    run_output_base: Optional[str] = None  # run_output snapshot when run ended — used as base for CLI reimport
 
     # Run cost tracking — extracted from stream-json result
     run_cost_usd: Optional[float] = None
@@ -110,6 +111,9 @@ class Todo(BaseModel):
                         flag["resolved"] = False
                     if "source" not in flag:
                         flag["source"] = "pattern"
+        # Migrate legacy session_msg_count → drop it (session_last_synced_ts replaces it)
+        if isinstance(data, dict) and "session_msg_count" in data:
+            data.pop("session_msg_count", None)
         # Migrate legacy string-only images to ImageAttachment format
         if isinstance(data, dict) and "images" in data:
             imgs = data["images"]

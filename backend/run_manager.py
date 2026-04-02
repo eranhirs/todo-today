@@ -272,13 +272,14 @@ def _handle_quota_error(todo_id: str, error_output: str, output_file: Path) -> N
         "Quota/rate-limit error for todo %s — resetting to 'next' for retry on next heartbeat",
         todo_id,
     )
-    _update_session_msg_count(todo_id)
+    _update_session_last_synced_ts(todo_id)
     with StorageContext() as ctx:
         t = ctx.get_todo(todo_id)
         if t is not None:
             t.status = "next"
             t.run_status = None
             t.run_output = f"[Quota/rate-limit error — will retry on next heartbeat]\n\n{error_output[:2000]}"
+            t.run_output_base = t.run_output  # Override: run_output set after _update_session_last_synced_ts
             t.run_pid = None
             t.run_output_file = None
     process_manager.cleanup_output_file(output_file)
@@ -615,7 +616,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
     except Exception as e:
         log.exception("Claude run error for todo %s", todo_id)
         err_str = str(e)
-        _update_session_msg_count(todo_id)
+        _update_session_last_synced_ts(todo_id)
         if _is_already_stopped(todo_id):
             log.info("Ignoring exception for todo %s — already stopped/paused by user", todo_id)
             process_manager.cleanup_output_file(output_file)
@@ -627,6 +628,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 if t is not None:
                     t.run_status = "error"
                     t.run_output = err_str
+                    t.run_output_base = t.run_output  # Override: run_output set after _update_session_last_synced_ts
                     t.run_pid = None
                     t.run_output_file = None
                     t.is_read = False
@@ -690,7 +692,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
 
     except Exception as e:
         log.exception("Claude follow-up error for todo %s", todo_id)
-        _update_session_msg_count(todo_id)
+        _update_session_last_synced_ts(todo_id)
         if _is_already_stopped(todo_id):
             log.info("Ignoring follow-up exception for todo %s — already stopped/paused by user", todo_id)
         else:
@@ -699,6 +701,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
                 if t is not None:
                     t.run_status = "error"
                     t.run_output = (t.run_output or "") + f"\n\n--- Follow-up Error ---\n{e}"
+                    t.run_output_base = t.run_output  # Override: run_output set after _update_session_last_synced_ts
                     t.run_pid = None
                     t.run_output_file = None
         process_manager.cleanup_output_file(output_file)
@@ -718,16 +721,16 @@ def _is_already_stopped(todo_id: str) -> bool:
         return t.run_status == "stopped" if t is not None else False
 
 
-def _count_session_messages(session_id: str, source_path: str) -> int | None:
-    """Count user/assistant messages in a session JSONL file.
+def _get_last_session_timestamp(session_id: str, source_path: str) -> str | None:
+    """Get the timestamp of the last user/assistant message in a session JSONL file.
 
-    Returns the count, or None if the file doesn't exist or can't be read.
+    Returns an ISO-8601 timestamp string, or None if unavailable.
     """
     encoded = source_path.replace("/", "-").replace(".", "-")
     jsonl_path = Path.home() / ".claude" / "projects" / encoded / f"{session_id}.jsonl"
     if not jsonl_path.is_file():
         return None
-    count = 0
+    last_ts: str | None = None
     try:
         with open(jsonl_path) as f:
             for line in f:
@@ -739,15 +742,17 @@ def _count_session_messages(session_id: str, source_path: str) -> int | None:
                 except json.JSONDecodeError:
                     continue
                 if entry.get("type") in ("user", "assistant"):
-                    count += 1
+                    ts = entry.get("timestamp", "")
+                    if ts:
+                        last_ts = ts
     except Exception:
-        log.debug("Could not count session messages: %s", jsonl_path, exc_info=True)
+        log.debug("Could not read session timestamps: %s", jsonl_path, exc_info=True)
         return None
-    return count
+    return last_ts
 
 
-def _update_session_msg_count(todo_id: str) -> None:
-    """Update session_msg_count on a todo to match the current JSONL file.
+def _update_session_last_synced_ts(todo_id: str) -> None:
+    """Update session_last_synced_ts on a todo to match the current JSONL file.
 
     Called from all run-exit paths (success, error, stopped, exception, quota)
     to prevent sync_cli_sessions from misidentifying app-generated messages
@@ -759,9 +764,12 @@ def _update_session_msg_count(todo_id: str) -> None:
             p = ctx.get_project(t.project_id)
             source = p.source_path if p else ""
             if source:
-                count = _count_session_messages(t.session_id, source)
-                if count is not None:
-                    t.session_msg_count = count
+                ts = _get_last_session_timestamp(t.session_id, source)
+                if ts:
+                    t.session_last_synced_ts = ts
+            # Capture current run_output as the base for CLI reimport.
+            # Paths where run_output is set AFTER this call override it.
+            t.run_output_base = t.run_output
 
 
 def _finalize_run(
@@ -780,7 +788,7 @@ def _finalize_run(
     # If the user already paused/stopped this run, don't overwrite the status
     if _is_already_stopped(todo_id):
         log.info("Skipping finalize for todo %s — already stopped/paused by user", todo_id)
-        _update_session_msg_count(todo_id)
+        _update_session_last_synced_ts(todo_id)
         process_manager.cleanup_output_file(output_file)
         return
     # Detect plan file written during the run
@@ -820,7 +828,7 @@ def _finalize_run(
                 _accumulate_costs_on_todo(t, costs)
             # Accumulate into metadata
             _accumulate_costs_on_metadata(ctx.metadata, costs)
-        _update_session_msg_count(todo_id)
+        _update_session_last_synced_ts(todo_id)
         bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id, exit_code=returncode)
         process_manager.cleanup_output_file(output_file)
         return
@@ -884,12 +892,13 @@ def _finalize_run(
     # Scan output for coping phrases
     red_flags = detect_coping_phrases(output_text)
 
-    _update_session_msg_count(todo_id)
+    _update_session_last_synced_ts(todo_id)
 
     with StorageContext() as ctx:
         t = ctx.get_todo(todo_id)
         if t is not None:
             t.run_output = cap_output(session_header + output_text)
+            t.run_output_base = t.run_output  # Override: run_output set after _update_session_last_synced_ts
             t.run_pid = None
             t.run_output_file = None
             t.is_read = False
@@ -1013,6 +1022,7 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
                         t.run_status = "error"
                         existing = t.run_output or ""
                         t.run_output = cap_output(existing + f"\n\n[Reconnect failed: {e}]") if existing else f"[Reconnect failed: {e}]"
+                        t.run_output_base = t.run_output
                         t.run_pid = None
                         t.run_output_file = None
             process_manager.cleanup_output_file(output_file)
