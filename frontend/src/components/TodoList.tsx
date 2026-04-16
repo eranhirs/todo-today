@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useCallback, useEffect, type KeyboardEvent, type FormEvent } from "react";
-import { isUnread, type Project, type Todo } from "../types";
+import { isUnread, type AnalysisEntry, type Project, type Todo } from "../types";
 import { api } from "../api";
 import { AddTodo } from "./AddTodo";
 import { TodoItem } from "./TodoItem";
@@ -25,9 +25,13 @@ interface Props {
   unreadCounts?: Record<string, number>;
   globalRunModel?: string;
   sessionAutopilot?: Record<string, number>;
+  analysisHistory?: AnalysisEntry[];
+  onNavigateToTodo?: (todoId: string, projectId: string) => void;
+  pendingScrollTodoId?: string | null;
+  onPendingScrollHandled?: () => void;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {} }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {}, analysisHistory = [], onNavigateToTodo, pendingScrollTodoId, onPendingScrollHandled }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic, isOffline } = useAppContext();
   const [showUpNext, setShowUpNextRaw] = useState(() => getSectionExpanded("upnext", true));
   const [showBacklog, setShowBacklogRaw] = useState(() => getSectionExpanded("backlog", true));
@@ -35,14 +39,29 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const setShowUpNext = (v: boolean) => { setShowUpNextRaw(v); setSectionExpanded("upnext", v); };
   const setShowBacklog = (v: boolean) => { setShowBacklogRaw(v); setSectionExpanded("backlog", v); };
   const setShowDone = (v: boolean) => { setShowDoneRaw(v); setSectionExpanded("done", v); };
-  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
-  const [excludedTags, setExcludedTags] = useState<Set<string>>(new Set());
-  const [filterUnread, setFilterUnread] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(() => {
+    const p = new URLSearchParams(window.location.search).get("tags");
+    return p ? new Set(p.split(",").filter(Boolean)) : new Set();
+  });
+  const [excludedTags, setExcludedTags] = useState<Set<string>>(() => {
+    const p = new URLSearchParams(window.location.search).get("exclude");
+    return p ? new Set(p.split(",").filter(Boolean)) : new Set();
+  });
+  const [filterUnread, setFilterUnread] = useState(() => {
+    return new URLSearchParams(window.location.search).has("unread");
+  });
+  const [searchQuery, setSearchQuery] = useState(() => {
+    return new URLSearchParams(window.location.search).get("search") ?? "";
+  });
   const [searchResults, setSearchResults] = useState<Todo[] | null>(null);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [filterCommands, setFilterCommands] = useState(false);
-  const [selectedPriorities, setSelectedPriorities] = useState<Set<number>>(new Set());
+  const [filterCommands, setFilterCommands] = useState(() => {
+    return new URLSearchParams(window.location.search).has("commands");
+  });
+  const [selectedPriorities, setSelectedPriorities] = useState<Set<number>>(() => {
+    const p = new URLSearchParams(window.location.search).get("priorities");
+    return p ? new Set(p.split(",").map(Number).filter((n) => !isNaN(n))) : new Set();
+  });
   const [allCommands, setAllCommands] = useState<CommandInfo[]>([]);
   const completedSentinelRef = useRef<HTMLDivElement>(null);
   // When unread filter is active and the user opens a todo's output (marking it read),
@@ -63,6 +82,22 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       titleRenameRef.current.select();
     }
   }, [renamingTitle]);
+
+  // After project switch, scroll to the pending todo
+  useEffect(() => {
+    if (!pendingScrollTodoId) return;
+    // Use requestAnimationFrame to wait for DOM render after project switch
+    const raf = requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-todo-id="${pendingScrollTodoId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("todo-highlight-flash");
+        setTimeout(() => el.classList.remove("todo-highlight-flash"), 1500);
+      }
+      onPendingScrollHandled?.();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [pendingScrollTodoId, onPendingScrollHandled]);
 
   // Fetch available commands/skills scoped to the selected project
   useEffect(() => {
@@ -97,6 +132,15 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       if (t.run_status === "running") set.add(t.project_id);
     }
     return set;
+  }, [todos]);
+
+  // Build session_id → todo lookup so children can find their parent todo
+  const sessionToTodo = useMemo(() => {
+    const map = new Map<string, Todo>();
+    for (const t of todos) {
+      if (t.session_id) map.set(t.session_id, t);
+    }
+    return map;
   }, [todos]);
 
   const projectFiltered = selectedProjectId
@@ -135,6 +179,22 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   }, []);
 
   const clearTags = useCallback(() => { setSelectedTags(new Set()); setExcludedTags(new Set()); }, []);
+
+  // Sync filter state to URL params
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const set = (key: string, value: string | null) => {
+      if (value) url.searchParams.set(key, value);
+      else url.searchParams.delete(key);
+    };
+    set("search", searchQuery.trim() || null);
+    set("tags", selectedTags.size > 0 ? Array.from(selectedTags).join(",") : null);
+    set("exclude", excludedTags.size > 0 ? Array.from(excludedTags).join(",") : null);
+    set("unread", filterUnread ? "1" : null);
+    set("commands", filterCommands ? "1" : null);
+    set("priorities", selectedPriorities.size > 0 ? Array.from(selectedPriorities).join(",") : null);
+    window.history.replaceState({}, "", url.toString());
+  }, [searchQuery, selectedTags, excludedTags, filterUnread, filterCommands, selectedPriorities]);
 
   const startRenameTag = useCallback((tag: string) => {
     setRenamingTag(tag);
@@ -257,7 +317,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     return counts;
   }, [projectFiltered]);
 
-  const hasPriorities = Object.keys(priorityCounts).length > 0 || selectedPriorities.size > 0;
+  const hasPriorities = projectFiltered.some((t) => t.priority !== null);
 
   const togglePriority = useCallback((level: number) => {
     setSelectedPriorities((prev) => {
@@ -497,26 +557,47 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     setDropPosition(null);
   }, []);
 
-  const renderTodoList = (items: Todo[], section: string) =>
-    items.map((t) => (
-      <div
-        key={t.id}
-        draggable={!isOffline}
-        onDragStart={(e) => {
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", t.id);
-          handleDragStart(t.id, section);
-        }}
-        onDragOver={(e) => handleDragOver(e, t.id)}
-        onDragLeave={handleDragLeave}
-        onDrop={(e) => handleDrop(e, items, section)}
-        onDragEnd={handleDragEnd}
-        className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
-      >
-        {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} />
-      </div>
-    ));
+  const renderTodoItem = (t: Todo, items: Todo[], section: string) => (
+    <div
+      key={t.id}
+      draggable={!isOffline}
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", t.id);
+        handleDragStart(t.id, section);
+      }}
+      onDragOver={(e) => handleDragOver(e, t.id)}
+      onDragLeave={handleDragLeave}
+      onDrop={(e) => handleDrop(e, items, section)}
+      onDragEnd={handleDragEnd}
+      className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
+      data-todo-id={t.id}
+    >
+      <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={t.source_session_id ? sessionToTodo.get(t.source_session_id) ?? null : null} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+    </div>
+  );
+
+  const renderTodoList = (items: Todo[], section: string) => {
+    // In "All Projects" view, group todos by project
+    if (!selectedProjectId && items.length > 0) {
+      const groups = new Map<string, Todo[]>();
+      for (const t of items) {
+        if (!groups.has(t.project_id)) groups.set(t.project_id, []);
+        groups.get(t.project_id)!.push(t);
+      }
+      // If only one project, no need for grouping headers
+      if (groups.size <= 1) {
+        return items.map((t) => renderTodoItem(t, items, section));
+      }
+      return Array.from(groups.entries()).map(([pid, groupItems]) => (
+        <div key={pid} className="project-group">
+          <div className="project-group-header">{projectName(pid)}</div>
+          {groupItems.map((t) => renderTodoItem(t, items, section))}
+        </div>
+      ));
+    }
+    return items.map((t) => renderTodoItem(t, items, section));
+  };
 
   return (
     <div className="todo-list">
@@ -637,13 +718,14 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
           {hasPriorities && ([1, 2, 3, 4] as const).map((level) => {
             const info = PRIORITY_INFO[level];
             const count = priorityCounts[level] ?? 0;
-            if (count === 0 && !selectedPriorities.has(level)) return null;
+            const isActive = selectedPriorities.has(level);
+            const isFaded = count === 0 && !isActive;
             return (
               <button
                 key={`p${level}`}
-                className={`tag-filter-pill priority-filter priority-${level}${selectedPriorities.has(level) ? " active" : ""}`}
+                className={`tag-filter-pill priority-filter priority-${level}${isActive ? " active" : ""}${isFaded ? " faded" : ""}`}
                 onClick={() => togglePriority(level)}
-                style={selectedPriorities.has(level) ? { borderColor: info.color, background: info.color + "18" } : {}}
+                style={isActive ? { borderColor: info.color, background: info.color + "18" } : {}}
               >
                 {info.short} {info.label} ({count})
               </button>
@@ -869,17 +951,41 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
             }
             return (
               <>
-                {Array.from(groups.entries()).map(([day, items]) => (
-                  <div key={day} className="done-group">
-                    <div className="done-group-header">{day}</div>
-                    {items.map((t) => (
-                      <div key={t.id}>
-                        {!selectedProjectId && <span className="todo-project-label">{projectName(t.project_id)}</span>}
-                        <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} />
+                {Array.from(groups.entries()).map(([day, items]) => {
+                  // In "All Projects" view, sub-group completed todos by project within each date
+                  if (!selectedProjectId) {
+                    const projGroups = new Map<string, Todo[]>();
+                    for (const t of items) {
+                      if (!projGroups.has(t.project_id)) projGroups.set(t.project_id, []);
+                      projGroups.get(t.project_id)!.push(t);
+                    }
+                    return (
+                      <div key={day} className="done-group">
+                        <div className="done-group-header">{day}</div>
+                        {Array.from(projGroups.entries()).map(([pid, projItems]) => (
+                          <div key={pid} className="project-group">
+                            {projGroups.size > 1 && <div className="project-group-header project-group-header-sub">{projectName(pid)}</div>}
+                            {projItems.map((t) => (
+                              <div key={t.id}>
+                                <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={t.source_session_id ? sessionToTodo.get(t.source_session_id) ?? null : null} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                              </div>
+                            ))}
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                ))}
+                    );
+                  }
+                  return (
+                    <div key={day} className="done-group">
+                      <div className="done-group-header">{day}</div>
+                      {items.map((t) => (
+                        <div key={t.id}>
+                          <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={t.source_session_id ? sessionToTodo.get(t.source_session_id) ?? null : null} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
                 {!searchQuery && hasMoreCompleted && (
                   <div ref={completedSentinelRef} className="load-more-sentinel">
                     {loadingMoreCompleted ? (

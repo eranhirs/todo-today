@@ -187,6 +187,12 @@ export const api = {
       body: JSON.stringify({ quota }),
     }),
 
+  scheduleTodo: (id: string, runAfter: string | null) =>
+    request<{ status: string; todo_id: string; run_after: string | null }>(`/todos/${id}/schedule`, {
+      method: "POST",
+      body: JSON.stringify({ run_after: runAfter }),
+    }),
+
   wakeUpClaude: (model?: string, force?: boolean, sessionKeys?: string[]) =>
     request<{ status: string; message?: string }>("/claude/wake", {
       method: "POST",
@@ -234,7 +240,7 @@ export const api = {
     request<{ installed: boolean; installed_events: string[]; hook_script: string }>("/claude/hooks/status"),
 
   installHooks: () =>
-    request<{ status: string; installed_events: string[] }>("/claude/hooks/install", {
+    request<{ status: string; installed_events: string[]; added_permissions: string[] }>("/claude/hooks/install", {
       method: "POST",
     }),
 

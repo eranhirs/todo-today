@@ -117,11 +117,13 @@ def _apply_result(
                 if t.status == "rejected":
                     log.warning("completed_todo_ids: skipping rejected todo %s", tid)
                     continue
-                if t.source == "user":
-                    log.warning("completed_todo_ids: skipping user todo %s", tid)
+                if t.source == "user" and t.run_status != "done":
+                    log.warning("completed_todo_ids: skipping user todo %s (not run by Claude)", tid)
                     continue
                 t.status = "completed"
                 t.completed_at = _now()
+                if t.run_status == "done":
+                    t.completed_by_run = True
                 counters.todos_completed += 1
                 counters.completed_todo_ids.append(tid)
                 counters.completed_todo_texts.append(t.text)
@@ -144,8 +146,10 @@ def _apply_result(
             log.info("status_updates: dropping waiting status for non-actionable session %s (todo %s)", t.session_id, su.id)
             continue
         if t.source == "user" and su.status != "stale":
-            log.warning("status_updates: skipping non-stale status %r for user todo %s", su.status, su.id)
-            continue
+            # Allow the analyzer to complete user todos that were run by Claude
+            if not (su.status == "completed" and t.run_status == "done"):
+                log.warning("status_updates: skipping non-stale status %r for user todo %s", su.status, su.id)
+                continue
         # Never allow completed todos to be moved back to stale — completed work is permanent history
         if t.status == "completed" and su.status == "stale":
             log.warning("status_updates: refusing to mark completed todo %s as stale", su.id)
@@ -172,6 +176,8 @@ def _apply_result(
             t.pending_followup_plan_only = False
         if su.status == "completed" and not was_completed:
             t.completed_at = _now()
+            if t.run_status == "done":
+                t.completed_by_run = True
             counters.todos_completed += 1
             counters.completed_todo_ids.append(su.id)
             counters.completed_todo_texts.append(t.text)
@@ -228,7 +234,15 @@ def _apply_result(
         if (project_id, text.lower()) in existing_texts:
             continue
 
-        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=nt.session_id, source_session_id=nt.session_id, emoji=emoji, priority=parse_priority(text))
+        # session_id on a Todo represents that todo's OWN run session. Only
+        # pre-populate it for "waiting" todos, where the new todo stands in for
+        # an existing session that needs user action (follow-ups must resume
+        # that session). For any other status, leaving session_id unset keeps
+        # the parent lookup (source_session_id → parent's session_id) correct;
+        # otherwise the new todo would claim the parent's session_id and the
+        # UI's sessionToTodo map would resolve the parent back to the child.
+        own_session_id = nt.session_id if nt.status == "waiting" else None
+        todo = Todo(project_id=project_id, text=text, status=nt.status, source="claude", session_id=own_session_id, source_session_id=nt.session_id, emoji=emoji, priority=parse_priority(text))
         if nt.status == "completed":
             todo.completed_at = _now()
         ctx.store.todos.append(todo)
@@ -283,6 +297,8 @@ def _apply_result(
                 t.status = mod.status
                 if mod.status == "completed" and not was_completed:
                     t.completed_at = _now()
+                    if t.run_status == "done":
+                        t.completed_by_run = True
                 elif mod.status != "completed" and was_completed:
                     t.completed_at = None
                 changed = True

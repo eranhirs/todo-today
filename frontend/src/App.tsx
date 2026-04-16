@@ -74,6 +74,18 @@ function App() {
     optimistic,
   });
 
+  const [pendingScrollTodoId, setPendingScrollTodoId] = useState<string | null>(null);
+
+  const handleNavigateToTodo = useCallback((todoId: string, projectId: string) => {
+    selectProject(projectId);
+    if (view !== "list") switchView("list");
+    setPendingScrollTodoId(todoId);
+  }, [selectProject, view, switchView]);
+
+  const handlePendingScrollHandled = useCallback(() => {
+    setPendingScrollTodoId(null);
+  }, []);
+
   const [showInsightsDropdown, setShowInsightsDropdown] = useState(false);
   const insightsDropdownRef = useRef<HTMLDivElement | null>(null);
 
@@ -293,6 +305,10 @@ function App() {
             unreadCounts={state.unread_counts ?? {}}
             globalRunModel={state.settings.run_model}
             sessionAutopilot={state.session_autopilot ?? {}}
+            analysisHistory={state.metadata.history}
+            onNavigateToTodo={handleNavigateToTodo}
+            pendingScrollTodoId={pendingScrollTodoId}
+            onPendingScrollHandled={handlePendingScrollHandled}
           />
         )}
       </main>

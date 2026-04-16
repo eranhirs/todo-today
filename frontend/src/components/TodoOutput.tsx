@@ -17,6 +17,8 @@ const OUTPUT_MAX_CHARS = 500_000;
 const OUTPUT_WARNING_THRESHOLD = 0.9; // warn at 90%
 
 const FOLLOWUP_RE = /\n\n--- (?:Follow-up(?: \(queued\))?|BTW|Resumed in CLI) ---\n\*\*You:\*\* /;
+/** Structured end-of-user-message marker used by the backend. */
+const END_USER_MSG = "\n<<END_USER_MSG>>\n";
 
 /**
  * Detect markdown pipe tables in text and render them as HTML <table> elements.
@@ -117,12 +119,20 @@ function renderOutput(text: string) {
     const headerText = match.header;
     searchFrom = match.pos + match.full.length;
 
-    // Split the part into the user message (up to blank line) and rest.
-    // The backend terminates user messages with \n\n, so the first blank line
-    // marks the boundary between the user message and Claude's response.
-    const blankLineIdx = parts[i].indexOf("\n\n");
-    const userMsg = blankLineIdx === -1 ? parts[i] : parts[i].slice(0, blankLineIdx);
-    const rest = blankLineIdx === -1 ? "" : parts[i].slice(blankLineIdx);
+    // Split the part into the user message and rest using the structured
+    // <<END_USER_MSG>> marker. Falls back to first blank line for old data.
+    const endMarkerIdx = parts[i].indexOf(END_USER_MSG);
+    let userMsg: string;
+    let rest: string;
+    if (endMarkerIdx !== -1) {
+      userMsg = parts[i].slice(0, endMarkerIdx);
+      rest = parts[i].slice(endMarkerIdx + END_USER_MSG.length);
+    } else {
+      // Legacy fallback: split at first blank line
+      const blankLineIdx = parts[i].indexOf("\n\n");
+      userMsg = blankLineIdx === -1 ? parts[i] : parts[i].slice(0, blankLineIdx);
+      rest = blankLineIdx === -1 ? "" : parts[i].slice(blankLineIdx);
+    }
 
     // Extract image badge if present (e.g. " [+2 images]")
     const imgBadgeMatch = userMsg.match(/ \[\+\d+ images?\]$/);
@@ -870,6 +880,34 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
           </div>
         </div>
       )}
+      {/* Idle session warning — prompt cache likely expired after 1h */}
+      {showFollowup && (() => {
+        if (!todo.run_finished_at) return null;
+        const finishedAt = new Date(todo.run_finished_at).getTime();
+        const idleMs = Date.now() - finishedAt;
+        const IDLE_THRESHOLD_MS = 60 * 60 * 1000; // 1 hour
+        if (idleMs < IDLE_THRESHOLD_MS) return null;
+        const idleHours = Math.round(idleMs / (60 * 60 * 1000) * 10) / 10;
+        const idleLabel = idleHours >= 24
+          ? `${Math.round(idleHours / 24)}d`
+          : idleHours >= 1 ? `${idleHours}h` : `${Math.round(idleMs / 60000)}m`;
+        // True context size from last turn (not accumulated across follow-ups)
+        const contextTokens = todo.run_context_tokens ?? 0;
+        const contextLabel = contextTokens >= 1000
+          ? `~${Math.round(contextTokens / 1000)}K tokens`
+          : contextTokens > 0 ? `~${contextTokens} tokens` : null;
+        const isLargeContext = contextTokens >= 200_000;
+        const isMediumContext = contextTokens >= 50_000;
+        return (
+          <div className={`idle-session-warning${isLargeContext ? " large-context" : ""}`} draggable={false} onMouseDown={(e) => e.stopPropagation()}>
+            {contextLabel
+              ? `Idle for ${idleLabel} with ${contextLabel} of context — prompt cache has likely expired. Resuming will re-read the full context without cache${isLargeContext ? ", which could be expensive" : isMediumContext ? " at full price" : ""}. Consider starting a new task instead.`
+              : `Idle for ${idleLabel} — prompt cache has likely expired. Resuming will re-read the full context, using more tokens. Consider starting a new task instead.`
+            }
+          </div>
+        );
+      })()}
+
       {/* Output limit warning — shown near follow-up bar */}
       {showFollowup && (isNearLimit || isTruncated) && (
         <div className="output-limit-warning" draggable={false} onMouseDown={(e) => e.stopPropagation()}>

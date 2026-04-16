@@ -81,6 +81,7 @@ class Todo(BaseModel):
     plan_file: Optional[str] = None  # Path to .claude/plans/ file written during plan_only run
     priority: Optional[int] = None  # 1=critical, 2=high, 3=medium, 4=low, None=no priority
     source_session_id: Optional[str] = None  # Session analyzed to create this todo (permanent, never overwritten)
+    pending_session_autopilot: int = 0  # Quota to activate as session_autopilot once this todo runs and gets a session_id
     session_last_synced_ts: Optional[str] = None  # ISO-8601 timestamp of last synced message (baseline for CLI reimport)
     run_output_base: Optional[str] = None  # run_output snapshot when run ended — used as base for CLI reimport
 
@@ -90,6 +91,9 @@ class Todo(BaseModel):
     run_output_tokens: Optional[int] = None
     run_cache_read_tokens: Optional[int] = None
     run_duration_ms: Optional[int] = None
+    run_context_tokens: Optional[int] = None  # last turn's input+cache_read — true current context size
+    run_finished_at: Optional[str] = None  # ISO-8601 timestamp: when the last run/follow-up finished
+    run_after: Optional[str] = None  # ISO-8601 timestamp: skip this todo until this time passes
 
     @model_validator(mode="before")
     @classmethod
@@ -288,6 +292,7 @@ class TodoUpdate(BaseModel):
     stale_reason: Optional[str] = None
     user_ordered: Optional[bool] = None
     is_read: Optional[bool] = None
+    run_after: Optional[str] = None  # ISO-8601 timestamp; set to "" to clear
 
 
 class TodoReorder(BaseModel):

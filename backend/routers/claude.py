@@ -150,8 +150,11 @@ async def dismiss_insight(insight_id: str) -> dict:
 # ── Hooks management ──────────────────────────────────────────
 
 _SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
-_HOOK_SCRIPT = str((Path(__file__).resolve().parent.parent.parent / "hooks" / "claude-todos-hook.py"))
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_HOOK_SCRIPT = str(_PROJECT_ROOT / "hooks" / "claude-todos-hook.py")
 _HOOK_EVENTS = ["PermissionRequest", "Stop", "SessionStart", "SessionEnd"]
+_PROJECT_SETTINGS_LOCAL = _PROJECT_ROOT / ".claude" / "settings.local.json"
+_CLAUDE_WRITE_PERMISSIONS = ["Edit(.claude/**)", "Write(.claude/**)", "Read(.claude/**)"]
 
 
 def _make_hook_entry() -> dict:
@@ -182,6 +185,37 @@ def _save_settings(settings: dict) -> None:
     _SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(_SETTINGS_PATH, "w") as f:
         json.dump(settings, f, indent=2)
+
+
+def _load_project_settings_local() -> dict:
+    if not _PROJECT_SETTINGS_LOCAL.exists():
+        return {}
+    with open(_PROJECT_SETTINGS_LOCAL) as f:
+        return json.load(f)
+
+
+def _save_project_settings_local(settings: dict) -> None:
+    _PROJECT_SETTINGS_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+    with open(_PROJECT_SETTINGS_LOCAL, "w") as f:
+        json.dump(settings, f, indent=2)
+
+
+def _install_claude_write_permissions() -> list[str]:
+    """Add Write/Edit/Read permissions for .claude/ to project settings.local.json.
+
+    Returns list of newly added permission rules.
+    """
+    settings = _load_project_settings_local()
+    allow = settings.setdefault("permissions", {}).setdefault("allow", [])
+    added = []
+    for perm in _CLAUDE_WRITE_PERMISSIONS:
+        if perm not in allow:
+            allow.append(perm)
+            added.append(perm)
+    if added:
+        _save_project_settings_local(settings)
+        log.info("Added .claude write permissions to project settings: %s", added)
+    return added
 
 
 class HookAnalyzeRequest(BaseModel):
@@ -255,7 +289,13 @@ async def install_hooks() -> dict:
             if ctx.metadata.heartbeat_enabled:
                 ctx.metadata.heartbeat_enabled = False
                 log.info("Auto-disabled heartbeat (hooks installed)")
-        return {"status": "ok", "installed_events": installed}
+        # Allow writing to .claude/ in non-interactive sessions
+        added_perms = _install_claude_write_permissions()
+        return {
+            "status": "ok",
+            "installed_events": installed,
+            "added_permissions": added_perms,
+        }
     return await run_in_thread(_do)
 
 

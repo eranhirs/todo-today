@@ -382,6 +382,10 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       run_output_tokens: null,
       run_cache_read_tokens: null,
       run_duration_ms: null,
+      run_context_tokens: null,
+      run_finished_at: null,
+      run_after: null,
+      pending_session_autopilot: 0,
     };
     optimistic.addPendingNewTodo(placeholder);
     onOptimisticUpdate((todos) => [placeholder, ...todos]);
@@ -413,6 +417,16 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       }
       optimistic.removePendingNewTodo(tempId);
       onRefresh();
+      // Scroll to and highlight the newly added todo after the DOM updates
+      const newId = created.id;
+      setTimeout(() => {
+        const el = document.querySelector(`[data-todo-id="${newId}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("todo-just-added");
+          setTimeout(() => el.classList.remove("todo-just-added"), 3000);
+        }
+      }, 400);
     } catch {
       optimistic.removePendingNewTodo(tempId);
       onOptimisticUpdate((todos) => todos.filter((t) => t.id !== tempId));

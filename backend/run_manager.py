@@ -61,6 +61,17 @@ def cap_output(text: str) -> str:
 # Patterns that indicate Claude API quota/rate-limit exhaustion.
 # When detected during an autopilot run, the todo is reset to "next" so the
 # next heartbeat can retry instead of marking it as permanently failed.
+def _is_run_after_pending(todo) -> bool:
+    """Return True if the todo has a run_after time that hasn't passed yet."""
+    if not todo.run_after:
+        return False
+    try:
+        run_after = datetime.fromisoformat(todo.run_after.replace("Z", "+00:00").replace("+00:00", ""))
+        return datetime.utcnow() < run_after
+    except ValueError:
+        return False
+
+
 _QUOTA_ERROR_PATTERNS = [
     "rate limit",
     "rate_limit",
@@ -229,6 +240,8 @@ def _accumulate_costs_on_todo(t, costs: dict) -> None:
     t.run_output_tokens = (t.run_output_tokens or 0) + costs["output_tokens"]
     t.run_cache_read_tokens = (t.run_cache_read_tokens or 0) + costs["cache_read_tokens"]
     t.run_duration_ms = (t.run_duration_ms or 0) + costs["duration_ms"]
+    t.run_context_tokens = costs.get("context_tokens") or None  # set, not accumulate — it's a snapshot
+    t.run_finished_at = _now()
 
 
 def _accumulate_costs_on_metadata(metadata, costs: dict) -> None:
@@ -324,6 +337,20 @@ def _invoke_claude(
         "--disallowedTools", ",".join(disallowed),
         "--model", model,
     ]
+    if plan_only:
+        # Allow Write only for .claude/plans/ paths via a PreToolUse hook.
+        # Block other Writes so Claude can still write its plan file but
+        # cannot implement code.
+        hook_script = Path(__file__).resolve().parent.parent / "hooks" / "plan-mode-write-filter.py"
+        settings_json = json.dumps({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Write",
+                    "hooks": [{"type": "command", "command": f"python3 {hook_script}"}],
+                }]
+            }
+        })
+        cmd.extend(["--settings", settings_json])
     if resume:
         cmd.extend(["--resume", session_id])
     else:
@@ -462,7 +489,7 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
             # Append the follow-up message to output now that it's actually starting
             n_imgs = len(followup_images)
             img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
-            t.run_output = (t.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {followup_msg}{img_suffix}\n\n"
+            t.run_output = (t.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {followup_msg}{img_suffix}\n<<END_USER_MSG>>\n"
 
     if followup_msg and session_id:
         process_manager.spawn_thread(
@@ -495,7 +522,7 @@ def _resolve_todo_references(todo_text: str) -> str:
             if ref_todo and ref_todo.run_output:
                 # Extract the last Claude response (after the last follow-up separator)
                 sep_re = re.compile(
-                    r'\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* .+?\n\n',
+                    r'\n\n--- (?:Follow-up(?: \(queued\))?|BTW) ---\n\*\*You:\*\* .+?\n<<END_USER_MSG>>\n',
                     re.DOTALL,
                 )
                 last_sep_end = 0
@@ -541,7 +568,10 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 prompt = (
                     f"Plan this task — explore the codebase, understand the requirements, "
                     f"and create a detailed step-by-step implementation plan. "
-                    f"Do NOT write any code or make any changes. Only plan: {resolved_text}"
+                    f"Do NOT write any code or make any changes. "
+                    f"You MAY use the Write tool to save the plan as a markdown file under "
+                    f".claude/plans/ — but Write is restricted to that directory and Edit/Bash "
+                    f"are disabled, so do not try to implement the plan. Only plan: {resolved_text}"
                 )
             else:
                 prompt = (
@@ -566,6 +596,11 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 t.run_output_file = str(output_file)
                 t.session_id = session_id
                 run_started_at = t.run_started_at
+                # Activate pending session autopilot now that we have a session_id
+                if t.pending_session_autopilot > 0:
+                    ctx.metadata.session_autopilot[session_id] = t.pending_session_autopilot
+                    log.info("Activated pending session autopilot for %s: %d runs", session_id, t.pending_session_autopilot)
+                    t.pending_session_autopilot = 0
 
         bus.emit_event_sync(EventType.RUN_STARTED, todo_id=todo_id, todo_text=todo_text, project_id=project_id)
 
@@ -911,9 +946,15 @@ def _finalize_run(
                 bus.emit_event_sync(EventType.RUN_FAILED, todo_id=todo_id)
             else:
                 t.run_status = "done"
-                t.status = "completed"
-                t.completed_at = _now()
-                t.completed_by_run = True
+                if plan_only:
+                    # Plan-only runs are done once the plan is produced
+                    t.status = "completed"
+                    t.completed_at = _now()
+                    t.completed_by_run = True
+                else:
+                    # Default to waiting — the analyzer will promote to
+                    # completed once it confirms the task is truly done.
+                    t.status = "waiting"
                 bus.emit_event_sync(EventType.RUN_COMPLETED, todo_id=todo_id)
 
         _accumulate_costs_on_metadata(ctx.metadata, costs)
@@ -1060,6 +1101,10 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
 
         if todo.manual:
             return "manual task"
+        if todo.status in ("completed", "rejected", "stale"):
+            return "done task"
+        if autopilot and _is_run_after_pending(todo):
+            return "scheduled for later"
         if todo.run_status == "queued":
             return "already queued"
         if todo.run_status == "running":
@@ -1264,7 +1309,7 @@ def autopilot_continue(project_id: str) -> None:
     if quota > 0:
         candidates = [
             t for t in all_todos
-            if t.project_id == project_id and t.status == "next" and t.run_status not in ("queued", "running") and not t.manual
+            if t.project_id == project_id and t.status == "next" and t.run_status not in ("queued", "running") and not t.manual and not _is_run_after_pending(t)
         ]
         if candidates:
             candidates.sort(key=lambda t: t.created_at, reverse=True)
@@ -1288,7 +1333,7 @@ def autopilot_continue(project_id: str) -> None:
 
     candidates_with_session = []
     for t in all_todos:
-        if t.project_id != project_id or t.status != "next" or t.run_status in ("queued", "running") or t.manual:
+        if t.project_id != project_id or t.status != "next" or t.run_status in ("queued", "running") or t.manual or _is_run_after_pending(t):
             continue
         if not t.source_session_id:
             continue
@@ -1360,7 +1405,7 @@ def cancel_pending_followup(todo_id: str) -> str | None:
 
         # Remove the queued follow-up line from run_output
         if t.run_output:
-            queued_line = f"\n\n--- Follow-up (queued) ---\n**You:** {msg}{img_suffix}\n\n"
+            queued_line = f"\n\n--- Follow-up (queued) ---\n**You:** {msg}{img_suffix}\n<<END_USER_MSG>>\n"
             t.run_output = t.run_output.replace(queued_line, "")
 
         # If the todo was only queued for this follow-up, un-queue it

@@ -11,6 +11,7 @@ Claude Todos is a Claude-integrated todo app that bridges your Claude Code sessi
 3. **Claude analyzer** extracts session transcripts and asks Claude (via CLI) to identify completed work and suggest new tasks
 4. Results are applied to the todo store — marking todos complete, adding new ones, discovering new projects
 5. **Autopilot** — after each analysis, projects with `auto_run_quota > 0` start one "next" todo per project. When a run finishes, the next eligible todo auto-starts and the quota decrements by one. No queueing — each run triggers the next on completion. The cycle repeats: analysis discovers todos → Autopilot runs them → next analysis picks up the results. Users can also schedule autopilot for a specific time (e.g., quota reset at 2AM) by setting `scheduled_auto_run_quota` + `autopilot_starts_at` — the quota activates when the timestamp is reached, preventing autopilot from consuming quota during the current billing window. A dedicated 1-minute activation job ensures scheduled autopilot fires even when the analysis heartbeat is disabled.
+5a. **Scheduled Todos** — individual todos can have a `run_after` timestamp set via the schedule control. When the time passes, a dedicated pass in the autopilot loop starts them automatically without requiring project-level autopilot quota. The schedule is cleared once the run starts. The 1-minute activation job detects ready scheduled todos and triggers the autopilot loop.
 5c. **Session-Scoped Autopilot** — enables autopilot on a specific session's descendants rather than the whole project. Each todo stores a permanent `source_session_id` linking it to the session that created it. When session autopilot is enabled (via `POST /api/todos/{id}/session-autopilot`), the system walks up the ancestor chain at runtime to check eligibility. This allows the "ralph loop" pattern: keep running all work spawned by a root task until the chain is exhausted or quota runs out. Session autopilot runs as a second pass after project-level autopilot — independent, no double-counting. The `session_autopilot` dict (session_id → remaining quota) is stored in metadata and exposed in the frontend state.
 5b. **Daily Run Limits** — each project has an optional `todo_quota` (0 = unlimited). When set, no more than N todos can be run (executed by Claude) within a 24-hour sliding window. Todos can always be created freely. Follow-ups on already-run todos don't count against the limit. The quota is enforced at queue-insertion time only — changing the limit does not affect items already in the queue.
 6. **Event Bus** — centralized pub/sub system propagates events (hook updates, analysis completions, run lifecycle, queue drains) to all consumers. An SSE endpoint (`/api/events`) streams events to the frontend in real time, supplementing the 3s poll with instant updates.
@@ -64,7 +65,7 @@ claude_todos/
 │           ├── ClaudeStatus.tsx    # Status indicator + Wake button + usage totals
 │           ├── ProjectList.tsx     # Sidebar project selector
 │           ├── TodoList.tsx        # Main todo view (active + completed)
-│           ├── TodoItem.tsx        # Single todo with checkbox/delete
+│           ├── TodoItem.tsx        # Single todo with checkbox/delete + inline analysis view
 │           ├── AddTodo.tsx         # New todo input form
 │           ├── Insights.tsx        # Dismissible insights banner above todos
 │           └── UpdateHistory.tsx   # Expandable analysis history with detail view
@@ -131,7 +132,7 @@ When a todo is executed via the play button or autopilot, `run_manager.py` manag
 1. Todo status → `in_progress`, `run_status` → `running`
 2. A background thread spawns `claude -p --output-format stream-json --dangerously-skip-permissions`
 3. Output is tailed from a JSONL file in `data/runs/` and flushed to the todo store every 5 seconds
-4. On completion, `_finalize_run` applies the result: sets `run_status`, detects plan files, scans for coping phrases / surprise (`!`) / strategy pivots (`Wait`), and extracts cost/token usage from stream-json `result` events
+4. On completion, `_finalize_run` applies the result: sets `run_status` to `done` and `status` to `waiting` (not immediately completed), detects plan files, scans for coping phrases / surprise (`!`) / strategy pivots (`Wait`), and extracts cost/token usage from stream-json `result` events. The analyzer then promotes the todo to `completed` only when the session is truly done AND there is no ongoing discussion — if the user's last messages raise questions, express uncertainty, or continue discussing the topic, the todo stays as `waiting` even if the run succeeded. Plan-only runs are an exception: they complete immediately since the deliverable (the plan) is already produced.
 
 ### Plan Mode Auto-Accept
 
@@ -140,6 +141,8 @@ Claude may enter plan mode during a run. When it calls `ExitPlanMode`, the auto-
 **ExitPlanMode and permission denials**: In headless (`-p`) mode, `ExitPlanMode` requires user confirmation that can't be obtained. The CLI returns the tool result with `is_error: true` and records it as a `permission_denial`. This is **expected behavior**, not a real error — it's simply the CLI's way of signaling that plan mode exit needs acknowledgment. The auto-accept loop handles this by resuming the session. `ExitPlanMode` and `EnterPlanMode` denials are filtered out of the error check so they don't incorrectly mark runs as failed.
 
 ### Plan File Detection
+
+In plan-only runs, `Edit`, `Bash`, and `NotebookEdit` are blocked via `--disallowedTools`, but `Write` remains conditionally allowed: a `PreToolUse` hook (`hooks/plan-mode-write-filter.py`) is injected via `--settings` that blocks any Write whose `file_path` is not under `.claude/plans/`. Claude can still write its plan file (so `_detect_plan_file` finds it as usual), but cannot use Write to implement code. The hook is scoped to the single invocation via inline `--settings` JSON, so it does not affect other Claude Code sessions.
 
 When Claude writes a file to `.claude/plans/` during a run, `_detect_plan_file` scans the stream objects for `Write` tool calls targeting that path. The detected path is stored in `todo.plan_file`. Stream objects are accumulated across all auto-accept retry iterations so the plan file isn't lost when the second invocation replaces `stream_objects`. Plan files are also preserved on the todo even when the run ends in error — the plan itself may still be valid.
 
@@ -187,6 +190,110 @@ Priorities are set via hashtag keywords in todo text:
 | `#p4` or `#low` | 4 | Low |
 
 Priority keywords are **not** treated as regular tags — they appear as colored priority badges instead of tag pills. Any other `#word` token remains a regular hashtag/tag. The priority is derived from the text on creation and update, stored in the `priority` field on the Todo model. The filter bar shows priority filter pills when any active todos have priorities set.
+
+### Parent Todo Visibility
+
+Todos that were spawned from another todo's run are linked via `source_session_id` — the child's `source_session_id` matches the parent's `session_id`. The UI surfaces this relationship in two places:
+
+1. **List view** — a small "↑ parent" badge appears on child todos. Clicking it scrolls to and briefly highlights the parent todo.
+2. **Expanded metadata** — when a child todo's output is expanded, a "Parent:" row shows the parent's text (truncated) and status. Clicking the text scrolls to the parent.
+
+The parent lookup is built client-side from the loaded todo list (`session_id → todo` map). If the parent is in a different project or not loaded (e.g., paginated away), the badge won't appear.
+
+When the analyzer creates a new todo, only `source_session_id` is pre-populated (pointing to the parent session). `session_id` represents the todo's *own* run session and is left unset until the todo actually runs — except for new todos with status `waiting`, which stand in for an existing external session that needs user action (follow-ups must resume that session). Setting `session_id` on other new todos would cause them to appear as their own parent in the UI, since `sessionToTodo` would resolve `source_session_id → self`.
+
+## Token Counting & Cost Tracking
+
+Token usage and costs are extracted from Claude CLI's `stream-json` output. During a run, the CLI writes a JSONL file to `data/runs/` containing one JSON object per line. Each object has a `type` field.
+
+### Event Types in Run JSONL
+
+| Type | Purpose | Contains token data? |
+|------|---------|---------------------|
+| `system` | System prompt, session config | No |
+| `user` | User message (prompt, follow-up) | No |
+| `assistant` | Claude's response (text, tool_use, tool_result) | No |
+| `rate_limit_event` | Rate-limit backoff signal | No |
+| `result` | Final session summary — **this is where all cost/token data lives** | **Yes** |
+
+Only `result` events contain token usage. All intermediate events (including tool calls like file reads, edits, bash commands) do **not** carry per-turn token counts.
+
+### What Gets Counted
+
+The `result` event's `usage` field reports **cumulative API-level token counts** for the entire session:
+
+- **`input_tokens`** — tokens sent to the model that were NOT in the prompt cache (cache misses). This is typically very small when the cache is warm.
+- **`cache_read_input_tokens`** — tokens sent to the model that WERE in the prompt cache (cache hits). This is the bulk of input during an active session.
+- **`cache_creation_input_tokens`** — tokens written into the cache for the first time. Relevant on the first turn or after cache expiry.
+- **`output_tokens`** — tokens generated by Claude (responses, tool calls, thinking).
+
+The **total context size** at the end of a session is approximately `input_tokens + cache_read_input_tokens`. This includes everything in the conversation window:
+
+- System prompt
+- All user messages (the original task, follow-ups)
+- All assistant responses
+- **All tool call results** — file contents from Read/Glob/Grep, command output from Bash, edit confirmations, etc.
+
+So yes, every file read, every grep result, every bash command's stdout — all of it contributes to the context size and token count.
+
+### Example `result` Event
+
+```json
+{
+  "type": "result",
+  "subtype": "success",
+  "is_error": false,
+  "duration_ms": 610199,
+  "duration_api_ms": 598952,
+  "num_turns": 51,
+  "result": "I've implemented the feature...",
+  "session_id": "59cba782-6eff-4311-9ae6-c4a3bd1dad5c",
+  "total_cost_usd": 2.41,
+  "usage": {
+    "input_tokens": 50,
+    "cache_creation_input_tokens": 62060,
+    "cache_read_input_tokens": 2548756,
+    "output_tokens": 23207
+  },
+  "modelUsage": {
+    "claude-opus-4-6": {
+      "inputTokens": 50,
+      "outputTokens": 23207,
+      "cacheReadInputTokens": 2548756,
+      "cacheCreationInputTokens": 62060,
+      "costUSD": 2.24
+    },
+    "claude-haiku-4-5-20251001": {
+      "inputTokens": 72,
+      "outputTokens": 5519,
+      "cacheReadInputTokens": 718165,
+      "cacheCreationInputTokens": 54007,
+      "costUSD": 0.17
+    }
+  }
+}
+```
+
+In this example: the session used ~2.5M cached input tokens (context was warm) and only 50 uncached tokens. The `modelUsage` breakdown shows costs split across models (Opus for main work, Haiku for background tasks like tool permission checks).
+
+### How Costs Are Stored
+
+`extract_run_costs()` in `output_parser.py` sums across all `result` events in the JSONL file (there can be multiple if plan-mode auto-accept retries occurred):
+
+```python
+cost += obj.get("total_cost_usd", obj.get("cost_usd", 0.0))
+input_tokens += usage.get("input_tokens", 0)
+output_tokens += usage.get("output_tokens", 0)
+cache_read_tokens += usage.get("cache_read_input_tokens", 0)
+```
+
+These are then stored on the todo model (`run_cost_usd`, `run_input_tokens`, `run_output_tokens`, `run_cache_read_tokens`) via `_accumulate_costs_on_todo()`, which **sums across follow-ups** — so these fields reflect lifetime totals for the todo, not just the last run.
+
+### Idle Session Warning
+
+When a session has been idle for 1+ hour, the prompt cache has likely expired (Claude's cache TTL is ~5 minutes). The frontend shows a warning above the follow-up input estimating the context size (`run_input_tokens + run_cache_read_tokens`) that would need to be re-read at full input price instead of the discounted cache-read price. Large contexts (200K+ tokens) get a stronger visual warning since the cost difference is significant.
+
+Note: because token counts accumulate across follow-ups, the displayed context size is an upper bound — the actual context at the end of the last turn may be smaller if earlier content was compacted.
 
 ## Hooks Integration
 

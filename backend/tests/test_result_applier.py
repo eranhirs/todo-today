@@ -282,6 +282,38 @@ class TestNewTodos:
 
         assert c.todos_added == 1
 
+    def test_new_todo_does_not_inherit_parent_session_id(self):
+        store, pid = _base_store()
+        ctx = _make_ctx(store)
+        c = _Counters()
+        result = ClaudeAnalysisResult(
+            new_todos=[ClaudeNewTodo(text="Child task", status="next", session_id="sess_parent")]
+        )
+        _apply_result(ctx, result, pid, c)
+
+        added = [t for t in ctx.store.todos if t.text == "Child task"]
+        assert len(added) == 1
+        # source_session_id links to the parent for ancestry
+        assert added[0].source_session_id == "sess_parent"
+        # session_id must stay unset — it's this todo's own run session
+        assert added[0].session_id is None
+
+    def test_waiting_new_todo_keeps_session_id(self):
+        store, pid = _base_store()
+        ctx = _make_ctx(store)
+        c = _Counters()
+        result = ClaudeAnalysisResult(
+            new_todos=[ClaudeNewTodo(text="Respond to Claude", status="waiting", session_id="sess_xyz")]
+        )
+        sessions = [{"session_id": "sess_xyz", "state": "waiting_for_user"}]
+        _apply_result(ctx, result, pid, c, sessions=sessions)
+
+        added = [t for t in ctx.store.todos if t.text == "Respond to Claude"]
+        assert len(added) == 1
+        # Waiting todos must carry session_id so follow-ups resume that session
+        assert added[0].session_id == "sess_xyz"
+        assert added[0].source_session_id == "sess_xyz"
+
     def test_completed_new_todo_gets_completed_at(self):
         store, pid = _base_store()
         ctx = _make_ctx(store)

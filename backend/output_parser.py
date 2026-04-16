@@ -186,10 +186,20 @@ def extract_run_costs(stream_objects: list[dict]) -> dict:
             output_tokens += usage.get("output_tokens", 0)
             cache_read_tokens += usage.get("cache_read_input_tokens", 0)
             duration_ms += obj.get("duration_ms", 0) or 0
+    # Context tokens = what Claude receives as input on the next request.
+    # Use the *last* result event (not the sum) since each turn's input already
+    # includes the full conversation history.
+    last_context_tokens = 0
+    for obj in reversed(stream_objects):
+        if obj.get("type") == "result":
+            usage = obj.get("usage", {})
+            last_context_tokens = usage.get("input_tokens", 0) + usage.get("cache_read_input_tokens", 0)
+            break
     return {
         "cost": cost,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
         "duration_ms": duration_ms,
+        "context_tokens": last_context_tokens,
     }

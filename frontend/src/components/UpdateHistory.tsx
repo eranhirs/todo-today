@@ -10,7 +10,7 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function CopyButton({ label, text }: { label: string; text: string }) {
+export function CopyButton({ label, text }: { label: string; text: string }) {
   const [copied, setCopied] = useState(false);
 
   const copy = (e: React.MouseEvent) => {
@@ -28,7 +28,7 @@ function CopyButton({ label, text }: { label: string; text: string }) {
   );
 }
 
-function EntryDetail({ entry }: { entry: AnalysisEntry }) {
+export function EntryDetail({ entry }: { entry: AnalysisEntry }) {
   return (
     <div className="history-detail">
       <div className="history-detail-row">

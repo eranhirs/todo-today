@@ -151,7 +151,7 @@ class TestCommandProxyE2E:
         todo = _read_todo(todo_id)
         assert todo is not None
         assert todo.run_status == "done"
-        assert todo.status == "completed"
+        assert todo.status == "waiting"
         assert fake_claude_cli["assistant_text"] in todo.run_output
 
     def test_default_todo_gets_implement_prompt(self, tmp_path, fake_claude_cli):
@@ -171,7 +171,7 @@ class TestCommandProxyE2E:
 
         todo = _read_todo(todo_id)
         assert todo.run_status == "done"
-        assert todo.status == "completed"
+        assert todo.status == "waiting"
 
     def test_cli_failure_sets_error_status(self, tmp_path, fake_claude_cli_fail):
         """When the CLI exits non-zero, the todo should be marked as error."""

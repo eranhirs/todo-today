@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
-import { isUnread, type Todo, type TodoStatus } from "../types";
+import { isUnread, type AnalysisEntry, type Todo, type TodoStatus } from "../types";
 import { api } from "../api";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
@@ -11,6 +11,24 @@ import { filterMentionSuggestions } from "../utils/todoSearch";
 import { formatTime, formatDate, timeAgo } from "../utils/formatting";
 import { useAppContext } from "../contexts/AppContext";
 import { PixelDino } from "./PixelDino";
+import { EntryDetail } from "./UpdateHistory";
+
+function scrollToTodo(todoId: string): boolean {
+  const el = document.querySelector(`[data-todo-id="${todoId}"]`);
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Brief highlight flash
+    el.classList.add("todo-highlight-flash");
+    setTimeout(() => el.classList.remove("todo-highlight-flash"), 1500);
+    return true;
+  }
+  return false;
+}
+
+function truncateText(text: string, max: number): string {
+  const clean = stripCommandsFromText(stripPriorityFromText(stripTagsFromText(text))).trim();
+  return clean.length > max ? clean.slice(0, max - 1) + "…" : clean;
+}
 
 interface Props {
   todo: Todo;
@@ -25,8 +43,11 @@ interface Props {
   disabled?: boolean;
   sourcePath?: string;
   onOutputOpen?: (todoId: string) => void;
+  onNavigateToTodo?: (todoId: string, projectId: string) => void;
   runModel?: string;
   sessionAutopilot?: Record<string, number>;
+  parentTodo?: Todo | null;
+  analysisHistory?: AnalysisEntry[];
 }
 
 const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
@@ -40,7 +61,7 @@ const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
 ];
 
 
-export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, runModel = "opus", sessionAutopilot = {} }: Props) {
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, onNavigateToTodo, runModel = "opus", sessionAutopilot = {}, parentTodo = null, analysisHistory = [] }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic } = useAppContext();
   const commands = allCommands ?? [];
   const [editing, setEditing] = useState(false);
@@ -55,8 +76,22 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
   const pillBarRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [, setTick] = useState(0);
+  const [showAnalysis, setShowAnalysis] = useState(false);
 
   const isActive = !["completed", "rejected", "stale"].includes(todo.status);
+
+  // Navigate to a todo: scroll if visible, otherwise switch project
+  const goToTodo = (targetId: string, targetProjectId: string) => {
+    if (!scrollToTodo(targetId) && onNavigateToTodo) {
+      onNavigateToTodo(targetId, targetProjectId);
+    }
+  };
+
+  // Build child todo tree for this todo (only computed when metadata is shown)
+  const childTodos = useMemo(() => {
+    if (!showOutput || !todo.session_id || allTodos.length === 0) return [];
+    return allTodos.filter(t => t.source_session_id === todo.session_id && t.id !== todo.id);
+  }, [showOutput, todo.session_id, todo.id, allTodos]);
 
   // Tick every 60s to keep relative timestamps fresh
   useEffect(() => {
@@ -454,6 +489,37 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
 
+  // Recursively render a child todo tree with indentation
+  const renderChildTree = (children: Todo[], depth: number = 0, visited: Set<string> = new Set()): React.ReactNode => {
+    if (children.length === 0 || depth > 10) return null;
+    return (
+      <ul className="todo-children-list" style={{ paddingLeft: depth > 0 ? 16 : 0 }}>
+        {children.map(child => {
+          const grandchildren = child.session_id && !visited.has(child.session_id)
+            ? allTodos.filter(t => t.source_session_id === child.session_id && t.id !== child.id)
+            : [];
+          const nextVisited = child.session_id ? new Set([...visited, child.session_id]) : visited;
+          return (
+            <li key={child.id} className="todo-child-item">
+              <span
+                className={`todo-child-status status-${child.status}`}
+              >{STATUS_OPTIONS.find(s => s.value === child.status)?.icon ?? "·"}</span>
+              <span
+                className="todo-child-link clickable"
+                onClick={() => goToTodo(child.id, child.project_id)}
+                title="Click to jump to this todo"
+              >{truncateText(child.text, 120)}</span>
+              <span className={`todo-child-status-label status-${child.status}`}>
+                {child.status.replace("_", " ")}
+              </span>
+              {grandchildren.length > 0 && renderChildTree(grandchildren, depth + 1, nextVisited)}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  };
+
   return (
     <>
     <div className={`todo-item status-${todo.status} source-${todo.source}${isRunning ? " todo-running" : ""}${isQueued ? " todo-queued" : ""}${todo.run_status === "error" ? " todo-run-error" : ""}${isFocused ? " todo-focused" : ""}${isPending ? " todo-pending" : ""}${todo.manual ? " todo-manual" : ""}`}>
@@ -585,6 +651,13 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         {todo.manual && <span className="manual-badge" title="Manual task — for human execution, cannot be run by Claude">manual</span>}
         {todo.is_command && <span className="command-badge" title="Skill/command execution">cmd</span>}
         {todo.plan_only && <span className="plan-only-badge" title={todo.plan_file ? `Plan file: ${todo.plan_file}` : "Plan only — agent will plan but not implement"}>{todo.plan_file ? "plan ✓" : "plan"}</span>}
+        {parentTodo && (
+          <span
+            className="parent-badge"
+            title={`Child of: ${truncateText(parentTodo.text, 80)}`}
+            onClick={(e) => { e.stopPropagation(); goToTodo(parentTodo.id, parentTodo.project_id); }}
+          >↑ parent</span>
+        )}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <PixelDino title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."} />}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
@@ -657,6 +730,9 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         {todo.source_session_id && sessionAutopilot[todo.source_session_id] > 0 && !isRunning && (
           <span className="badge badge-session-autopilot" title={`Part of session autopilot chain (${sessionAutopilot[todo.source_session_id]} remaining)`}>🔗</span>
         )}
+        {todo.run_after && new Date(todo.run_after) > new Date() && (
+          <span className="badge badge-scheduled" title={`Scheduled: runs after ${new Date(todo.run_after).toLocaleString()}`}>🕐</span>
+        )}
         {todo.red_flags && todo.red_flags.length > 0 && (() => {
           const unresolved = todo.red_flags.filter((f) => !f.resolved).length;
           const unresolvedAi = todo.red_flags.filter((f) => !f.resolved && f.source === "ai").length;
@@ -678,10 +754,10 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
           );
         })()}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        {!todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} runModel={runModel} />}
-        {todo.session_id && !isRunning && !isQueued && (() => {
-          const sessionKey = todo.session_id!;
-          const activeQuota = sessionAutopilot[sessionKey] ?? 0;
+        {isActive && !todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} runModel={runModel} />}
+        {!isRunning && !isQueued && (todo.status === "next" || todo.status === "completed") && !todo.manual && (() => {
+          const sessionKey = todo.session_id || todo.source_session_id;
+          const activeQuota = sessionKey ? (sessionAutopilot[sessionKey] ?? 0) : (todo.pending_session_autopilot ?? 0);
           return (
             <select
               className={`session-autopilot-select${activeQuota > 0 ? " session-autopilot-active" : ""}`}
@@ -710,6 +786,121 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
               <option value="10">10</option>
               <option value="20">20</option>
             </select>
+          );
+        })()}
+        {!isRunning && !isQueued && todo.status === "next" && !todo.manual && (() => {
+          const hasSchedule = !!todo.run_after;
+          const isPast = hasSchedule && new Date(todo.run_after!) <= new Date();
+          const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const tzAbbr = new Date().toLocaleTimeString([], { timeZoneName: "short" }).split(" ").pop() ?? localTz;
+          const pad = (n: number) => String(n).padStart(2, "0");
+          const fmtSchedule = (d: Date) =>
+            `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          const toInputVal = (d: Date) =>
+            `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          return (
+            <span className={`todo-schedule-control${hasSchedule ? " has-schedule" : ""}`}>
+              {hasSchedule ? (
+                <>
+                  <input
+                    type="datetime-local"
+                    className="todo-schedule-time"
+                    value={toInputVal(new Date(todo.run_after!))}
+                    onChange={async (e) => {
+                      if (!e.target.value) return;
+                      const local = new Date(e.target.value);
+                      const runAfter = local.toISOString().replace(/\.\d{3}Z$/, "Z");
+                      onOptimisticUpdate((todos) =>
+                        todos.map((t) => t.id === todo.id ? { ...t, run_after: runAfter } : t)
+                      );
+                      try {
+                        await api.scheduleTodo(todo.id, runAfter);
+                        onRefresh();
+                      } catch {
+                        addToast("Failed to update schedule", "error");
+                        onRefresh();
+                      }
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <span
+                    className="schedule-display-overlay"
+                    title={`${fmtSchedule(new Date(todo.run_after!))} ${tzAbbr} (${localTz})`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const input = e.currentTarget.parentElement?.querySelector<HTMLInputElement>(".todo-schedule-time");
+                      if (input) { try { input.showPicker(); } catch { input.focus(); } }
+                    }}
+                  >
+                    {fmtSchedule(new Date(todo.run_after!))}
+                  </span>
+                  <span className="schedule-tz-label" title={localTz}>{tzAbbr}</span>
+                  {isPast && <span className="schedule-ready-badge" title="Schedule time has passed — ready to run">ready</span>}
+                  <button
+                    className="btn-icon btn-schedule-clear"
+                    title="Clear schedule"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      onOptimisticUpdate((todos) =>
+                        todos.map((t) => t.id === todo.id ? { ...t, run_after: null } : t)
+                      );
+                      try {
+                        await api.scheduleTodo(todo.id, null);
+                        onRefresh();
+                        addToast("Schedule cleared", "info");
+                      } catch {
+                        addToast("Failed to clear schedule", "error");
+                        onRefresh();
+                      }
+                    }}
+                  >x</button>
+                </>
+              ) : (
+                <button
+                  className="btn-icon btn-schedule"
+                  title={`Schedule — set a time for autopilot to run this todo (${tzAbbr})`}
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    // Default to next usage window reset time, fallback to next 2AM UTC
+                    let scheduleTime: Date;
+                    try {
+                      const usage = await api.getClaudeUsage();
+                      const resetAt = usage.five_hour?.resets_at;
+                      if (resetAt) {
+                        const resetDate = new Date(resetAt);
+                        if (resetDate > new Date()) {
+                          scheduleTime = new Date(resetDate.getTime() + 60_000); // 1 min after reset
+                        } else {
+                          scheduleTime = new Date();
+                          scheduleTime.setUTCHours(2, 0, 0, 0);
+                          if (scheduleTime <= new Date()) scheduleTime.setUTCDate(scheduleTime.getUTCDate() + 1);
+                        }
+                      } else {
+                        scheduleTime = new Date();
+                        scheduleTime.setUTCHours(2, 0, 0, 0);
+                        if (scheduleTime <= new Date()) scheduleTime.setUTCDate(scheduleTime.getUTCDate() + 1);
+                      }
+                    } catch {
+                      scheduleTime = new Date();
+                      scheduleTime.setUTCHours(2, 0, 0, 0);
+                      if (scheduleTime <= new Date()) scheduleTime.setUTCDate(scheduleTime.getUTCDate() + 1);
+                    }
+                    const runAfter = scheduleTime.toISOString().replace(/\.\d{3}Z$/, "Z");
+                    onOptimisticUpdate((todos) =>
+                      todos.map((t) => t.id === todo.id ? { ...t, run_after: runAfter } : t)
+                    );
+                    try {
+                      await api.scheduleTodo(todo.id, runAfter);
+                      onRefresh();
+                      addToast(`Scheduled for ${fmtSchedule(scheduleTime)} ${tzAbbr}`, "success");
+                    } catch {
+                      addToast("Failed to schedule todo", "error");
+                      onRefresh();
+                    }
+                  }}
+                >🕐</button>
+              )}
+            </span>
           );
         })()}
         {todo.user_ordered && (
@@ -760,6 +951,25 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         <span className="todo-plan-file-label">Plan:</span> <span className="todo-plan-file-path">{todo.plan_file}</span>
       </div>
     )}
+    {showOutput && parentTodo && (
+      <div className="todo-parent-info">
+        <span className="todo-parent-label">Parent:</span>{" "}
+        <span
+          className="todo-parent-link clickable"
+          onClick={() => goToTodo(parentTodo.id, parentTodo.project_id)}
+          title="Click to jump to parent todo"
+        >{truncateText(parentTodo.text, 100)}</span>
+        <span className={`todo-parent-status status-${parentTodo.status}`}>
+          {parentTodo.status.replace("_", " ")}
+        </span>
+      </div>
+    )}
+    {showOutput && childTodos.length > 0 && (
+      <div className="todo-children-info">
+        <span className="todo-children-label">Children ({childTodos.length}):</span>
+        {renderChildTree(childTodos, 0, new Set([todo.session_id!]))}
+      </div>
+    )}
     {showOutput && todo.session_id && (
       <div className="todo-session-info">
         <span className="todo-session-label">Session:</span>{" "}
@@ -771,7 +981,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
           }}
           title="Click to copy session ID"
         >{todo.session_id}</span>
-        {sourcePath && (
+        {sourcePath && (<>
           <button
             className="btn-cli-resume"
             onClick={() => {
@@ -781,22 +991,58 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
             }}
             title={`Resume in CLI — copies: cd ${sourcePath} && claude --resume ${todo.session_id}`}
           >Resume in CLI</button>
-        )}
-        {todo.run_cost_usd != null && todo.run_cost_usd > 0 && (
-          <span
-            className="todo-run-cost"
-            title={[
-              `Input: ${((todo.run_input_tokens ?? 0) / 1000).toFixed(1)}k tokens`,
-              `Output: ${((todo.run_output_tokens ?? 0) / 1000).toFixed(1)}k tokens`,
-              todo.run_cache_read_tokens ? `Cache read: ${((todo.run_cache_read_tokens) / 1000).toFixed(1)}k tokens` : "",
-              todo.run_duration_ms ? `Duration: ${(todo.run_duration_ms / 1000).toFixed(0)}s` : "",
-            ].filter(Boolean).join("\n")}
-          >
-            ${todo.run_cost_usd < 0.01 ? todo.run_cost_usd.toFixed(3) : todo.run_cost_usd.toFixed(2)}
-          </span>
-        )}
+          <button
+            className="btn-cli-resume"
+            onClick={() => {
+              const encoded = sourcePath.replace(/\//g, "-").replace(/\./g, "-");
+              const jsonlPath = `~/.claude/projects/${encoded}/${todo.session_id}.jsonl`;
+              navigator.clipboard.writeText(jsonlPath);
+              addToast("JSONL path copied to clipboard", "info");
+            }}
+            title="Copy session JSONL file path"
+          >JSONL Path</button>
+        </>)}
+        {todo.run_cost_usd != null && todo.run_cost_usd > 0 && (() => {
+          const contextTokens = todo.run_context_tokens ?? 0;
+          const tokenLabel = contextTokens >= 1000
+            ? `${Math.round(contextTokens / 1000)}k`
+            : `${contextTokens}`;
+          return (
+            <span
+              className="todo-run-cost"
+              title={[
+                `Input: ${((todo.run_input_tokens ?? 0) / 1000).toFixed(1)}k tokens`,
+                `Output: ${((todo.run_output_tokens ?? 0) / 1000).toFixed(1)}k tokens`,
+                todo.run_cache_read_tokens ? `Cache read: ${((todo.run_cache_read_tokens) / 1000).toFixed(1)}k tokens` : "",
+                todo.run_duration_ms ? `Duration: ${(todo.run_duration_ms / 1000).toFixed(0)}s` : "",
+              ].filter(Boolean).join("\n")}
+            >
+              ${todo.run_cost_usd < 0.01 ? todo.run_cost_usd.toFixed(3) : todo.run_cost_usd.toFixed(2)}
+              {contextTokens > 0 && <span className="todo-run-tokens"> · {tokenLabel} ctx</span>}
+            </span>
+          );
+        })()}
       </div>
     )}
+    {showOutput && todo.completed_by_run && (() => {
+      const analysisEntry = analysisHistory.find(e => e.completed_todo_ids?.includes(todo.id));
+      if (!analysisEntry) return null;
+      return (
+        <div className="todo-analysis-section">
+          <button
+            className="btn-link todo-analysis-toggle"
+            onClick={() => setShowAnalysis(!showAnalysis)}
+          >
+            {showAnalysis ? "▾" : "▸"} View Analysis
+            <span className="todo-analysis-meta">
+              {new Date(analysisEntry.timestamp).toLocaleString()}
+              {analysisEntry.trigger && <span className={`history-trigger-badge trigger-${analysisEntry.trigger}`}>{analysisEntry.trigger}</span>}
+            </span>
+          </button>
+          {showAnalysis && <EntryDetail entry={analysisEntry} />}
+        </div>
+      );
+    })()}
     <TodoOutput todo={todo} showOutput={showOutput} disabled={disabled} allCommands={allCommands} />
     </>
   );

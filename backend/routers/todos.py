@@ -401,6 +401,8 @@ async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                         t.stale_reason = body.stale_reason
                     if body.is_read is not None:
                         t.is_read = body.is_read
+                    if body.run_after is not None:
+                        t.run_after = body.run_after if body.run_after else None
                     if body.user_ordered is not None:
                         t.user_ordered = body.user_ordered
                         # When unpinning, recalculate sort_order for unpinned siblings by created_at
@@ -548,6 +550,7 @@ async def stop_todo(todo_id: str) -> dict:
             todo.status = "waiting"
             todo.run_pid = None
             todo.run_output_file = None
+            todo.run_finished_at = _now()
             # Also stop any concurrent btw session
             if btw_pid:
                 todo.btw_pid = None
@@ -617,6 +620,8 @@ async def run_todo(todo_id: str, body: RunRequest = RunRequest()) -> dict:
     err = await run_in_thread(start_todo_run, todo_id)
     if err == "manual task":
         raise HTTPException(status_code=400, detail="This is a manual task — it can only be completed by a human")
+    if err == "done task":
+        raise HTTPException(status_code=400, detail="This task is already done — it can't be run with Claude")
     if err == "run_quota_exceeded":
         raise HTTPException(status_code=429, detail="Daily run limit reached for this project")
     if err == "already running":
@@ -685,8 +690,8 @@ async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
                         # Compute image suffix from pending images
                         n_imgs = len(t.pending_followup_images)
                         old_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
-                        old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{old_suffix}\n\n"
-                        new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{old_suffix}\n\n"
+                        old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{old_suffix}\n<<END_USER_MSG>>\n"
+                        new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{old_suffix}\n<<END_USER_MSG>>\n"
                         t.run_output = t.run_output.replace(old_line, new_line)
                     return {"status": "updated"}
             return {"error": "not_found"}
@@ -798,13 +803,13 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
                 todo.pending_followup_images = list(body.images)
                 todo.pending_followup_plan_only = resolved_plan_only
                 # Immediately show the user's follow-up message in the output
-                todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n\n"
+                todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (queued) ---\n**You:** {body.message}{img_suffix}\n<<END_USER_MSG>>\n"
                 return {"status": "queued"}
 
             todo.run_status = "running"
             todo.status = "in_progress"
             # Immediately show the user's follow-up message in the output
-            todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}{img_suffix}\n\n"
+            todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}{img_suffix}\n<<END_USER_MSG>>\n"
             # Resolve model: per-project override > global setting
             project_obj = None
             for p in ctx.store.projects:
@@ -916,12 +921,17 @@ async def set_session_autopilot(todo_id: str, body: SessionAutopilotRequest) -> 
             # Determine which session to autopilot
             session_key = todo.session_id or todo.source_session_id
             if not session_key:
-                return {"error": "no_session"}
+                # No session yet — store as pending quota on the todo itself.
+                # Will be activated when the todo runs and gets a session_id.
+                todo.pending_session_autopilot = max(0, min(50, body.quota))
+                return {"status": "ok", "session_id": None, "quota": todo.pending_session_autopilot, "pending": True}
 
             if body.quota > 0:
                 ctx.metadata.session_autopilot[session_key] = body.quota
             else:
                 ctx.metadata.session_autopilot.pop(session_key, None)
+            # Clear any pending quota since we now have a real session
+            todo.pending_session_autopilot = 0
 
             return {"status": "ok", "session_id": session_key, "quota": body.quota}
 
@@ -930,4 +940,32 @@ async def set_session_autopilot(todo_id: str, body: SessionAutopilotRequest) -> 
         raise HTTPException(status_code=404, detail="Todo not found")
     if result.get("error") == "no_session":
         raise HTTPException(status_code=400, detail="Todo has no session — run it first")
+    return result
+
+
+class ScheduleTodoRequest(BaseModel):
+    run_after: Optional[str] = None  # ISO-8601 timestamp; null to clear
+
+
+@router.post("/{todo_id}/schedule")
+async def schedule_todo(todo_id: str, body: ScheduleTodoRequest) -> dict:
+    """Schedule a todo to become eligible for running after a specific time.
+
+    When run_after is set, autopilot will skip this todo until the time passes.
+    Manual runs are not blocked. Pass null to clear the schedule.
+    """
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    def _do():
+        with StorageContext() as ctx:
+            todo = ctx.get_todo(todo_id)
+            if todo is None:
+                return {"error": "not_found"}
+            todo.run_after = body.run_after
+            return {"status": "ok", "todo_id": todo.id, "run_after": todo.run_after}
+
+    result = await run_in_thread(_do)
+    if result.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="Todo not found")
     return result

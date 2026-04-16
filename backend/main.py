@@ -103,9 +103,7 @@ def _cleanup_stale_runs() -> None:
                             t.completed_by_run = True
                         else:
                             t.run_status = "done"
-                            t.status = "completed"
-                            t.completed_at = _now()
-                            t.completed_by_run = True
+                            t.status = "waiting"
                         break
             process_manager.cleanup_output_file(Path(run_output_file))
         else:
@@ -131,6 +129,25 @@ def _cleanup_stale_runs() -> None:
                 t.pending_followup = None
                 t.pending_followup_images = []
                 t.pending_followup_plan_only = False
+
+    # Backfill: clear session_id on analyzer-created todos where it was
+    # incorrectly set to the parent's session_id. The bug caused self-parenting
+    # in the UI (sessionToTodo[A] resolved to the child itself) and would
+    # misroute follow-ups into the parent's session. Waiting todos legitimately
+    # carry an external session_id, so they're excluded.
+    with StorageContext() as ctx:
+        fixed = 0
+        for t in ctx.store.todos:
+            if (
+                t.session_id
+                and t.session_id == t.source_session_id
+                and t.status != "waiting"
+                and t.run_status is None
+            ):
+                t.session_id = None
+                fixed += 1
+        if fixed:
+            log.info("Backfilled %d analyzer-created todo(s) with session_id==source_session_id", fixed)
 
     # Fix todos with a session but null run_status — they should be "done" so
     # the follow-up bar remains available.

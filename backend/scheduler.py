@@ -104,9 +104,10 @@ async def _auto_run_todos_inner() -> bool:
         projects = {p.id: p for p in ctx.store.projects}
 
     # Group eligible todos by project
+    from .run_manager import _is_run_after_pending
     by_project: dict[str, list] = {}
     for t in todos:
-        if t.status == "next" and t.run_status not in ("queued", "running"):
+        if t.status == "next" and t.run_status not in ("queued", "running") and not _is_run_after_pending(t):
             by_project.setdefault(t.project_id, []).append(t)
 
     for project_id, candidates in by_project.items():
@@ -149,6 +150,38 @@ async def _auto_run_todos_inner() -> bool:
                     log.info("Autopilot: started todo, decremented quota for %s, remaining: %d", project_id, p.auto_run_quota)
                     break
 
+    # --- Scheduled-todo pass (run_after expired → start without requiring quota) ---
+    # Re-read todos to get fresh state after project-level autopilot may have started some
+    with StorageContext(read_only=True) as ctx:
+        sched_todos = list(ctx.store.todos)
+        sched_projects = {p.id: p for p in ctx.store.projects}
+
+    # Track which projects already have a running todo (skip those)
+    busy_projects = {t.project_id for t in sched_todos if t.run_status == "running"}
+    for t in sched_todos:
+        if not t.run_after or _is_run_after_pending(t):
+            continue  # Not scheduled or not yet due
+        if t.status != "next" or t.run_status in ("queued", "running") or t.manual:
+            continue
+        if t.project_id in busy_projects:
+            continue
+        proj = sched_projects.get(t.project_id)
+        if not proj or not proj.source_path:
+            continue
+        log.info("Scheduled todo ready: %s (%s) — starting run", t.id, t.text[:60])
+        err = start_todo_run(t.id, autopilot=True)
+        if err:
+            log.warning("Scheduled todo start failed %s: %s", t.id, err)
+            continue
+        started_any = True
+        busy_projects.add(t.project_id)
+        # Clear the schedule now that it's been triggered
+        with StorageContext() as ctx:
+            for todo in ctx.store.todos:
+                if todo.id == t.id:
+                    todo.run_after = None
+                    break
+
     # --- Session-scoped autopilot pass ---
     with StorageContext(read_only=True) as ctx:
         session_ap = dict(ctx.metadata.session_autopilot)
@@ -157,7 +190,7 @@ async def _auto_run_todos_inner() -> bool:
 
     if session_ap:
         for t in all_todos:
-            if t.status != "next" or t.run_status in ("queued", "running") or t.manual:
+            if t.status != "next" or t.run_status in ("queued", "running") or t.manual or _is_run_after_pending(t):
                 continue
             if not t.source_session_id:
                 continue
@@ -338,6 +371,16 @@ def _activate_scheduled_autopilot() -> bool:
     return activated
 
 
+def _has_ready_scheduled_todos() -> bool:
+    """Check if any todos have run_after set and the time has passed."""
+    from .run_manager import _is_run_after_pending
+    with StorageContext(read_only=True) as ctx:
+        for t in ctx.store.todos:
+            if t.run_after and not _is_run_after_pending(t) and t.status == "next" and t.run_status not in ("queued", "running") and not t.manual:
+                return True
+    return False
+
+
 async def queue_hook_analysis(session_key: str) -> dict:
     """Queue a session for analysis triggered by a hook event.
 
@@ -459,11 +502,12 @@ def queue_run_session_analysis(session_key: str) -> None:
 
 
 async def _autopilot_activation_job() -> None:
-    """Lightweight 1-minute job: activate scheduled autopilot quotas independently of analysis.
+    """Lightweight 1-minute job: activate scheduled autopilot quotas and run scheduled todos.
 
     This ensures scheduled autopilot fires even when heartbeat_enabled is False,
     since _analysis_job skips entirely in that case and would never call
-    _activate_scheduled_autopilot.
+    _activate_scheduled_autopilot. Also detects todos with expired run_after
+    and starts them.
     """
     if DEMO_MODE:
         return
@@ -471,8 +515,13 @@ async def _autopilot_activation_job() -> None:
     if _analysis_lock.locked():
         return
     activated = _activate_scheduled_autopilot()
-    if activated:
-        log.info("Autopilot activation job: scheduled quota activated, starting autopilot")
+    has_ready_scheduled = _has_ready_scheduled_todos()
+    if activated or has_ready_scheduled:
+        log.info(
+            "Autopilot activation job:%s%s — starting autopilot",
+            " scheduled quota activated" if activated else "",
+            " scheduled todos ready" if has_ready_scheduled else "",
+        )
         try:
             await _auto_run_todos()
         except Exception:

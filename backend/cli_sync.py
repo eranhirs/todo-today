@@ -112,7 +112,7 @@ def _format_new_messages(messages: list[dict]) -> str:
     """Format new messages as follow-up-style blocks.
 
     Groups messages into (user, assistant+) pairs, each rendered as:
-      \\n\\n--- Resumed in CLI ---\\n**You:** {user_text}\\n\\n{assistant_text}
+      \\n\\n--- Resumed in CLI ---\\n**You:** {user_text}\\n<<END_USER_MSG>>\\n{assistant_text}
 
     This matches the follow-up separator format that the frontend parses.
     """
@@ -124,7 +124,7 @@ def _format_new_messages(messages: list[dict]) -> str:
         nonlocal current_user, current_assistant_parts
         if current_user is not None:
             assistant_text = "\n\n".join(current_assistant_parts)
-            block = f"\n\n--- Resumed in CLI ---\n**You:** {current_user}\n\n"
+            block = f"\n\n--- Resumed in CLI ---\n**You:** {current_user}\n<<END_USER_MSG>>\n"
             if assistant_text:
                 block += assistant_text
             blocks.append(block)

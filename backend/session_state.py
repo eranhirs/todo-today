@@ -167,8 +167,9 @@ def _detect_session_state(path: Path, session_key: str = None) -> dict:
                 return {"state": "waiting_for_tool_approval", "last_assistant_text": last_assistant_text, "detail": detail, "state_source": "jsonl"}
             else:
                 return {"state": "tool_running", "last_assistant_text": last_assistant_text, "detail": detail, "state_source": "jsonl"}
-        if stop_reason == "end_turn":
-            # Check if the last text ends with a question mark
+        if stop_reason in ("end_turn", None):
+            # stop_reason=None can occur when sessions end via auto-accept
+            # retries or CLI quirks — treat the same as end_turn
             if last_assistant_text and last_assistant_text.rstrip().endswith("?"):
                 return {"state": "waiting_for_user", "last_assistant_text": last_assistant_text, "state_source": "jsonl"}
             return {"state": "ended", "last_assistant_text": last_assistant_text, "state_source": "jsonl"}

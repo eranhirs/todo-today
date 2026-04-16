@@ -88,7 +88,9 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
         if plan_only:
             prompt = (
                 f"The user wants a plan for the following. Think through the approach "
-                f"and outline a plan — do NOT make any code changes:\n\n"
+                f"and outline a plan — do NOT make any code changes. "
+                f"You MAY use the Write tool to save the plan under .claude/plans/, but "
+                f"Write is restricted to that directory and Edit/Bash are disabled:\n\n"
                 f"{message}"
             )
         else:
@@ -106,9 +108,9 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 t.btw_output_file = str(output_file)
                 t.btw_status = "running"
                 if is_continuation and t.btw_output:
-                    t.btw_output += f"\n\n--- {label} ---\n**You:** {message}\n\n"
+                    t.btw_output += f"\n\n--- {label} ---\n**You:** {message}\n<<END_USER_MSG>>\n"
                 else:
-                    t.btw_output = f"**You:** {message}\n\n"
+                    t.btw_output = f"**You:** {message}\n<<END_USER_MSG>>\n"
                 t.pending_btw = None
             # Pre-register known btw session ID so hook-triggered analysis skips it
             if btw_session_id and btw_session_id not in ctx.metadata.analysis_session_ids:
@@ -137,6 +139,17 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
 
         if plan_only:
             cmd.extend(["--disallowedTools", "Edit,Bash,NotebookEdit,AskUserQuestion"])
+            # Allow Write only for .claude/plans/ via PreToolUse hook
+            hook_script = Path(__file__).resolve().parent.parent / "hooks" / "plan-mode-write-filter.py"
+            settings_json = json.dumps({
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Write",
+                        "hooks": [{"type": "command", "command": f"python3 {hook_script}"}],
+                    }]
+                }
+            })
+            cmd.extend(["--settings", settings_json])
 
         fout = open(output_file, "a")
         proc = subprocess.Popen(
@@ -198,7 +211,7 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
 
             now = time.monotonic()
             if now - last_flush >= _FLUSH_INTERVAL and accumulated:
-                this_msg_output = f"**You:** {message}\n\n" + "\n".join(accumulated)
+                this_msg_output = f"**You:** {message}\n<<END_USER_MSG>>\n" + "\n".join(accumulated)
                 _flush_btw_progress(todo_id, this_msg_output, is_continuation=is_continuation, label=label)
                 last_flush = now
 
@@ -217,7 +230,7 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 log.error("BTW Claude stderr for todo %s: %s", todo_id, stderr_out[:2000])
                 output_text += f"\n\nstderr: {stderr_out[:2000]}"
 
-        this_msg_output = f"**You:** {message}\n\n" + output_text
+        this_msg_output = f"**You:** {message}\n<<END_USER_MSG>>\n" + output_text
 
         with StorageContext() as ctx:
             t = ctx.get_todo(todo_id)

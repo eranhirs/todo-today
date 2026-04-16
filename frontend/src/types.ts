@@ -53,6 +53,10 @@ export interface Todo {
   run_output_tokens: number | null;
   run_cache_read_tokens: number | null;
   run_duration_ms: number | null;
+  run_context_tokens: number | null;  // last turn's input+cache_read — true current context size
+  run_finished_at: string | null;  // ISO-8601: when the last run/follow-up finished
+  run_after: string | null;  // ISO-8601: skip autopilot until this time
+  pending_session_autopilot: number;  // Quota to activate as session_autopilot once todo runs
 }
 
 export interface Insight {

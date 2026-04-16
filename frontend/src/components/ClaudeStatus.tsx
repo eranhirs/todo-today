@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import type { Metadata, SessionInfo, Settings } from "../types";
 import { api } from "../api";
 import { timeAgo, epochTimeAgo } from "../utils/formatting";
+import { useAppContext } from "../contexts/AppContext";
 
 interface Props {
   metadata: Metadata;
@@ -15,6 +16,7 @@ const INTERVAL_OPTIONS = [1, 2, 5, 10, 15, 30, 60];
 const MODEL_OPTIONS = ["haiku", "sonnet", "opus"];
 
 export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunning, onRefresh }: Props) {
+  const { addToast } = useAppContext();
   const [waking, setWaking] = useState(false);
 
   const busy = waking || analysisLocked;
@@ -150,7 +152,15 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
       if (hooksInstalled) {
         await api.uninstallHooks();
       } else {
-        await api.installHooks();
+        const res = await api.installHooks();
+        if (res.added_permissions?.length > 0) {
+          addToast(
+            `Allowed Claude to write to .claude/ (skills, commands, memory). ` +
+            `Added: ${res.added_permissions.join(", ")}`,
+            "info",
+            { duration: 15000 },
+          );
+        }
       }
       await checkHooksStatus();
     } finally {
