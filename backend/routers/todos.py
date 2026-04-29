@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from ..event_bus import EventType, bus
 from ..models import ImageAttachment, Todo, TodoCreate, TodoReorder, TodoUpdate, _now
-from ..tags import collect_all_tags, rename_tag_in_text, parse_tags, parse_priority
+from ..tags import collect_all_tags, has_autopilot_tag, rename_tag_in_text, parse_tags, parse_priority
 from ..run_manager import (
     OUTPUT_MAX_CHARS,
     _followup_claude_for_todo,
@@ -28,6 +28,7 @@ from ..run_manager import (
     is_project_busy,
     is_todo_running,
     process_manager,
+    run_queued_now,
     start_btw,
     start_todo_run,
 )
@@ -314,7 +315,8 @@ async def create_todo(body: TodoCreate) -> Todo:
     is_manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
     is_cmd = _is_command_todo(body.text, body.project_id)
     priority = parse_priority(body.text)
-    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, is_command=is_cmd, images=image_attachments, priority=priority)
+    autopilot = has_autopilot_tag(body.text)
+    todo = Todo(project_id=body.project_id, text=body.text, status=body.status, source="user", plan_only=body.plan_only, manual=is_manual, is_command=is_cmd, images=image_attachments, priority=priority, autopilot=autopilot)
     if todo.status == "completed":
         todo.completed_at = _now()
     def _do():
@@ -377,10 +379,11 @@ async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                     if body.text is not None:
                         t.text = body.text
                         t.original_text = None  # User chose this text — clear analyzer rename history
-                        # Re-derive manual flag, is_command, and priority from text content
+                        # Re-derive manual flag, is_command, priority, autopilot from text
                         t.manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
                         t.is_command = _is_command_todo(body.text, t.project_id)
                         t.priority = parse_priority(body.text)
+                        t.autopilot = has_autopilot_tag(body.text)
                     if body.project_id is not None:
                         t.project_id = body.project_id
                     if body.status is not None:
@@ -403,6 +406,19 @@ async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
                         t.is_read = body.is_read
                     if body.run_after is not None:
                         t.run_after = body.run_after if body.run_after else None
+                    if body.autopilot is not None:
+                        t.autopilot = body.autopilot
+                        # Flipping autopilot off resets any pending suggestion state.
+                        if not body.autopilot:
+                            t.suggested_followup_sent = False
+                    if body.parent_todo_id is not None:
+                        new_parent_id = body.parent_todo_id.strip() or None
+                        if new_parent_id == t.id:
+                            return "invalid_parent"
+                        if new_parent_id is not None:
+                            if not any(p.id == new_parent_id for p in ctx.store.todos):
+                                return "parent_not_found"
+                        t.parent_todo_id = new_parent_id
                     if body.user_ordered is not None:
                         t.user_ordered = body.user_ordered
                         # When unpinning, recalculate sort_order for unpinned siblings by created_at
@@ -437,6 +453,10 @@ async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
     result = await run_in_thread(_do)
     if result is None:
         raise HTTPException(status_code=404, detail="Todo not found")
+    if result == "invalid_parent":
+        raise HTTPException(status_code=400, detail="A todo cannot be its own parent")
+    if result == "parent_not_found":
+        raise HTTPException(status_code=404, detail="Parent todo not found")
     return result
 
 
@@ -657,6 +677,27 @@ async def dequeue_todo(todo_id: str) -> dict:
     return {"status": "dequeued"}
 
 
+@router.post("/{todo_id}/run-now")
+async def run_now(todo_id: str) -> dict:
+    """Bump a queued todo to run immediately, pausing the currently running task."""
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    err = await run_in_thread(run_queued_now, todo_id)
+    if err == "not queued":
+        raise HTTPException(status_code=409, detail="This todo is not queued")
+    if err == "todo not found":
+        raise HTTPException(status_code=404, detail="Todo not found")
+    if err == "no source_path":
+        raise HTTPException(status_code=400, detail="Project has no source_path configured")
+    if err == "already running":
+        raise HTTPException(status_code=409, detail="This todo is already running")
+    if err:
+        raise HTTPException(status_code=500, detail=err)
+
+    return {"status": "started"}
+
+
 class FollowupRequest(BaseModel):
     message: str
     images: List[str] = []
@@ -753,11 +794,10 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
             resolved_plan_only = body.plan_only if body.plan_only is not None else todo.plan_only
 
             # If this todo is currently running, queue the follow-up to auto-start when it finishes.
-            # Exception: plan-only follow-ups run immediately via a concurrent forked session.
+            # Plan-only follow-ups queue too — they're part of the main planning
+            # thread, not a side-channel question, so they must run after the
+            # current turn finishes (not concurrently as a forked btw session).
             if todo.run_status == "running" or process_manager.is_todo_running(todo_id):
-                if resolved_plan_only:
-                    # Plan-only runs immediately by forking the session (like /btw)
-                    return {"status": "plan_concurrent"}
                 if todo.pending_followup:
                     return {"error": "followup_already_queued"}
                 # Persist any new images on the todo
@@ -808,6 +848,10 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
             todo.run_status = "running"
             todo.status = "in_progress"
+            # Clear any analyzer suggestion — user is sending their own follow-up
+            todo.suggested_followup = None
+            todo.suggested_followup_at = None
+            todo.suggested_followup_sent = False
             # Immediately show the user's follow-up message in the output
             todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}{img_suffix}\n<<END_USER_MSG>>\n"
             # Resolve model: per-project override > global setting
@@ -841,15 +885,6 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
     if info["status"] == "queued":
         return {"status": "queued"}
-
-    if info["status"] == "plan_concurrent":
-        # Plan-only follow-ups run immediately via forked session (like /btw)
-        err = start_btw(todo_id, body.message, plan_only=True)
-        if err == "btw already running":
-            raise HTTPException(status_code=409, detail="A concurrent session is already running — wait for it to finish")
-        if err:
-            raise HTTPException(status_code=500, detail=err)
-        return {"status": "started"}
 
     process_manager.spawn_thread(
         todo_id, _followup_claude_for_todo,
@@ -940,6 +975,59 @@ async def set_session_autopilot(todo_id: str, body: SessionAutopilotRequest) -> 
         raise HTTPException(status_code=404, detail="Todo not found")
     if result.get("error") == "no_session":
         raise HTTPException(status_code=400, detail="Todo has no session — run it first")
+    return result
+
+
+class AutopilotRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/{todo_id}/autopilot")
+async def set_autopilot(todo_id: str, body: AutopilotRequest) -> dict:
+    """Toggle the autopilot flag on a todo.
+
+    When enabled, analyzer-suggested follow-ups are auto-sent after each
+    run to keep the session alive. When disabled, suggestions are stored
+    on the todo but not sent — the user can review and send manually.
+    """
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    def _do():
+        with StorageContext() as ctx:
+            t = ctx.get_todo(todo_id)
+            if t is None:
+                return {"error": "not_found"}
+            t.autopilot = body.enabled
+            if not body.enabled:
+                t.suggested_followup_sent = False
+            return {"status": "ok", "autopilot": t.autopilot}
+
+    result = await run_in_thread(_do)
+    if result.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="Todo not found")
+    return result
+
+
+@router.delete("/{todo_id}/suggested-followup")
+async def dismiss_suggested_followup(todo_id: str) -> dict:
+    """Dismiss the analyzer-suggested follow-up on a todo without sending it."""
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+    def _do():
+        with StorageContext() as ctx:
+            t = ctx.get_todo(todo_id)
+            if t is None:
+                return {"error": "not_found"}
+            t.suggested_followup = None
+            t.suggested_followup_at = None
+            t.suggested_followup_sent = False
+            return {"status": "ok"}
+
+    result = await run_in_thread(_do)
+    if result.get("error") == "not_found":
+        raise HTTPException(status_code=404, detail="Todo not found")
     return result
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from backend.result_applier import _Counters, _apply_result
 from backend.models import (
     ClaudeAnalysisResult,
+    ClaudeFollowup,
     ClaudeInsight,
     ClaudeNewTodo,
     ClaudeTodoStatusUpdate,
@@ -469,3 +470,61 @@ class TestProjectSummaries:
         _apply_result(ctx, result, pid, c)
 
         assert ctx.metadata.project_summaries[pid] == "Summary via name"
+
+
+# ── followups (analyzer-suggested follow-up messages) ─────────
+
+
+class TestFollowups:
+    def test_stores_suggestion_on_todo(self):
+        store, pid = _base_store()
+        ctx = _make_ctx(store)
+        c = _Counters()
+        result = ClaudeAnalysisResult(
+            followups=[ClaudeFollowup(todo_id="todo_1", message="Now add tests")]
+        )
+        _apply_result(ctx, result, pid, c)
+        t = next(t for t in ctx.store.todos if t.id == "todo_1")
+        assert t.suggested_followup == "Now add tests"
+        assert t.suggested_followup_at is not None
+        assert t.suggested_followup_sent is False
+
+    def test_skips_if_pending_followup_already_set(self):
+        store, pid = _base_store()
+        # Pretend a manual followup is already queued
+        store.todos[0].pending_followup = "User's own followup"
+        ctx = _make_ctx(store)
+        c = _Counters()
+        result = ClaudeAnalysisResult(
+            followups=[ClaudeFollowup(todo_id="todo_1", message="Now add tests")]
+        )
+        _apply_result(ctx, result, pid, c)
+        t = next(t for t in ctx.store.todos if t.id == "todo_1")
+        assert t.suggested_followup is None  # not overwritten
+
+    def test_skips_out_of_project_todo(self):
+        store, pid = _base_store()
+        # Add a todo in a different project
+        other = Project(id="proj_bbb", name="Other", source_path="/tmp/o")
+        store.projects.append(other)
+        store.todos.append(Todo(id="todo_other", project_id=other.id, text="Other"))
+        ctx = _make_ctx(store)
+        c = _Counters()
+        result = ClaudeAnalysisResult(
+            followups=[ClaudeFollowup(todo_id="todo_other", message="Do it")]
+        )
+        # Apply to proj_aaa — the followup should be rejected
+        _apply_result(ctx, result, pid, c)
+        t = next(t for t in ctx.store.todos if t.id == "todo_other")
+        assert t.suggested_followup is None
+
+    def test_skips_empty_message(self):
+        store, pid = _base_store()
+        ctx = _make_ctx(store)
+        c = _Counters()
+        result = ClaudeAnalysisResult(
+            followups=[ClaudeFollowup(todo_id="todo_1", message="   ")]
+        )
+        _apply_result(ctx, result, pid, c)
+        t = next(t for t in ctx.store.todos if t.id == "todo_1")
+        assert t.suggested_followup is None

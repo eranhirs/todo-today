@@ -13,7 +13,6 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 from .event_bus import EventType, bus
 from .output_parser import extract_assistant_text
@@ -65,7 +64,7 @@ def _flush_btw_progress(todo_id: str, output: str, is_continuation: bool = False
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
 
-def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", main_session_id: str = "", btw_session_id: str | None = None, plan_only: bool = False) -> None:
+def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", main_session_id: str = "", btw_session_id: str | None = None) -> None:
     """Background thread: run a concurrent /btw Claude session alongside the main run.
 
     First call: forks the main session via --resume --fork-session so Claude has
@@ -74,31 +73,19 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
 
     Subsequent calls: resumes the existing btw_session_id so messages stay in the
     same conversational thread rather than opening a new tab.
-
-    When plan_only=True, Edit/Bash/NotebookEdit tools are disallowed and the
-    output is labelled as "Plan" instead of "BTW".
     """
     pm = _get_process_manager()
-    label = "Plan" if plan_only else "BTW"
+    label = "BTW"
     output_file = _get_runs_dir() / f"{todo_id}_btw.jsonl"
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         is_continuation = btw_session_id is not None
 
-        if plan_only:
-            prompt = (
-                f"The user wants a plan for the following. Think through the approach "
-                f"and outline a plan — do NOT make any code changes. "
-                f"You MAY use the Write tool to save the plan under .claude/plans/, but "
-                f"Write is restricted to that directory and Edit/Bash are disabled:\n\n"
-                f"{message}"
-            )
-        else:
-            prompt = (
-                f"The user has a mid-task question. Answer concisely — this is a /btw "
-                f"side-channel that won't be added to the main conversation:\n\n"
-                f"{message}"
-            )
+        prompt = (
+            f"The user has a mid-task question. Answer concisely — this is a /btw "
+            f"side-channel that won't be added to the main conversation:\n\n"
+            f"{message}"
+        )
         accumulated: list[str] = []
 
         # Store btw metadata on todo — append separator for continuations
@@ -136,20 +123,6 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 "--resume", main_session_id,
                 "--fork-session",
             ]
-
-        if plan_only:
-            cmd.extend(["--disallowedTools", "Edit,Bash,NotebookEdit,AskUserQuestion"])
-            # Allow Write only for .claude/plans/ via PreToolUse hook
-            hook_script = Path(__file__).resolve().parent.parent / "hooks" / "plan-mode-write-filter.py"
-            settings_json = json.dumps({
-                "hooks": {
-                    "PreToolUse": [{
-                        "matcher": "Write",
-                        "hooks": [{"type": "command", "command": f"python3 {hook_script}"}],
-                    }]
-                }
-            })
-            cmd.extend(["--settings", settings_json])
 
         fout = open(output_file, "a")
         proc = subprocess.Popen(
@@ -276,13 +249,8 @@ def is_btw_running(todo_id: str) -> bool:
     return todo_id in _btw_threads and _btw_threads[todo_id].is_alive()
 
 
-def start_btw(todo_id: str, message: str, plan_only: bool = False) -> str | None:
-    """Start a concurrent btw session for a running todo. Returns None on success, or error string.
-
-    When plan_only=True, the session runs with disallowed edit tools and is
-    labelled as a "Plan" in the output. The todo doesn't need to be actively
-    running — plan-only sessions can fork from any existing session.
-    """
+def start_btw(todo_id: str, message: str) -> str | None:
+    """Start a concurrent btw session for a running todo. Returns None on success, or error string."""
     if is_btw_running(todo_id):
         return "btw already running"
 
@@ -290,9 +258,7 @@ def start_btw(todo_id: str, message: str, plan_only: bool = False) -> str | None
         todo = ctx.get_todo(todo_id)
         if todo is None:
             return "todo not found"
-        # Plan-only sessions can run even when the todo isn't actively running
-        # (e.g. project is busy with a different todo). Regular btw requires running.
-        if not plan_only and todo.run_status != "running":
+        if todo.run_status != "running":
             return "todo not running"
 
         project = ctx.get_project(todo.project_id)
@@ -309,7 +275,7 @@ def start_btw(todo_id: str, message: str, plan_only: bool = False) -> str | None
 
     thread = threading.Thread(
         target=run_btw_for_todo,
-        args=(todo_id, message, source_path, run_model, main_session_id, btw_session_id, plan_only),
+        args=(todo_id, message, source_path, run_model, main_session_id, btw_session_id),
         daemon=True,
     )
     thread.start()

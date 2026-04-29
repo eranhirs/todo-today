@@ -172,6 +172,10 @@ def run_analysis(
         for s in sessions:
             ctx.metadata.session_mtimes[_session_key(s)] = s["mtime"]
 
+    # Dispatch autopilot follow-ups: for each todo with autopilot=True that
+    # received a suggested_followup, send it to keep the session alive.
+    _dispatch_autopilot_followups()
+
     combined_prompt = "\n\n".join(all_prompts)
     combined_response = "\n\n".join(all_responses)
     combined_reasoning = "\n\n".join(all_reasoning)
@@ -210,6 +214,38 @@ def run_analysis(
     )
     _record_entry(entry)
     return entry
+
+
+def _dispatch_autopilot_followups() -> None:
+    """Auto-send analyzer-suggested follow-ups for todos with autopilot=True.
+
+    Reads all todos, finds those with `autopilot=True`, a pending
+    `suggested_followup`, and a completed run that's safe to resume. Sends
+    the follow-up and marks it as sent so it isn't re-dispatched.
+    """
+    from .run_manager import start_followup
+
+    candidates: list[tuple[str, str]] = []
+    with StorageContext(read_only=True) as ctx:
+        for t in ctx.store.todos:
+            if not t.autopilot:
+                continue
+            if not t.suggested_followup or t.suggested_followup_sent:
+                continue
+            if t.run_status != "done":
+                continue
+            if not t.session_id:
+                continue
+            if t.status in ("completed", "rejected", "stale"):
+                continue
+            candidates.append((t.id, t.suggested_followup))
+
+    for todo_id, message in candidates:
+        err = start_followup(todo_id, message)
+        if err:
+            log.info("Autopilot follow-up skipped for %s: %s", todo_id, err)
+        else:
+            log.info("Autopilot follow-up sent for %s: %s", todo_id, message[:80])
 
 
 def _record_entry(entry: AnalysisEntry) -> None:

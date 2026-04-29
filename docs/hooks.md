@@ -192,6 +192,9 @@ Returns sessions in notifiable states (waiting or recently ended). The frontend 
 }
 ```
 
+### `POST /api/claude/hooks/events/dismiss`
+Removes a session entry from `hook_states.json`. Used by the **Stop watching** action on waiting-state toasts to clear orphaned CLI sessions that aren't tied to any todo and would otherwise re-notify until the 24-hour auto-expire kicks in. Body: `{ "session_key": "{project_dir}/{session_id}" }`. Returns `404` if the key is unknown.
+
 ### `GET /api/claude/hooks/log?limit=N`
 Returns the last N hook events (default 100, max 500) from the event log, most recent first. Useful for debugging whether a hook fired.
 ```json

@@ -71,6 +71,8 @@ async def update_project(project_id: str, body: ProjectUpdate) -> Project:
                     elif body.run_model is not None:
                         if body.run_model in ("opus", "sonnet", "haiku"):
                             p.run_model = body.run_model
+                    if body.pinned is not None:
+                        p.pinned = body.pinned
                     bus.emit_event_sync(EventType.PROJECT_UPDATED, project_id=p.id)
                     return p
         return None

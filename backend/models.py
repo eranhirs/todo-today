@@ -36,6 +36,7 @@ class Project(BaseModel):
     autopilot_starts_at: Optional[str] = None  # ISO timestamp: when to activate scheduled_auto_run_quota
     todo_quota: int = 0  # 0 = unlimited, 1+ = max todo runs per 24h sliding window
     run_model: Optional[str] = None  # None = use global setting, "opus"/"sonnet"/"haiku" = override
+    pinned: bool = False  # When True, project is shown in the pinned sidebar section (not collapsible)
     created_at: str = Field(default_factory=_now)
 
 
@@ -78,9 +79,10 @@ class Todo(BaseModel):
     rejected_at: Optional[str] = None
     images: List[ImageAttachment] = []  # Image attachments with metadata
     red_flags: List[Dict[str, Any]] = []  # Coping-phrase red flags detected in run output
-    plan_file: Optional[str] = None  # Path to .claude/plans/ file written during plan_only run
+    plan_file: Optional[str] = None  # Path to plans/ file written during plan_only run
     priority: Optional[int] = None  # 1=critical, 2=high, 3=medium, 4=low, None=no priority
     source_session_id: Optional[str] = None  # Session analyzed to create this todo (permanent, never overwritten)
+    parent_todo_id: Optional[str] = None  # Manually-set parent; takes precedence over source_session_id for parent resolution
     pending_session_autopilot: int = 0  # Quota to activate as session_autopilot once this todo runs and gets a session_id
     session_last_synced_ts: Optional[str] = None  # ISO-8601 timestamp of last synced message (baseline for CLI reimport)
     run_output_base: Optional[str] = None  # run_output snapshot when run ended — used as base for CLI reimport
@@ -94,6 +96,10 @@ class Todo(BaseModel):
     run_context_tokens: Optional[int] = None  # last turn's input+cache_read — true current context size
     run_finished_at: Optional[str] = None  # ISO-8601 timestamp: when the last run/follow-up finished
     run_after: Optional[str] = None  # ISO-8601 timestamp: skip this todo until this time passes
+    autopilot: bool = False  # When True, analyzer-generated follow-ups are auto-sent to keep the session alive
+    suggested_followup: Optional[str] = None  # Analyzer-generated next message (shown to user when autopilot is off)
+    suggested_followup_at: Optional[str] = None  # ISO-8601 timestamp: when the suggestion was generated
+    suggested_followup_sent: bool = False  # Whether the suggestion was auto-sent via autopilot
 
     @model_validator(mode="before")
     @classmethod
@@ -274,6 +280,7 @@ class ProjectUpdate(BaseModel):
     todo_quota: Optional[int] = None
     run_model: Optional[str] = None  # None = use global, "opus"/"sonnet"/"haiku" = override
     clear_run_model: bool = False  # When True, clears per-project run_model override
+    pinned: Optional[bool] = None
 
 
 class TodoCreate(BaseModel):
@@ -293,6 +300,8 @@ class TodoUpdate(BaseModel):
     user_ordered: Optional[bool] = None
     is_read: Optional[bool] = None
     run_after: Optional[str] = None  # ISO-8601 timestamp; set to "" to clear
+    parent_todo_id: Optional[str] = None  # Set to "" to clear the manual parent link
+    autopilot: Optional[bool] = None  # Toggle the autopilot flag on the todo
 
 
 class TodoReorder(BaseModel):
@@ -364,6 +373,12 @@ class ClaudeRedFlag(BaseModel):
     explanation: str
 
 
+class ClaudeFollowup(BaseModel):
+    """A suggested follow-up message to keep a session alive."""
+    todo_id: str
+    message: str
+
+
 class ClaudeAnalysisResult(BaseModel):
     completed_todo_ids: List[str] = []
     status_updates: List[ClaudeTodoStatusUpdate] = []
@@ -374,3 +389,4 @@ class ClaudeAnalysisResult(BaseModel):
     insights: List[ClaudeInsight] = []
     dismiss_insight_ids: List[str] = []
     red_flags: List[ClaudeRedFlag] = []
+    followups: List[ClaudeFollowup] = []

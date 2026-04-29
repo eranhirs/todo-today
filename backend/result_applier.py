@@ -372,3 +372,21 @@ def _apply_result(
             )
             existing_keys.add((pid, ci.text.lower()))
             counters.insight_texts.append(ci.text)
+
+    # Store analyzer-suggested follow-up messages on their target todos.
+    # Auto-sending (when the autopilot flag is set) is triggered by the
+    # caller after the storage lock is released.
+    for fu in result.followups:
+        if fu.todo_id not in project_todo_ids:
+            log.warning("followups: todo %s not in project %s, skipping", fu.todo_id, project_id)
+            continue
+        t = todo_by_id.get(fu.todo_id)
+        if t is None or not fu.message.strip():
+            continue
+        # Don't overwrite an in-flight pending_followup — the user or a prior
+        # autopilot pass already queued one.
+        if t.pending_followup:
+            continue
+        t.suggested_followup = fu.message.strip()
+        t.suggested_followup_at = _now()
+        t.suggested_followup_sent = False

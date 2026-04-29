@@ -7,13 +7,15 @@ import { parseTags, PRIORITY_INFO } from "../utils/tags";
 import { type CommandInfo } from "../utils/commands";
 import { getDisplayName, setDisplayName } from "../utils/displayNames";
 import { getSectionExpanded, setSectionExpanded } from "../utils/sectionState";
-import { matchesTodo } from "../utils/todoSearch";
+import { buildReferencedByMap, matchesTodo } from "../utils/todoSearch";
 import { useAppContext } from "../contexts/AppContext";
 
 interface Props {
   todos: Todo[];
   projects: Project[];
   selectedProjectId: string | null;
+  viewLabel?: string | null;
+  projectsForAdd?: Project[];
   projectSummaries: Record<string, string>;
   focusedTodoId?: string | null;
   editingTodoId?: string | null;
@@ -31,11 +33,13 @@ interface Props {
   onPendingScrollHandled?: () => void;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {}, analysisHistory = [], onNavigateToTodo, pendingScrollTodoId, onPendingScrollHandled }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, viewLabel, projectsForAdd, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {}, analysisHistory = [], onNavigateToTodo, pendingScrollTodoId, onPendingScrollHandled }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic, isOffline } = useAppContext();
+  const [showActive, setShowActiveRaw] = useState(() => getSectionExpanded("active", true));
   const [showUpNext, setShowUpNextRaw] = useState(() => getSectionExpanded("upnext", true));
   const [showBacklog, setShowBacklogRaw] = useState(() => getSectionExpanded("backlog", true));
   const [showDone, setShowDoneRaw] = useState(() => getSectionExpanded("done", true));
+  const setShowActive = (v: boolean) => { setShowActiveRaw(v); setSectionExpanded("active", v); };
   const setShowUpNext = (v: boolean) => { setShowUpNextRaw(v); setSectionExpanded("upnext", v); };
   const setShowBacklog = (v: boolean) => { setShowBacklogRaw(v); setSectionExpanded("backlog", v); };
   const setShowDone = (v: boolean) => { setShowDoneRaw(v); setSectionExpanded("done", v); };
@@ -57,6 +61,9 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [filterCommands, setFilterCommands] = useState(() => {
     return new URLSearchParams(window.location.search).has("commands");
+  });
+  const [filterManual, setFilterManual] = useState(() => {
+    return new URLSearchParams(window.location.search).has("manual");
   });
   const [selectedPriorities, setSelectedPriorities] = useState<Set<number>>(() => {
     const p = new URLSearchParams(window.location.search).get("priorities");
@@ -83,21 +90,57 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     }
   }, [renamingTitle]);
 
-  // After project switch, scroll to the pending todo
+  // Keep todos accessible to the pending-scroll effect's fallback path without
+  // making the effect re-run on every poll.
+  const todosRef = useRef(todos);
+  useEffect(() => { todosRef.current = todos; }, [todos]);
+
+  // After project switch, scroll to the pending todo. If it's not in the DOM
+  // after a few rAF retries, the parent is hidden by the user's active filters
+  // (search/tags/etc). In that case, open a new tab pointed at the todo with
+  // filters cleared, preserving the current tab's filter state.
   useEffect(() => {
     if (!pendingScrollTodoId) return;
-    // Use requestAnimationFrame to wait for DOM render after project switch
-    const raf = requestAnimationFrame(() => {
-      const el = document.querySelector(`[data-todo-id="${pendingScrollTodoId}"]`);
+    const targetId = pendingScrollTodoId;
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 5;
+
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = document.querySelector(`[data-todo-id="${targetId}"]`);
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.remove("todo-highlight-flash");
+        void (el as HTMLElement).offsetWidth;
         el.classList.add("todo-highlight-flash");
-        setTimeout(() => el.classList.remove("todo-highlight-flash"), 1500);
+        setTimeout(() => el.classList.remove("todo-highlight-flash"), 2000);
+        onPendingScrollHandled?.();
+        return;
+      }
+      if (attempts < maxAttempts) {
+        attempts++;
+        requestAnimationFrame(tryScroll);
+        return;
+      }
+      const target = todosRef.current.find((t) => t.id === targetId);
+      if (target) {
+        const url = new URL(window.location.origin + window.location.pathname);
+        url.searchParams.set("project", target.project_id);
+        url.searchParams.set("focus", targetId);
+        const win = window.open(url.toString(), "_blank", "noopener");
+        if (!win) {
+          addToast("Parent is hidden by filters — popup blocked, clear filters to view it", "error");
+        } else {
+          addToast("Parent hidden by filters — opened in a new tab", "info");
+        }
       }
       onPendingScrollHandled?.();
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [pendingScrollTodoId, onPendingScrollHandled]);
+    };
+
+    requestAnimationFrame(tryScroll);
+    return () => { cancelled = true; };
+  }, [pendingScrollTodoId, onPendingScrollHandled, addToast]);
 
   // Fetch available commands/skills scoped to the selected project
   useEffect(() => {
@@ -143,11 +186,86 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     return map;
   }, [todos]);
 
+  // Build id → todo lookup so manual parent_todo_id references can resolve
+  const todoById = useMemo(() => {
+    const map = new Map<string, Todo>();
+    for (const t of todos) map.set(t.id, t);
+    return map;
+  }, [todos]);
+
+  const resolveParent = useCallback((t: Todo): Todo | null => {
+    if (t.parent_todo_id) return todoById.get(t.parent_todo_id) ?? null;
+    if (t.source_session_id) return sessionToTodo.get(t.source_session_id) ?? null;
+    return null;
+  }, [todoById, sessionToTodo]);
+
+  // Reverse map: referenced_todo_id → todos whose text contains @[...](referenced_todo_id).
+  // Surfaces backlinks so a todo's metadata lists every other todo that mentions it.
+  const referencedByMap = useMemo(() => buildReferencedByMap(todos), [todos]);
+  const resolveReferencedBy = useCallback(
+    (t: Todo): Todo[] => referencedByMap.get(t.id) ?? [],
+    [referencedByMap]
+  );
+
   const projectFiltered = selectedProjectId
     ? todos.filter((t) => t.project_id === selectedProjectId)
     : todos;
 
-  // Collect all tags from visible todos for the filter bar
+  // projectFiltered narrowed by the current search query. Used as the base for
+  // every filter-bar facet so chip counts and tag pills update as the user types.
+  const searchBase = useMemo(() => {
+    const q = searchQuery.trim();
+    if (!q) return projectFiltered;
+    if (searchResults !== null) {
+      return selectedProjectId
+        ? searchResults.filter((t) => t.project_id === selectedProjectId)
+        : searchResults;
+    }
+    return projectFiltered.filter((t) => matchesTodo(t, q));
+  }, [projectFiltered, searchQuery, searchResults, selectedProjectId]);
+
+  // Apply every active filter except the one identified by `skip`. Each chip's
+  // count is computed against this so it answers "if I add this filter, how
+  // many would I see, given my other filters" — i.e. proper faceted drill-down.
+  const applyFilters = useCallback((base: Todo[], skip?: "tags" | "unread" | "commands" | "manual" | "priorities") => {
+    let result = base;
+    if (skip !== "tags") {
+      if (selectedTags.size > 0) {
+        result = result.filter((t) => {
+          const todoTags = parseTags(t.text);
+          return Array.from(selectedTags).every((st) => todoTags.includes(st));
+        });
+      }
+      if (excludedTags.size > 0) {
+        result = result.filter((t) => {
+          const todoTags = parseTags(t.text);
+          return Array.from(excludedTags).every((et) => !todoTags.includes(et));
+        });
+      }
+    }
+    if (skip !== "unread" && filterUnread) {
+      result = result.filter((t) => isUnread(t) || t.id === stickyTodoId);
+    }
+    if (skip !== "commands" && filterCommands) {
+      result = result.filter((t) => t.is_command);
+    }
+    if (skip !== "manual" && filterManual) {
+      result = result.filter((t) => t.manual);
+    }
+    if (skip !== "priorities" && selectedPriorities.size > 0) {
+      result = result.filter((t) => t.priority !== null && selectedPriorities.has(t.priority));
+    }
+    return result;
+  }, [selectedTags, excludedTags, filterUnread, filterCommands, filterManual, selectedPriorities, stickyTodoId]);
+
+  const filteredWithoutTags = useMemo(() => applyFilters(searchBase, "tags"), [searchBase, applyFilters]);
+  const filteredWithoutUnread = useMemo(() => applyFilters(searchBase, "unread"), [searchBase, applyFilters]);
+  const filteredWithoutCommands = useMemo(() => applyFilters(searchBase, "commands"), [searchBase, applyFilters]);
+  const filteredWithoutManual = useMemo(() => applyFilters(searchBase, "manual"), [searchBase, applyFilters]);
+  const filteredWithoutPriorities = useMemo(() => applyFilters(searchBase, "priorities"), [searchBase, applyFilters]);
+
+  // All tags in the current project — used for autocomplete in editors so users
+  // can complete tags that exist anywhere, even if currently hidden by filters.
   const allTags = useMemo(() => {
     const tagSet = new Set<string>();
     for (const t of projectFiltered) {
@@ -155,6 +273,18 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     }
     return Array.from(tagSet).sort();
   }, [projectFiltered]);
+
+  // Tags shown in the filter bar — narrowed by every other active filter/search.
+  // Always includes currently selected/excluded tags so they stay clickable.
+  const filterBarTags = useMemo(() => {
+    const tagSet = new Set<string>();
+    for (const t of filteredWithoutTags) {
+      for (const tag of parseTags(t.text)) tagSet.add(tag);
+    }
+    for (const t of selectedTags) tagSet.add(t);
+    for (const t of excludedTags) tagSet.add(t);
+    return Array.from(tagSet).sort();
+  }, [filteredWithoutTags, selectedTags, excludedTags]);
 
   const toggleTag = useCallback((tag: string, exclude?: boolean) => {
     if (exclude) {
@@ -192,9 +322,10 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     set("exclude", excludedTags.size > 0 ? Array.from(excludedTags).join(",") : null);
     set("unread", filterUnread ? "1" : null);
     set("commands", filterCommands ? "1" : null);
+    set("manual", filterManual ? "1" : null);
     set("priorities", selectedPriorities.size > 0 ? Array.from(selectedPriorities).join(",") : null);
     window.history.replaceState({}, "", url.toString());
-  }, [searchQuery, selectedTags, excludedTags, filterUnread, filterCommands, selectedPriorities]);
+  }, [searchQuery, selectedTags, excludedTags, filterUnread, filterCommands, filterManual, selectedPriorities]);
 
   const startRenameTag = useCallback((tag: string) => {
     setRenamingTag(tag);
@@ -294,30 +425,50 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     if (filterUnread) setStickyTodoId(todoId);
   }, [filterUnread]);
 
-  // Count unread todos — use backend-provided counts for accuracy across all pages
+  // Filter bar counts answer "if you added this filter, how many would you see"
+  // — each is computed against every other active filter (including search).
+  // For unread, we keep the backend count when no other filter narrows the view
+  // (it covers paginated-away completed todos that the loaded list misses), and
+  // switch to a client-side count once any other filter is active.
   const unreadCount = useMemo(() => {
-    if (selectedProjectId) return unreadCounts[selectedProjectId] ?? 0;
-    return unreadCounts["_total"] ?? 0;
-  }, [selectedProjectId, unreadCounts]);
+    const otherFiltersActive = !!(
+      searchQuery.trim() ||
+      selectedTags.size ||
+      excludedTags.size ||
+      filterCommands ||
+      filterManual ||
+      selectedPriorities.size
+    );
+    if (!otherFiltersActive) {
+      if (selectedProjectId) return unreadCounts[selectedProjectId] ?? 0;
+      return unreadCounts["_total"] ?? 0;
+    }
+    return filteredWithoutUnread.filter((t) => isUnread(t)).length;
+  }, [searchQuery, selectedTags, excludedTags, filterCommands, filterManual, selectedPriorities, selectedProjectId, unreadCounts, filteredWithoutUnread]);
 
-  // Count command/skill todos
   const commandCount = useMemo(() =>
-    projectFiltered.filter((t) => t.is_command).length,
-    [projectFiltered]
+    filteredWithoutCommands.filter((t) => t.is_command).length,
+    [filteredWithoutCommands]
   );
 
-  // Count todos by priority level (only active, non-completed)
+  const manualCount = useMemo(() =>
+    filteredWithoutManual.filter((t) => t.manual).length,
+    [filteredWithoutManual]
+  );
+
   const priorityCounts = useMemo(() => {
     const counts: Record<number, number> = {};
-    for (const t of projectFiltered) {
+    for (const t of filteredWithoutPriorities) {
       if (t.priority !== null && t.status !== "completed") {
         counts[t.priority] = (counts[t.priority] ?? 0) + 1;
       }
     }
     return counts;
-  }, [projectFiltered]);
+  }, [filteredWithoutPriorities]);
 
-  const hasPriorities = projectFiltered.some((t) => t.priority !== null);
+  // Show priority chips when priorities exist among current results — but
+  // always show them while a priority filter is active so the user can clear it.
+  const hasPriorities = selectedPriorities.size > 0 || filteredWithoutPriorities.some((t) => t.priority !== null);
 
   const togglePriority = useCallback((level: number) => {
     setSelectedPriorities((prev) => {
@@ -328,53 +479,16 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     });
   }, []);
 
-  // Apply search + tag + unread filters
-  // When searching, use backend results (searches ALL todos including unpaginated completed)
-  const filtered = useMemo(() => {
-    let result: Todo[];
-    if (searchQuery.trim() && searchResults !== null) {
-      // Use backend search results — they already cover all completed todos
-      result = searchResults;
-      // Still apply project filter for safety (backend does it too, but just in case)
-      if (selectedProjectId) {
-        result = result.filter((t) => t.project_id === selectedProjectId);
-      }
-    } else {
-      result = projectFiltered;
-      if (searchQuery.trim()) {
-        // Fallback: client-side search while backend is loading
-        const q = searchQuery.trim();
-        result = result.filter((t) => matchesTodo(t, q));
-      }
-    }
-    if (selectedTags.size > 0) {
-      result = result.filter((t) => {
-        const todoTags = parseTags(t.text);
-        return Array.from(selectedTags).every((st) => todoTags.includes(st));
-      });
-    }
-    if (excludedTags.size > 0) {
-      result = result.filter((t) => {
-        const todoTags = parseTags(t.text);
-        return Array.from(excludedTags).every((et) => !todoTags.includes(et));
-      });
-    }
-    if (filterUnread) {
-      result = result.filter((t) => isUnread(t) || t.id === stickyTodoId);
-    }
-    if (filterCommands) {
-      result = result.filter((t) => t.is_command);
-    }
-    if (selectedPriorities.size > 0) {
-      result = result.filter((t) => t.priority !== null && selectedPriorities.has(t.priority));
-    }
-    return result;
-  }, [projectFiltered, searchQuery, searchResults, selectedProjectId, selectedTags, excludedTags, filterUnread, stickyTodoId, filterCommands, selectedPriorities]);
+  const filtered = useMemo(() => applyFilters(searchBase), [searchBase, applyFilters]);
 
-  // Sort helper: pinned (user_ordered) items first by sort_order,
+  // Sort helper: pending ("not sent") items first so the user notices them,
+  // then pinned (user_ordered) items by sort_order,
   // then unpinned items by priority (lower number = higher priority, null = lowest),
   // then by created_at descending (newest first)
   const sortByOrder = (a: Todo, b: Todo) => {
+    const aPending = a.id.startsWith("temp-");
+    const bPending = b.id.startsWith("temp-");
+    if (aPending !== bPending) return aPending ? -1 : 1;
     if (a.user_ordered !== b.user_ordered) return a.user_ordered ? -1 : 1;
     if (a.user_ordered) return a.sort_order - b.sort_order;
     // Priority sorting: items with priority come before those without;
@@ -385,26 +499,29 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
     return b.created_at.localeCompare(a.created_at);
   };
 
-  // Up Next: queued items first (still prioritized among themselves),
-  // then waiting, in_progress, next — within same group, by sort_order
-  const upNextOrder = { waiting: 0, in_progress: 1, next: 2 } as const;
-  const upNext = filtered
-    .filter((t) => t.status === "waiting" || t.status === "in_progress" || t.status === "next")
+  // Active: in_progress + waiting + any queued todo. Queued items first, then in_progress, then waiting.
+  const activeOrder = { in_progress: 0, waiting: 1 } as const;
+  const active = filtered
+    .filter((t) => t.run_status === "queued" || t.status === "in_progress" || t.status === "waiting")
     .sort((a, b) => {
-      // Queued items always sort to the top of Up Next
       const aQueued = a.run_status === "queued" ? 0 : 1;
       const bQueued = b.run_status === "queued" ? 0 : 1;
       if (aQueued !== bQueued) return aQueued - bQueued;
-      const oa = upNextOrder[a.status as keyof typeof upNextOrder] ?? 2;
-      const ob = upNextOrder[b.status as keyof typeof upNextOrder] ?? 2;
+      const oa = activeOrder[a.status as keyof typeof activeOrder] ?? 2;
+      const ob = activeOrder[b.status as keyof typeof activeOrder] ?? 2;
       if (oa !== ob) return oa - ob;
       return sortByOrder(a, b);
     });
 
-  // Backlog: consider, then stale, then rejected
+  // Up Next: only "next" status, excluding queued (those moved to Active).
+  const upNext = filtered
+    .filter((t) => t.status === "next" && t.run_status !== "queued")
+    .sort(sortByOrder);
+
+  // Backlog: consider, then stale, then rejected. Excludes queued (those moved to Active).
   const backlogOrder = { consider: 0, stale: 1, rejected: 2 } as const;
   const backlog = filtered
-    .filter((t) => t.status === "consider" || t.status === "stale" || t.status === "rejected")
+    .filter((t) => (t.status === "consider" || t.status === "stale" || t.status === "rejected") && t.run_status !== "queued")
     .sort((a, b) => {
       const oa = backlogOrder[a.status as keyof typeof backlogOrder] ?? 1;
       const ob = backlogOrder[b.status as keyof typeof backlogOrder] ?? 1;
@@ -573,7 +690,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       data-todo-id={t.id}
     >
-      <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={t.source_session_id ? sessionToTodo.get(t.source_session_id) ?? null : null} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+      <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
     </div>
   );
 
@@ -624,7 +741,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
           title={selectedProjectId ? "Double-click to rename" : undefined}
           style={selectedProjectId ? { cursor: "default" } : undefined}
         >
-          {selectedProjectId ? projectName(selectedProjectId) : "All Projects"}
+          {selectedProjectId ? projectName(selectedProjectId) : (viewLabel ?? "All Projects")}
         </h2>
       )}
       {selectedProject?.source_path && (
@@ -696,7 +813,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       {selectedProjectId ? (
         <AddTodo projectId={selectedProjectId} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} inputRef={addInputRef} />
       ) : (
-        <AddTodo projects={projects} allTags={allTags} allTodos={todos} allCommands={allCommands} inputRef={addInputRef} />
+        <AddTodo projects={projectsForAdd ?? projects} allTags={allTags} allTodos={todos} allCommands={allCommands} inputRef={addInputRef} />
       )}
 
       <div className="search-bar">
@@ -713,9 +830,8 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
         )}
       </div>
 
-      {(allTags.length > 0 || unreadCount > 0 || filterUnread || commandCount > 0 || filterCommands || hasPriorities) && (
-        <div className="tag-filter-bar">
-          {hasPriorities && ([1, 2, 3, 4] as const).map((level) => {
+      <div className="tag-filter-bar">
+        {hasPriorities && ([1, 2, 3, 4] as const).map((level) => {
             const info = PRIORITY_INFO[level];
             const count = priorityCounts[level] ?? 0;
             const isActive = selectedPriorities.has(level);
@@ -731,23 +847,27 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               </button>
             );
           })}
-          {(unreadCount > 0 || filterUnread) && (
-            <button
-              className={`tag-filter-pill unread-filter${filterUnread ? " active" : ""}`}
-              onClick={() => setFilterUnread((v) => !v)}
-            >
-              ⚡ Unread ({unreadCount})
-            </button>
-          )}
-          {(commandCount > 0 || filterCommands) && (
-            <button
-              className={`tag-filter-pill command-filter${filterCommands ? " active" : ""}`}
-              onClick={() => setFilterCommands((v) => !v)}
-            >
-              / Commands ({commandCount})
-            </button>
-          )}
-          {allTags.map((tag) =>
+          <button
+            className={`tag-filter-pill unread-filter${filterUnread ? " active" : ""}${unreadCount === 0 && !filterUnread ? " faded" : ""}`}
+            onClick={() => setFilterUnread((v) => !v)}
+          >
+            ⚡ Unread ({unreadCount})
+          </button>
+          <button
+            className={`tag-filter-pill command-filter${filterCommands ? " active" : ""}${commandCount === 0 && !filterCommands ? " faded" : ""}`}
+            onClick={() => setFilterCommands((v) => !v)}
+          >
+            / Commands ({commandCount})
+          </button>
+          <button
+            className={`tag-filter-pill manual-filter${filterManual ? " active" : ""}${manualCount === 0 && !filterManual ? " faded" : ""}`}
+            onClick={() => setFilterManual((v) => !v)}
+            title="Show only manual (human-only) tasks"
+          >
+            ✋ Manual ({manualCount})
+          </button>
+          {filterBarTags.length > 0 && <span className="tag-filter-divider" aria-hidden="true" />}
+          {filterBarTags.map((tag) =>
             renamingTag === tag ? (
               <form
                 key={tag}
@@ -776,10 +896,19 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
               </button>
             )
           )}
-          {(selectedTags.size > 0 || excludedTags.size > 0 || filterUnread || filterCommands || selectedPriorities.size > 0) && (
-            <button className="tag-filter-clear" onClick={() => { clearTags(); setFilterUnread(false); setFilterCommands(false); setSelectedPriorities(new Set()); }}>Clear</button>
-          )}
-        </div>
+        {(selectedTags.size > 0 || excludedTags.size > 0 || filterUnread || filterCommands || filterManual || selectedPriorities.size > 0) && (
+          <button className="tag-filter-clear" onClick={() => { clearTags(); setFilterUnread(false); setFilterCommands(false); setFilterManual(false); setSelectedPriorities(new Set()); }}>Clear</button>
+        )}
+      </div>
+
+      {/* Active */}
+      {active.length > 0 && (
+        <>
+          <button className="btn-link section-header" onClick={() => setShowActive(!showActive)}>
+            {(showActive || searchQuery) ? "▾" : "▸"} Active ({active.length})
+          </button>
+          {(showActive || searchQuery) && renderTodoList(active, "active")}
+        </>
       )}
 
       {/* Up Next */}
@@ -907,7 +1036,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
       </div>
       {(showUpNext || searchQuery) && (
         <>
-          {upNext.length === 0 && backlog.length === 0 && done.length === 0 && (
+          {active.length === 0 && upNext.length === 0 && backlog.length === 0 && done.length === 0 && (
             <div className="empty-state">
               <div className="empty-state-icon">📋</div>
               <p className="empty-state-title">No todos yet</p>
@@ -967,7 +1096,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                             {projGroups.size > 1 && <div className="project-group-header project-group-header-sub">{projectName(pid)}</div>}
                             {projItems.map((t) => (
                               <div key={t.id}>
-                                <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={t.source_session_id ? sessionToTodo.get(t.source_session_id) ?? null : null} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                                <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
                               </div>
                             ))}
                           </div>
@@ -980,7 +1109,7 @@ export function TodoList({ todos, projects, selectedProjectId, projectSummaries,
                       <div className="done-group-header">{day}</div>
                       {items.map((t) => (
                         <div key={t.id}>
-                          <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={t.source_session_id ? sessionToTodo.get(t.source_session_id) ?? null : null} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                          <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
                         </div>
                       ))}
                     </div>

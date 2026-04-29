@@ -87,7 +87,7 @@ function ProgressRing({ completed, total, size = 56 }: { completed: number; tota
 
 function StatusBar({ counts, total }: { counts: Record<string, number>; total: number }) {
   if (total === 0) return <div className="dash-status-bar empty-bar" />;
-  const order = ["waiting", "in_progress", "next", "consider", "stale", "rejected", "completed"];
+  const order = ["in_progress", "waiting", "next", "consider", "stale", "rejected", "completed"];
   return (
     <div className="dash-status-bar">
       {order.map((s) => {
@@ -671,7 +671,7 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
         <h3 className="dash-section-title">Status Distribution</h3>
         <StatusBar counts={allCounts} total={totalTodos} />
         <div className="dash-status-legend">
-          {["waiting", "in_progress", "next", "consider", "stale", "rejected", "completed"].map((s) => {
+          {["in_progress", "waiting", "next", "consider", "stale", "rejected", "completed"].map((s) => {
             const n = allCounts[s] || 0;
             if (n === 0) return null;
             return (

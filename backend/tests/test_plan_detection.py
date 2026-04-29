@@ -72,12 +72,12 @@ def _tool_use(name: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════
 
 class TestDetectPlanFileStream:
-    """Primary detection: scan stream objects for Write to .claude/plans/."""
+    """Primary detection: scan stream objects for Write to plans/."""
 
     def test_detects_plan_write(self):
-        objs = [_write_tool_use("/home/user/proj/.claude/plans/my-plan.md")]
+        objs = [_write_tool_use("/home/user/proj/plans/my-plan.md")]
         result = _detect_plan_file(objs)
-        assert result == "/home/user/proj/.claude/plans/my-plan.md"
+        assert result == "/home/user/proj/plans/my-plan.md"
 
     def test_returns_none_when_no_plan(self):
         objs = [_write_tool_use("/home/user/proj/src/main.py")]
@@ -91,7 +91,7 @@ class TestDetectPlanFileStream:
             "type": "tool_result",
             "message": {
                 "content": [
-                    {"type": "tool_use", "name": "Write", "input": {"file_path": "/x/.claude/plans/p.md"}}
+                    {"type": "tool_use", "name": "Write", "input": {"file_path": "/x/plans/p.md"}}
                 ]
             },
         }
@@ -99,17 +99,17 @@ class TestDetectPlanFileStream:
 
     def test_first_plan_wins(self):
         objs = [
-            _write_tool_use("/proj/.claude/plans/first.md"),
-            _write_tool_use("/proj/.claude/plans/second.md"),
+            _write_tool_use("/proj/plans/first.md"),
+            _write_tool_use("/proj/plans/second.md"),
         ]
-        assert _detect_plan_file(objs) == "/proj/.claude/plans/first.md"
+        assert _detect_plan_file(objs) == "/proj/plans/first.md"
 
 
 class TestDetectPlanFileFilesystemFallback:
     """Fallback: scan filesystem when stream-object detection finds nothing."""
 
     def test_finds_recently_modified_plan(self, tmp_path):
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
 
         plan_file = plans_dir / "new-plan.md"
@@ -122,7 +122,7 @@ class TestDetectPlanFileFilesystemFallback:
         assert result == str(plan_file)
 
     def test_picks_most_recent_file(self, tmp_path):
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
 
         old = plans_dir / "old.md"
@@ -139,7 +139,7 @@ class TestDetectPlanFileFilesystemFallback:
         assert result == str(new)
 
     def test_ignores_files_before_cutoff(self, tmp_path):
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
 
         old = plans_dir / "old.md"
@@ -159,7 +159,7 @@ class TestDetectPlanFileFilesystemFallback:
 
     def test_no_source_path_skips_fallback(self, tmp_path):
         # Even if plans exist, no source_path means no fallback
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "plan.md").write_text("plan")
 
@@ -167,7 +167,7 @@ class TestDetectPlanFileFilesystemFallback:
         assert result is None
 
     def test_no_run_started_at_skips_fallback(self, tmp_path):
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "plan.md").write_text("plan")
 
@@ -175,7 +175,7 @@ class TestDetectPlanFileFilesystemFallback:
         assert result is None
 
     def test_invalid_run_started_at(self, tmp_path):
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "plan.md").write_text("plan")
 
@@ -184,18 +184,19 @@ class TestDetectPlanFileFilesystemFallback:
 
     def test_stream_detection_takes_priority(self, tmp_path):
         """If stream objects contain a plan Write, filesystem fallback is skipped."""
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
         (plans_dir / "fs-plan.md").write_text("filesystem plan")
 
-        objs = [_write_tool_use("/proj/.claude/plans/stream-plan.md")]
+        stream_path = str(tmp_path / "plans" / "stream-plan.md")
+        objs = [_write_tool_use(stream_path)]
         cutoff = (datetime.now() - timedelta(seconds=60)).isoformat()
 
         result = _detect_plan_file(objs, source_path=str(tmp_path), run_started_at=cutoff)
-        assert result == "/proj/.claude/plans/stream-plan.md"
+        assert result == stream_path
 
     def test_ignores_subdirectories(self, tmp_path):
-        plans_dir = tmp_path / ".claude" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
         subdir = plans_dir / "subdir"
         subdir.mkdir()
@@ -238,7 +239,7 @@ class TestFinalizeRunSuppressError:
     def test_plan_only_with_plan_file_suppresses_error(self, mock_bus, mock_pm):
         """plan_only=True + plan file detected → non-zero exit treated as success."""
         self._make_todo(plan_only=True)
-        stream_objs = [_write_tool_use("/proj/.claude/plans/plan.md")]
+        stream_objs = [_write_tool_use("/proj/plans/plan.md")]
 
         _finalize_run(
             "todo_fin", final_result=None, returncode=1,
@@ -253,7 +254,7 @@ class TestFinalizeRunSuppressError:
         # Should be completed, not error
         assert t.run_status == "done"
         assert t.status == "completed"
-        assert t.plan_file == "/proj/.claude/plans/plan.md"
+        assert t.plan_file == "/proj/plans/plan.md"
 
     @patch("backend.run_manager.process_manager")
     @patch("backend.run_manager.bus")
@@ -298,7 +299,7 @@ class TestFinalizeRunSuppressError:
     def test_non_plan_only_with_plan_file_does_not_suppress(self, mock_bus, mock_pm):
         """plan_only=False + plan file → error is NOT suppressed (suppress requires plan_only)."""
         self._make_todo(plan_only=False)
-        stream_objs = [_write_tool_use("/proj/.claude/plans/plan.md")]
+        stream_objs = [_write_tool_use("/proj/plans/plan.md")]
 
         _finalize_run(
             "todo_fin", final_result=None, returncode=1,
@@ -312,7 +313,7 @@ class TestFinalizeRunSuppressError:
         t = next(t for t in store.todos if t.id == "todo_fin")
         assert t.run_status == "error"
         # Plan file should still be saved even on error
-        assert t.plan_file == "/proj/.claude/plans/plan.md"
+        assert t.plan_file == "/proj/plans/plan.md"
 
     @patch("backend.run_manager.process_manager")
     @patch("backend.run_manager.bus")
@@ -339,7 +340,7 @@ class TestFinalizeRunSuppressError:
     def test_suppress_error_also_skips_is_error_check(self, mock_bus, mock_pm):
         """When suppress_error is True, final_result.is_error is also ignored."""
         self._make_todo(plan_only=True)
-        stream_objs = [_write_tool_use("/proj/.claude/plans/plan.md")]
+        stream_objs = [_write_tool_use("/proj/plans/plan.md")]
 
         _finalize_run(
             "todo_fin",

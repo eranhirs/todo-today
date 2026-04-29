@@ -355,6 +355,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       emoji: null,
       session_id: null,
       source_session_id: null,
+      parent_todo_id: null,
       created_at: new Date().toISOString(),
       completed_at: null,
       original_text: null,
@@ -386,6 +387,10 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       run_finished_at: null,
       run_after: null,
       pending_session_autopilot: 0,
+      autopilot: /(?:^|\s)#autopilot(?:\s|$)/i.test(trimmed),
+      suggested_followup: null,
+      suggested_followup_at: null,
+      suggested_followup_sent: false,
     };
     optimistic.addPendingNewTodo(placeholder);
     onOptimisticUpdate((todos) => [placeholder, ...todos]);

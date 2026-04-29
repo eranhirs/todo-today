@@ -33,10 +33,10 @@ Each todo has a `status` field (replaces the old `completed` boolean):
 | Status | Meaning | UI Section | Icon |
 |---|---|---|---|
 | `next` | Actionable upcoming task | Up Next | → |
-| `in_progress` | Actively being worked on | Up Next (sorted first) | ● |
+| `in_progress` | Actively being worked on | Active (sorted first) | ● |
+| `waiting` | Blocked / needs user input | Active | ⏸ |
 | `completed` | Done | Completed | ✓ |
 | `consider` | Idea worth evaluating | Backlog | ? |
-| `waiting` | Blocked / needs user input | Backlog (sorted first) | ⏸ |
 | `stale` | Possibly no longer relevant | Backlog | ✗ |
 
 ### Migration
@@ -76,6 +76,14 @@ Each analysis records:
 - `modified_todos` — text of existing todos whose text, project, or status was updated
 - `new_project_names` — names of newly discovered projects
 - `insights` — meta-level observations about workflow or patterns
+
+## Session Keep-Alive Follow-ups
+
+Every per-project analysis prompt asks Claude for a `followups` field: an array of `{todo_id, message}` entries for todos whose run has finished but whose work isn't fully done. The suggestion is a short, natural-sounding next message (e.g. "Now add tests for the new function", "The linter is failing on file X — fix it"). Claude is instructed to omit a todo when the task is complete or the next step is unclear.
+
+`_apply_result` stores each suggestion on its target todo as `suggested_followup` (with a `suggested_followup_at` timestamp) and clears `suggested_followup_sent`. `pending_followup` already being set (a queued user follow-up) is respected — the analyzer doesn't overwrite it.
+
+After applying results, `_dispatch_autopilot_followups()` walks the store and auto-sends the suggestion for any todo with `autopilot=True` (and `run_status="done"`, `session_id` set, not completed/rejected/stale). Sending uses `run_manager.start_followup()`, which reuses `_followup_claude_for_todo` under the hood. The flag can be toggled via `POST /api/todos/{id}/autopilot` or by including `#autopilot` in the todo text. The UI shows the suggestion as a banner above the follow-up input — Use (prefill input), Send (fire immediately), or Dismiss (clear without sending). `DELETE /api/todos/{id}/suggested-followup` dismisses a stored suggestion.
 
 ## Cumulative Usage
 

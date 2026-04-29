@@ -7,7 +7,7 @@ import { TodoRunControls } from "./TodoRunControls";
 import { TodoOutput } from "./TodoOutput";
 import { parseTags, stripTagsFromText, stripPriorityFromText, PRIORITY_INFO } from "../utils/tags";
 import { type CommandInfo, stripCommandsFromText } from "../utils/commands";
-import { filterMentionSuggestions } from "../utils/todoSearch";
+import { filterMentionSuggestions, filterParentSuggestions } from "../utils/todoSearch";
 import { formatTime, formatDate, timeAgo } from "../utils/formatting";
 import { useAppContext } from "../contexts/AppContext";
 import { PixelDino } from "./PixelDino";
@@ -17,9 +17,11 @@ function scrollToTodo(todoId: string): boolean {
   const el = document.querySelector(`[data-todo-id="${todoId}"]`);
   if (el) {
     el.scrollIntoView({ behavior: "smooth", block: "center" });
-    // Brief highlight flash
+    // Re-trigger animation if class is already present (e.g. rapid repeat clicks)
+    el.classList.remove("todo-highlight-flash");
+    void (el as HTMLElement).offsetWidth;
     el.classList.add("todo-highlight-flash");
-    setTimeout(() => el.classList.remove("todo-highlight-flash"), 1500);
+    setTimeout(() => el.classList.remove("todo-highlight-flash"), 2000);
     return true;
   }
   return false;
@@ -47,6 +49,7 @@ interface Props {
   runModel?: string;
   sessionAutopilot?: Record<string, number>;
   parentTodo?: Todo | null;
+  referencedBy?: Todo[];
   analysisHistory?: AnalysisEntry[];
 }
 
@@ -61,7 +64,7 @@ const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
 ];
 
 
-export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, onNavigateToTodo, runModel = "opus", sessionAutopilot = {}, parentTodo = null, analysisHistory = [] }: Props) {
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, onNavigateToTodo, runModel = "opus", sessionAutopilot = {}, parentTodo = null, referencedBy = [], analysisHistory = [] }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic } = useAppContext();
   const commands = allCommands ?? [];
   const [editing, setEditing] = useState(false);
@@ -77,6 +80,10 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [, setTick] = useState(0);
   const [showAnalysis, setShowAnalysis] = useState(false);
+  const [parentInputText, setParentInputText] = useState("");
+  const [parentInputFocused, setParentInputFocused] = useState(false);
+  const [parentSelectedIdx, setParentSelectedIdx] = useState(0);
+  const parentInputRef = useRef<HTMLInputElement>(null);
 
   const isActive = !["completed", "rejected", "stale"].includes(todo.status);
 
@@ -87,10 +94,15 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
     }
   };
 
-  // Build child todo tree for this todo (only computed when metadata is shown)
+  // Manual parent_todo_id wins over session-based inference, so a todo with
+  // a manual parent set elsewhere is not counted as a session-based child here.
   const childTodos = useMemo(() => {
-    if (!showOutput || !todo.session_id || allTodos.length === 0) return [];
-    return allTodos.filter(t => t.source_session_id === todo.session_id && t.id !== todo.id);
+    if (!showOutput || allTodos.length === 0) return [];
+    return allTodos.filter(t => {
+      if (t.id === todo.id) return false;
+      if (t.parent_todo_id) return t.parent_todo_id === todo.id;
+      return !!(todo.session_id && t.source_session_id === todo.session_id);
+    });
   }, [showOutput, todo.session_id, todo.id, allTodos]);
 
   // Tick every 60s to keep relative timestamps fresh
@@ -142,7 +154,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
 
   const clickTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isExpandable = !!(todo.run_output || todo.original_text || todo.plan_file || (todo.images && todo.images.length > 0));
+  const isExpandable = true;
 
   const handleTextClick = async () => {
     if (clickTimer.current) {
@@ -495,10 +507,13 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
     return (
       <ul className="todo-children-list" style={{ paddingLeft: depth > 0 ? 16 : 0 }}>
         {children.map(child => {
-          const grandchildren = child.session_id && !visited.has(child.session_id)
-            ? allTodos.filter(t => t.source_session_id === child.session_id && t.id !== child.id)
-            : [];
-          const nextVisited = child.session_id ? new Set([...visited, child.session_id]) : visited;
+          const grandchildren = allTodos.filter(t => {
+            if (t.id === child.id) return false;
+            if (t.parent_todo_id) return t.parent_todo_id === child.id && !visited.has(`id:${child.id}`);
+            return !!(child.session_id && t.source_session_id === child.session_id && !visited.has(child.session_id));
+          });
+          const nextVisited = new Set([...visited, `id:${child.id}`]);
+          if (child.session_id) nextVisited.add(child.session_id);
           return (
             <li key={child.id} className="todo-child-item">
               <span
@@ -658,6 +673,19 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
             onClick={(e) => { e.stopPropagation(); goToTodo(parentTodo.id, parentTodo.project_id); }}
           >↑ parent</span>
         )}
+        {referencedBy.length > 0 && (
+          <span
+            className="referenced-by-badge"
+            title={`Referenced by ${referencedBy.length} todo${referencedBy.length > 1 ? "s" : ""} — click to expand`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!showOutput) {
+                setShowOutput(true);
+                onOutputOpen?.(todo.id);
+              }
+            }}
+          >↗ ref {referencedBy.length}</span>
+        )}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <PixelDino title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."} />}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
@@ -726,6 +754,35 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         )}
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
+        )}
+        {isActive && !todo.manual && (
+          <button
+            className={`badge badge-session-keep-alive${todo.autopilot ? " active" : ""}`}
+            title={todo.autopilot
+              ? "Autopilot ON — analyzer-suggested follow-ups are auto-sent to keep the session alive. Click to disable."
+              : "Autopilot OFF — analyzer suggestions show up as a banner but aren't sent automatically. Click to enable."
+            }
+            onClick={async (e) => {
+              e.stopPropagation();
+              const newVal = !todo.autopilot;
+              optimistic.addOptimisticOverride(todo.id, { autopilot: newVal });
+              onOptimisticUpdate((todos) =>
+                todos.map((t) => t.id === todo.id ? { ...t, autopilot: newVal } : t)
+              );
+              try {
+                await api.setAutopilot(todo.id, newVal);
+                optimistic.removeOptimisticOverride(todo.id);
+                onRefresh();
+                addToast(newVal ? "Autopilot enabled — session will be kept alive" : "Autopilot disabled", newVal ? "success" : "info");
+              } catch {
+                optimistic.removeOptimisticOverride(todo.id);
+                onOptimisticUpdate((todos) =>
+                  todos.map((t) => t.id === todo.id ? { ...t, autopilot: !newVal } : t)
+                );
+                addToast("Failed to toggle autopilot", "error");
+              }
+            }}
+          >🚁{todo.suggested_followup && !todo.pending_followup && <span className="badge-suggestion-dot" title="Analyzer has a follow-up suggestion">•</span>}</button>
         )}
         {todo.source_session_id && sessionAutopilot[todo.source_session_id] > 0 && !isRunning && (
           <span className="badge badge-session-autopilot" title={`Part of session autopilot chain (${sessionAutopilot[todo.source_session_id]} remaining)`}>🔗</span>
@@ -951,23 +1008,145 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         <span className="todo-plan-file-label">Plan:</span> <span className="todo-plan-file-path">{todo.plan_file}</span>
       </div>
     )}
-    {showOutput && parentTodo && (
-      <div className="todo-parent-info">
-        <span className="todo-parent-label">Parent:</span>{" "}
-        <span
-          className="todo-parent-link clickable"
-          onClick={() => goToTodo(parentTodo.id, parentTodo.project_id)}
-          title="Click to jump to parent todo"
-        >{truncateText(parentTodo.text, 100)}</span>
-        <span className={`todo-parent-status status-${parentTodo.status}`}>
-          {parentTodo.status.replace("_", " ")}
-        </span>
-      </div>
-    )}
-    {showOutput && childTodos.length > 0 && (
-      <div className="todo-children-info">
-        <span className="todo-children-label">Children ({childTodos.length}):</span>
-        {renderChildTree(childTodos, 0, new Set([todo.session_id!]))}
+    {showOutput && (() => {
+      const parentSuggestions = parentInputFocused
+        ? filterParentSuggestions(allTodos, parentInputText, todo.id, todo.project_id)
+        : [];
+      const setParent = async (newParentId: string) => {
+        const current = todo.parent_todo_id || "";
+        if (newParentId === current) return;
+        const prev = todo.parent_todo_id;
+        optimistic.addOptimisticOverride(todo.id, { parent_todo_id: newParentId || null });
+        onOptimisticUpdate((todos) =>
+          todos.map((t) => t.id === todo.id ? { ...t, parent_todo_id: newParentId || null } : t)
+        );
+        try {
+          await api.updateTodo(todo.id, { parent_todo_id: newParentId });
+          optimistic.removeOptimisticOverride(todo.id);
+          onRefresh();
+          addToast(newParentId ? "Parent set" : "Manual parent cleared", "info");
+        } catch {
+          optimistic.removeOptimisticOverride(todo.id);
+          onOptimisticUpdate((todos) =>
+            todos.map((t) => t.id === todo.id ? { ...t, parent_todo_id: prev } : t)
+          );
+          addToast("Failed to update parent", "error");
+        }
+      };
+      const pickSuggestion = (picked: Todo) => {
+        setParentInputText("");
+        setParentSelectedIdx(0);
+        setParentInputFocused(false);
+        parentInputRef.current?.blur();
+        setParent(picked.id);
+      };
+      return (
+        <div className="todo-parent-info">
+          <span className="todo-parent-label">Parent:</span>{" "}
+          {parentTodo ? (
+            <>
+              <span
+                className="todo-parent-link clickable"
+                onClick={() => goToTodo(parentTodo.id, parentTodo.project_id)}
+                title="Click to jump to parent todo"
+              >{truncateText(parentTodo.text, 100)}</span>
+              <span className={`todo-parent-status status-${parentTodo.status}`}>
+                {parentTodo.status.replace("_", " ")}
+              </span>
+              {todo.parent_todo_id && (
+                <span className="todo-parent-manual-tag" title="Parent was set manually">manual</span>
+              )}
+            </>
+          ) : (
+            <span className="todo-parent-empty">(none)</span>
+          )}
+          <div className="todo-parent-input-wrapper">
+            <input
+              ref={parentInputRef}
+              type="text"
+              className="todo-parent-input"
+              placeholder={parentTodo ? "Change parent…" : "Set parent…"}
+              value={parentInputText}
+              disabled={disabled}
+              onFocus={() => { setParentInputFocused(true); setParentSelectedIdx(0); }}
+              // Delay blur so clicks on suggestions can register first.
+              onBlur={() => { setTimeout(() => setParentInputFocused(false), 120); }}
+              onChange={(e) => { setParentInputText(e.target.value); setParentSelectedIdx(0); }}
+              onKeyDown={(e) => {
+                if (!parentInputFocused) return;
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setParentSelectedIdx((i) => Math.min(i + 1, Math.max(0, parentSuggestions.length - 1)));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setParentSelectedIdx((i) => Math.max(i - 1, 0));
+                } else if ((e.key === "Enter" || e.key === "Tab") && parentSuggestions[parentSelectedIdx]) {
+                  e.preventDefault();
+                  pickSuggestion(parentSuggestions[parentSelectedIdx]);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  setParentInputText("");
+                  setParentInputFocused(false);
+                  parentInputRef.current?.blur();
+                }
+              }}
+              onClick={(e) => e.stopPropagation()}
+            />
+            {parentInputFocused && parentSuggestions.length > 0 && (
+              <div className="mention-suggestions todo-parent-suggestions">
+                {parentSuggestions.map((s, i) => (
+                  <button
+                    key={s.id}
+                    className={`mention-suggestion-item${i === parentSelectedIdx ? " selected" : ""}`}
+                    onMouseDown={(e) => { e.preventDefault(); pickSuggestion(s); }}
+                  >
+                    <span className="mention-suggestion-title">{truncateText(s.text, 80)}</span>
+                    <span className="mention-suggestion-status">{s.run_status ?? s.status}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          {todo.parent_todo_id && (
+            <button
+              className="btn-icon btn-parent-clear"
+              title="Clear manual parent"
+              onClick={(e) => { e.stopPropagation(); setParent(""); }}
+            >×</button>
+          )}
+        </div>
+      );
+    })()}
+    {showOutput && childTodos.length > 0 && (() => {
+      const initialVisited = new Set<string>([`id:${todo.id}`]);
+      if (todo.session_id) initialVisited.add(todo.session_id);
+      return (
+        <div className="todo-children-info">
+          <span className="todo-children-label">Children ({childTodos.length}):</span>
+          {renderChildTree(childTodos, 0, initialVisited)}
+        </div>
+      );
+    })()}
+    {showOutput && referencedBy.length > 0 && (
+      <div className="todo-referenced-by-info">
+        <span className="todo-referenced-by-label">Referenced by ({referencedBy.length}):</span>
+        <ul className="todo-referenced-by-list">
+          {referencedBy.map((ref) => (
+            <li key={ref.id} className="todo-referenced-by-item">
+              <span className={`todo-child-status status-${ref.status}`}>
+                {STATUS_OPTIONS.find(s => s.value === ref.status)?.icon ?? "·"}
+              </span>
+              <span
+                className="todo-child-link clickable"
+                onClick={() => goToTodo(ref.id, ref.project_id)}
+                title="Click to jump to this todo"
+              >{truncateText(ref.text, 120)}</span>
+              <span className={`todo-child-status-label status-${ref.status}`}>
+                {ref.status.replace("_", " ")}
+              </span>
+            </li>
+          ))}
+        </ul>
       </div>
     )}
     {showOutput && todo.session_id && (

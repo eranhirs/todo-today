@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FullState, Todo } from "../types";
+import { type FullState, type Todo, PINNED_VIEW_ID } from "../types";
 import { api } from "../api";
 import type { ToastType } from "./useNotifications";
 import type { OptimisticActions } from "./useOptimistic";
@@ -48,25 +48,38 @@ export function useKeyboardShortcuts({
   // Build flat ordered list of visible todos (mirrors TodoList render order)
   const getVisibleTodos = useCallback((): Todo[] => {
     if (!state || view !== "list") return [];
-    const filtered = selectedProject
-      ? state.todos.filter((t) => t.project_id === selectedProject)
-      : state.todos;
+    let filtered: Todo[];
+    if (selectedProject === PINNED_VIEW_ID) {
+      const pinnedIds = new Set(state.projects.filter((p) => p.pinned).map((p) => p.id));
+      filtered = state.todos.filter((t) => pinnedIds.has(t.project_id));
+    } else if (selectedProject) {
+      filtered = state.todos.filter((t) => t.project_id === selectedProject);
+    } else {
+      filtered = state.todos;
+    }
 
     const sortByOrder = (a: Todo, b: Todo) => {
+      const aPending = a.id.startsWith("temp-");
+      const bPending = b.id.startsWith("temp-");
+      if (aPending !== bPending) return aPending ? -1 : 1;
       if (a.user_ordered !== b.user_ordered) return a.user_ordered ? -1 : 1;
       if (a.user_ordered) return a.sort_order - b.sort_order;
       return b.created_at.localeCompare(a.created_at);
     };
 
-    const upNextOrder = { waiting: 0, in_progress: 1, next: 2 } as const;
-    const upNext = filtered
-      .filter((t) => t.status === "waiting" || t.status === "in_progress" || t.status === "next")
+    const activeOrder = { in_progress: 0, waiting: 1 } as const;
+    const active = filtered
+      .filter((t) => t.status === "in_progress" || t.status === "waiting")
       .sort((a, b) => {
-        const oa = upNextOrder[a.status as keyof typeof upNextOrder] ?? 2;
-        const ob = upNextOrder[b.status as keyof typeof upNextOrder] ?? 2;
+        const oa = activeOrder[a.status as keyof typeof activeOrder] ?? 2;
+        const ob = activeOrder[b.status as keyof typeof activeOrder] ?? 2;
         if (oa !== ob) return oa - ob;
         return sortByOrder(a, b);
       });
+
+    const upNext = filtered
+      .filter((t) => t.status === "next")
+      .sort(sortByOrder);
 
     const backlogOrder = { consider: 0, stale: 1, rejected: 2 } as const;
     const backlog = filtered
@@ -82,7 +95,7 @@ export function useKeyboardShortcuts({
       .filter((t) => t.status === "completed")
       .sort((a, b) => (b.completed_at ?? "").localeCompare(a.completed_at ?? ""));
 
-    return [...upNext, ...backlog, ...done];
+    return [...active, ...upNext, ...backlog, ...done];
   }, [state, view, selectedProject]);
 
   // Global keyboard shortcut handler

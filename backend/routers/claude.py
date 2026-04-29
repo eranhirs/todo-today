@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from ..event_bus import EventType, bus
 from ..session_discovery import list_all_sessions
-from ..hook_state import get_actionable_sessions, load_event_log
+from ..hook_state import delete_hook_state, get_actionable_sessions, load_event_log
 from ..models import AnalysisEntry, Metadata, Settings, SettingsUpdate
 from ..scheduler import queue_hook_analysis, set_interval, trigger_analysis
 from ..storage import StorageContext
@@ -245,6 +245,25 @@ async def hooks_events() -> dict:
             exclude = set(ctx.metadata.analysis_session_ids)
         return get_actionable_sessions(exclude_session_ids=exclude)
     return await run_in_thread(_do)
+
+
+class HookEventDismissRequest(BaseModel):
+    session_key: str
+
+
+@router.post("/hooks/events/dismiss")
+async def hooks_events_dismiss(body: HookEventDismissRequest) -> dict:
+    """Remove a session entry from hook_states.json.
+
+    Lets users clear orphaned waiting states from CLI sessions not tracked by
+    any todo, which would otherwise re-notify until the 24h auto-expire kicks in.
+    Session keys contain a slash (`{project_dir}/{session_id}`), so the key is
+    passed in the body rather than the path.
+    """
+    removed = await run_in_thread(delete_hook_state, body.session_key)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Session key not found")
+    return {"status": "ok", "session_key": body.session_key}
 
 
 @router.get("/hooks/log")

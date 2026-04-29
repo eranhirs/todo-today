@@ -78,6 +78,11 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "Workaround",
         "A workaround signals the root cause wasn't addressed.",
     ),
+    (
+        re.compile(r"\bbypass(?:es|ed|ing)?\b", re.IGNORECASE),
+        "Bypass",
+        "Bypassing something signals the underlying issue wasn't addressed.",
+    ),
     # ── Deflection: avoiding the task ────────────────────────────
     (
         re.compile(r"\bpre-?existing (?:issue|problem|bug|error|failure)", re.IGNORECASE),
@@ -186,8 +191,12 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "Model is calling your attention to something — read it.",
     ),
     # ── Surprise: unexpected outcome ─────────────────────────────
+    # Requires: letter to start, 14+ middle chars, letter immediately before
+    # `!`, and a sentence-end boundary after `!` (whitespace, end-of-string,
+    # or closing quote/paren/bracket). Excludes code patterns like
+    # `array[i]!`, `obj!.foo()`, `!important`.
     (
-        re.compile(r"[A-Za-z][^.!?\n]{15,}!"),
+        re.compile(r"[A-Za-z][^.!?\n]{14,}[A-Za-z]!(?=[\s)\"\]]|$)"),
         "Exclamation!",
         "Sentence ends with '!' — Claude sounds surprised. Check what happened.",
     ),
@@ -220,11 +229,16 @@ class RedFlag:
         }
 
 
+_TOOL_SUMMARY_RE = re.compile(r"^\[[A-Z][A-Za-z0-9]*(?:\s*:|\s*\])")
+
+
 def _is_prose_line(line: str) -> bool:
     """Return True if *line* looks like natural prose rather than structured content.
 
-    Rejects table rows, markdown headers, code-fence markers, and lines that
-    are too short to be meaningful prose (likely labels or list-item headings).
+    Rejects table rows, markdown headers, code-fence markers, tool-use
+    summaries (``$ command`` or ``[ToolName: ...]`` from
+    ``extract_assistant_text``), and lines that are too short to be
+    meaningful prose (likely labels or list-item headings).
     """
     stripped = line.strip()
     if not stripped:
@@ -241,6 +255,12 @@ def _is_prose_line(line: str) -> bool:
     # Markdown header — typically a label, not prose justification
     if stripped.startswith("#"):
         return False
+    # Bash tool-use summary: "$ <command>"
+    if stripped.startswith("$ "):
+        return False
+    # Other tool-use summaries: "[Read: ...]", "[Edit: ...]", "[Bash]", etc.
+    if _TOOL_SUMMARY_RE.match(stripped):
+        return False
     # Very short lines are usually labels, list headings, or column values
     # Require at least 40 chars — enough for a short sentence with context
     if len(stripped) < 40:
@@ -251,10 +271,10 @@ def _is_prose_line(line: str) -> bool:
 def _extract_prose(output: str) -> str:
     """Return only the prose portions of *output*, filtering out structured content.
 
-    Strips fenced code blocks entirely, then filters remaining lines through
-    ``_is_prose_line``.  Preserves original character offsets by replacing
-    rejected content with spaces (so excerpt extraction still works on the
-    original string).
+    Strips fenced code blocks and inline code spans, then filters remaining
+    lines through ``_is_prose_line``.  Preserves original character offsets
+    by replacing rejected content with spaces (so excerpt extraction still
+    works on the original string).
     """
     # First pass: blank out fenced code blocks (``` ... ```)
     result = list(output)
@@ -262,7 +282,14 @@ def _extract_prose(output: str) -> str:
         for i in range(m.start(), m.end()):
             result[i] = " "
 
-    # Second pass: blank out non-prose lines
+    # Second pass: blank out inline code spans (`...`) on the partially-blanked
+    # text so we don't match backticks already inside a fenced block.
+    partial = "".join(result)
+    for m in re.finditer(r"`[^`\n]+`", partial):
+        for i in range(m.start(), m.end()):
+            result[i] = " "
+
+    # Third pass: blank out non-prose lines
     pos = 0
     for line in output.splitlines(keepends=True):
         line_end = pos + len(line)

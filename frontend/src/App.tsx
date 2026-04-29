@@ -17,6 +17,7 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { AppProvider, type AppContextValue } from "./contexts/AppContext";
 import { useClickOutside } from "./hooks/useClickOutside";
 import { isStaticDemo } from "./api";
+import { PINNED_VIEW_ID } from "./types";
 import "./App.css";
 
 function App() {
@@ -74,7 +75,19 @@ function App() {
     optimistic,
   });
 
-  const [pendingScrollTodoId, setPendingScrollTodoId] = useState<string | null>(null);
+  // `focus=<id>` URL param (set when a parent jump opens a new tab with cleared
+  // filters) tells us to scroll to that todo on initial load. We strip it after
+  // reading so a refresh doesn't re-trigger the scroll.
+  const [pendingScrollTodoId, setPendingScrollTodoId] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search);
+    const focus = params.get("focus");
+    if (focus) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("focus");
+      window.history.replaceState({}, "", url.toString());
+    }
+    return focus;
+  });
 
   const handleNavigateToTodo = useCallback((todoId: string, projectId: string) => {
     selectProject(projectId);
@@ -99,6 +112,43 @@ function App() {
     optimistic,
     isOffline,
   }), [addToast, refresh, optimisticUpdate, optimistic, isOffline]);
+
+  const inPinnedView = selectedProject === PINNED_VIEW_ID;
+
+  const pinnedIds = useMemo(() => {
+    if (!state) return new Set<string>();
+    return new Set(state.projects.filter((p) => p.pinned).map((p) => p.id));
+  }, [state]);
+
+  // In pinned view we treat the list as "all projects of pinned only" — children
+  // see selectedProjectId=null and the todos list pre-filtered to pinned projects.
+  const effectiveSelectedProjectId = inPinnedView ? null : selectedProject;
+  const viewTodos = useMemo(() => {
+    if (!state) return [];
+    if (!inPinnedView) return state.todos;
+    return state.todos.filter((t) => pinnedIds.has(t.project_id));
+  }, [state, inPinnedView, pinnedIds]);
+  const pinnedCompletedTotal = useMemo(() => {
+    if (!state || !inPinnedView) return 0;
+    let total = 0;
+    for (const id of pinnedIds) total += state.completed_by_project?.[id] ?? 0;
+    return total;
+  }, [state, inPinnedView, pinnedIds]);
+  const pinnedUnreadCounts = useMemo(() => {
+    if (!state) return {};
+    if (!inPinnedView) return state.unread_counts ?? {};
+    const counts: Record<string, number> = {};
+    let total = 0;
+    for (const [pid, n] of Object.entries(state.unread_counts ?? {})) {
+      if (pid === "_total") continue;
+      if (pinnedIds.has(pid)) {
+        counts[pid] = n;
+        total += n;
+      }
+    }
+    counts["_total"] = total;
+    return counts;
+  }, [state, inPinnedView, pinnedIds]);
 
   if (!state) return <div className="loading">Loading...</div>;
 
@@ -128,6 +178,9 @@ function App() {
               <span className="toast-text">{t.text}</span>
               {t.onUndo && (
                 <button className="toast-undo" onClick={() => { t.onUndo!(); dismissToast(t.id); }}>Undo</button>
+              )}
+              {t.action && (
+                <button className="toast-action" onClick={() => { t.action!.handler(); dismissToast(t.id); }}>{t.action.label}</button>
               )}
               <button className="toast-dismiss" onClick={() => dismissToast(t.id)}>&times;</button>
             </div>
@@ -166,9 +219,9 @@ function App() {
         />
         <UpdateHistory history={state.metadata.history} />
         <AutopilotHistory
-          todos={state.todos}
+          todos={viewTodos}
           projects={state.projects}
-          selectedProjectId={selectedProject}
+          selectedProjectId={effectiveSelectedProjectId}
         />
         <div className="notif-log-section">
           <button className="btn-link notif-log-toggle" onClick={() => setShowNotifLog((v) => !v)}>
@@ -221,9 +274,11 @@ function App() {
       <main className="main">
         {(() => {
           const allInsights = state.metadata.insights;
-          const filteredInsights = selectedProject
-            ? allInsights.filter((i) => i.project_id === selectedProject || i.project_id === "")
-            : allInsights;
+          const filteredInsights = inPinnedView
+            ? allInsights.filter((i) => pinnedIds.has(i.project_id) || i.project_id === "")
+            : selectedProject
+              ? allInsights.filter((i) => i.project_id === selectedProject || i.project_id === "")
+              : allInsights;
           const activeInsights = filteredInsights.filter((i) => !i.dismissed);
           const activeCount = activeInsights.length;
           return (
@@ -285,24 +340,26 @@ function App() {
           />
         ) : view === "skills" ? (
           <SkillList
-            todos={state.todos}
+            todos={viewTodos}
             projects={state.projects}
-            selectedProjectId={selectedProject}
+            selectedProjectId={effectiveSelectedProjectId}
           />
         ) : (
           <TodoList
-            todos={state.todos}
+            todos={viewTodos}
             projects={state.projects}
-            selectedProjectId={selectedProject}
+            selectedProjectId={effectiveSelectedProjectId}
+            viewLabel={inPinnedView ? "All Pinned Projects" : null}
+            projectsForAdd={inPinnedView ? state.projects.filter((p) => p.pinned) : state.projects}
             projectSummaries={state.metadata.project_summaries}
             focusedTodoId={focusedTodoId}
             editingTodoId={editingTodoId}
             addInputRef={addInputRef}
-            completedTotal={selectedProject ? (state.completed_by_project?.[selectedProject] ?? 0) : state.completed_total}
-            hasMoreCompleted={selectedProject ? ((state.completed_by_project?.[selectedProject] ?? 0) > state.todos.filter(t => t.project_id === selectedProject && t.status === "completed").length) : state.has_more_completed}
+            completedTotal={inPinnedView ? pinnedCompletedTotal : (selectedProject ? (state.completed_by_project?.[selectedProject] ?? 0) : state.completed_total)}
+            hasMoreCompleted={inPinnedView ? (pinnedCompletedTotal > viewTodos.filter(t => t.status === "completed").length) : (selectedProject ? ((state.completed_by_project?.[selectedProject] ?? 0) > state.todos.filter(t => t.project_id === selectedProject && t.status === "completed").length) : state.has_more_completed)}
             onLoadMoreCompleted={loadMoreCompleted}
             loadingMoreCompleted={loadingMore}
-            unreadCounts={state.unread_counts ?? {}}
+            unreadCounts={pinnedUnreadCounts}
             globalRunModel={state.settings.run_model}
             sessionAutopilot={state.session_autopilot ?? {}}
             analysisHistory={state.metadata.history}

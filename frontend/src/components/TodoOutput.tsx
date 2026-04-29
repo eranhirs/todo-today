@@ -168,31 +168,49 @@ function renderBtwOutput(text: string) {
 
 type OutputTab = "run" | "btw";
 
-// Module-level draft storage: persists follow-up/btw text per todo across tab switches
-const followupDrafts = new Map<string, string>();
-const btwDrafts = new Map<string, string>();
+// Drafts persist in localStorage so an in-progress follow-up/btw message survives
+// status transitions (which can unmount/remount the TodoItem) and page reloads.
+const FOLLOWUP_DRAFT_PREFIX = "claude-todos:followup-draft:";
+const BTW_DRAFT_PREFIX = "claude-todos:btw-draft:";
+
+function readDraft(prefix: string, todoId: string): string {
+  try {
+    return localStorage.getItem(prefix + todoId) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeDraft(prefix: string, todoId: string, text: string): void {
+  try {
+    if (text) localStorage.setItem(prefix + todoId, text);
+    else localStorage.removeItem(prefix + todoId);
+  } catch {
+    // ignore quota / unavailable storage
+  }
+}
 
 export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: Props) {
   const { addToast, onRefresh } = useAppContext();
   const commands = allCommands ?? [];
-  const [followupText, setFollowupText] = useState(() => followupDrafts.get(todo.id) ?? "");
-  const [btwText, setBtwText] = useState(() => btwDrafts.get(todo.id) ?? "");
+  const [followupText, setFollowupText] = useState(() => readDraft(FOLLOWUP_DRAFT_PREFIX, todo.id));
+  const [btwText, setBtwText] = useState(() => readDraft(BTW_DRAFT_PREFIX, todo.id));
 
-  // Keep refs for draft save on unmount
+  // Keep refs for synchronous reads in transfer effect
   const followupTextRef = useRef(followupText);
   followupTextRef.current = followupText;
   const btwTextRef = useRef(btwText);
   btwTextRef.current = btwText;
 
-  // Save drafts on unmount
+  // Persist drafts on every change so they survive remounts (e.g. analyzer
+  // moving the todo from "waiting" to "completed" causes the TodoItem to
+  // unmount in the active section and remount in the done-group).
   useEffect(() => {
-    return () => {
-      if (followupTextRef.current) followupDrafts.set(todo.id, followupTextRef.current);
-      else followupDrafts.delete(todo.id);
-      if (btwTextRef.current) btwDrafts.set(todo.id, btwTextRef.current);
-      else btwDrafts.delete(todo.id);
-    };
-  }, [todo.id]);
+    writeDraft(FOLLOWUP_DRAFT_PREFIX, todo.id, followupText);
+  }, [followupText, todo.id]);
+  useEffect(() => {
+    writeDraft(BTW_DRAFT_PREFIX, todo.id, btwText);
+  }, [btwText, todo.id]);
   const [activeTab, setActiveTab] = useState<OutputTab>("run");
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -251,7 +269,6 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
     if (prev === "running" && prev !== todo.run_status && btwTextRef.current) {
       setFollowupText(btwTextRef.current);
       setBtwText("");
-      btwDrafts.delete(todo.id);
     }
   }, [todo.run_status, todo.id]);
 
@@ -498,7 +515,6 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
       const imageFilenames = pendingImages.map((img) => img.filename);
       const result = await api.followupTodo(todo.id, msg, imageFilenames, planOnly);
       setFollowupText("");
-      followupDrafts.delete(todo.id);
       // Revoke preview URLs
       pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       setPendingImages([]);
@@ -530,7 +546,6 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
       try {
         await api.btwTodo(todo.id, msg);
         setBtwText("");
-        btwDrafts.delete(todo.id);
         addToast("/btw started — running in parallel", "info");
         onRefresh();
       } catch (err) {
@@ -543,7 +558,6 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
         const imageFilenames = pendingImages.map((img) => img.filename);
         const result = await api.followupTodo(todo.id, raw, imageFilenames, planOnly);
         setBtwText("");
-        btwDrafts.delete(todo.id);
         // Revoke preview URLs
         pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
         setPendingImages([]);
@@ -907,6 +921,48 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
           </div>
         );
       })()}
+
+      {/* Analyzer-suggested follow-up — prefill or auto-send via autopilot */}
+      {showFollowup && todo.suggested_followup && !todo.pending_followup && (
+        <div className={`suggested-followup-banner${todo.autopilot ? " autopilot-active" : ""}`} draggable={false} onMouseDown={(e) => e.stopPropagation()}>
+          <span className="suggested-followup-label">
+            {todo.autopilot
+              ? (todo.suggested_followup_sent ? "🚁 Autopilot sent:" : "🚁 Autopilot will send:")
+              : "💡 Analyzer suggests:"}
+          </span>
+          <span className="suggested-followup-text">{todo.suggested_followup}</span>
+          <div className="suggested-followup-actions">
+            <button
+              className="btn-link suggested-followup-use"
+              onClick={() => setFollowupText(todo.suggested_followup!)}
+              title="Copy the suggestion into the follow-up input so you can edit before sending"
+            >Use</button>
+            <button
+              className="btn-link suggested-followup-send"
+              onClick={() => {
+                const msg = todo.suggested_followup!;
+                setFollowupText("");
+                api.followupTodo(todo.id, msg, []).then(() => {
+                  addToast("Follow-up sent", "success");
+                  api.dismissSuggestedFollowup(todo.id).catch(() => {});
+                  onRefresh();
+                }).catch(() => addToast("Failed to send follow-up", "error"));
+              }}
+              title="Send the suggestion as a follow-up immediately"
+            >Send</button>
+            <button
+              className="btn-link suggested-followup-dismiss"
+              onClick={async () => {
+                try {
+                  await api.dismissSuggestedFollowup(todo.id);
+                  onRefresh();
+                } catch { /* silent */ }
+              }}
+              title="Dismiss this suggestion"
+            >Dismiss</button>
+          </div>
+        </div>
+      )}
 
       {/* Output limit warning — shown near follow-up bar */}
       {showFollowup && (isNearLimit || isTruncated) && (

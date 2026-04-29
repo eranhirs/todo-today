@@ -42,14 +42,40 @@ def extract_assistant_text(line_json: dict) -> Optional[str]:
     return "\n".join(parts) if parts else None
 
 
+def _is_plan_path(file_path: str, source_path: str = "") -> bool:
+    """Check whether a Write file_path targets the project's plans/ directory.
+
+    Matches both absolute paths (``{source_path}/plans/...``) and relative
+    paths (``plans/...`` or ``./plans/...``). When *source_path* is empty we
+    accept any path containing ``/plans/`` as a best-effort fallback.
+    """
+    if not file_path:
+        return False
+    if source_path:
+        prefix = str(Path(source_path).resolve()) + "/plans/"
+        try:
+            resolved = str(Path(file_path).resolve())
+        except OSError:
+            resolved = file_path
+        if resolved.startswith(prefix):
+            return True
+    # Relative path forms
+    if file_path.startswith("plans/") or file_path.startswith("./plans/"):
+        return True
+    # Best-effort fallback when source_path missing
+    if not source_path and "/plans/" in file_path:
+        return True
+    return False
+
+
 def detect_plan_file(
     stream_objects: list[dict],
     source_path: str = "",
     run_started_at: str | None = None,
 ) -> Optional[str]:
-    """Scan stream objects for a Write tool_use targeting .claude/plans/.
+    """Scan stream objects for a Write tool_use targeting plans/.
 
-    Falls back to scanning the filesystem at ``{source_path}/.claude/plans/``
+    Falls back to scanning the filesystem at ``{source_path}/plans/``
     for files modified after *run_started_at* when the stream-object scan
     returns nothing (e.g. reconnect picked up only a tail of output).
 
@@ -63,12 +89,12 @@ def detect_plan_file(
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 if block.get("name") == "Write":
                     file_path = block.get("input", {}).get("file_path", "")
-                    if ".claude/plans/" in file_path:
+                    if _is_plan_path(file_path, source_path):
                         return file_path
 
     # Fallback: filesystem scan
     if source_path and run_started_at:
-        plans_dir = Path(source_path) / ".claude" / "plans"
+        plans_dir = Path(source_path) / "plans"
         if plans_dir.is_dir():
             try:
                 cutoff = datetime.fromisoformat(run_started_at)

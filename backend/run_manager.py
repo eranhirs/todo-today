@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -330,7 +331,7 @@ def _invoke_claude(
     """
     disallowed = ["AskUserQuestion"]
     if plan_only:
-        disallowed.extend(["Edit", "Bash", "NotebookEdit"])
+        disallowed.extend(["Bash", "NotebookEdit"])
     cmd = [
         "claude", "-p", "--output-format", "stream-json", "--verbose",
         "--dangerously-skip-permissions",
@@ -338,19 +339,29 @@ def _invoke_claude(
         "--model", model,
     ]
     if plan_only:
-        # Allow Write only for .claude/plans/ paths via a PreToolUse hook.
-        # Block other Writes so Claude can still write its plan file but
-        # cannot implement code.
+        # Restrict Write/Edit to the project's plans/ directory via a PreToolUse
+        # hook so Claude can save and refine its plan file but cannot use
+        # Write/Edit to implement code. Settings are written to a temp file
+        # because --settings inline-JSON does not consistently load hooks.
         hook_script = Path(__file__).resolve().parent.parent / "hooks" / "plan-mode-write-filter.py"
-        settings_json = json.dumps({
+        settings = {
             "hooks": {
                 "PreToolUse": [{
-                    "matcher": "Write",
-                    "hooks": [{"type": "command", "command": f"python3 {hook_script}"}],
+                    "matcher": "Write|Edit",
+                    "hooks": [{
+                        "type": "command",
+                        "command": f"python3 {hook_script}",
+                        "timeout": 5,
+                    }],
                 }]
             }
-        })
-        cmd.extend(["--settings", settings_json])
+        }
+        settings_file = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix=f"plan-settings-{todo_id}-", delete=False
+        )
+        json.dump(settings, settings_file)
+        settings_file.close()
+        cmd.extend(["--settings", settings_file.name])
     if resume:
         cmd.extend(["--resume", session_id])
     else:
@@ -463,6 +474,71 @@ def _tail_output_file(
 # ── Run orchestration ────────────────────────────────────────────
 
 
+def start_followup(todo_id: str, message: str) -> str | None:
+    """Send a follow-up message to a Claude session programmatically.
+
+    Used by the autopilot "keep session alive" path after analysis detects
+    more work to do. Mirrors the core logic of the /followup endpoint but
+    only handles the common case (run is done, no other todos are running
+    in the project) — returns an error string otherwise so the caller can
+    log/skip.
+
+    Returns None on success, or an error string.
+    """
+    if process_manager.is_todo_running(todo_id):
+        return "already running"
+
+    session_id: str | None = None
+    source_path: str | None = None
+    project_id: str | None = None
+    run_model: str = "opus"
+    plan_only = False
+    with StorageContext() as ctx:
+        todo = ctx.get_todo(todo_id)
+        if todo is None:
+            return "todo not found"
+        if todo.manual:
+            return "manual task"
+        if not todo.session_id:
+            return "no session"
+        if todo.status in ("completed", "rejected", "stale"):
+            return "done task"
+        if todo.run_status == "running" or todo.run_status == "queued":
+            return "busy"
+
+        project = ctx.get_project(todo.project_id)
+        source_path = project.source_path if project else None
+        if not source_path:
+            return "no source_path"
+        project_id = todo.project_id
+
+        # Skip if another todo in the project is running — we don't auto-queue
+        # autopilot followups; the next analysis cycle will pick it up.
+        for t in ctx.store.todos:
+            if t.project_id == project_id and t.id != todo_id and not t.plan_only and (is_todo_running(t.id) or t.run_status == "running"):
+                return "project busy"
+
+        session_id = todo.session_id
+        plan_only = todo.plan_only
+        run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
+
+        # Move the todo back to active state and append the follow-up marker.
+        todo.completed_at = None
+        todo.status = "in_progress"
+        todo.run_status = "running"
+        todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up (autopilot) ---\n**You:** {message}\n<<END_USER_MSG>>\n"
+        todo.suggested_followup_sent = True
+        # Clear the suggestion — a fresh one may be generated after this run
+        todo.suggested_followup = None
+        todo.suggested_followup_at = None
+
+    process_manager.spawn_thread(
+        todo_id, _followup_claude_for_todo,
+        (todo_id, message, session_id, source_path, run_model, project_id, None, plan_only),
+    )
+    return None
+
+
 def _start_pending_followup(todo_id: str, source_path: str, model: str, project_id: str) -> bool:
     """Check for a pending follow-up on a todo and start it if present.
 
@@ -570,8 +646,9 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                     f"and create a detailed step-by-step implementation plan. "
                     f"Do NOT write any code or make any changes. "
                     f"You MAY use the Write tool to save the plan as a markdown file under "
-                    f".claude/plans/ — but Write is restricted to that directory and Edit/Bash "
-                    f"are disabled, so do not try to implement the plan. Only plan: {resolved_text}"
+                    f"the project's plans/ directory (relative to the project root). "
+                    f"Write is restricted to that directory and Edit/Bash are disabled, so "
+                    f"do not try to implement the plan. Only plan: {resolved_text}"
                 )
             else:
                 prompt = (
@@ -1045,7 +1122,7 @@ def reconnect_todo_run(todo_id: str, pid: int, output_file_str: str) -> None:
             returncode = process_manager.reap_process(pid)
 
             # Re-parse the FULL output file for stream objects so that plan
-            # detection (EnterPlanMode, ExitPlanMode, Write to .claude/plans/)
+            # detection (EnterPlanMode, ExitPlanMode, Write to plans/)
             # works even when the server restarted mid-run and _tail_output_file
             # only captured objects from the restart point onward.
             _, _, all_stream_objects = parse_output_file(str(output_file))
@@ -1362,6 +1439,86 @@ def autopilot_continue(project_id: str) -> None:
             ctx.metadata.session_autopilot[ap_session] = remaining - 1
         else:
             ctx.metadata.session_autopilot.pop(ap_session, None)
+
+
+def run_queued_now(todo_id: str) -> str | None:
+    """Bump a queued todo to run immediately, alongside the currently running todo.
+
+    Skips the project's single-flight check and starts the queued todo
+    concurrently with whatever is already running. The user explicitly opts
+    into the conflict risk by clicking "run now". Returns None on success or
+    an error string.
+    """
+    if process_manager.is_todo_running(todo_id):
+        return "already running"
+
+    todo_text = ""
+    source_path = ""
+    proj_id = ""
+    run_model = "opus"
+    is_plan_only = False
+    todo_images: list[str] | None = None
+    followup_msg: str | None = None
+    followup_session: str | None = None
+    followup_images: list[str] | None = None
+    followup_plan_only = False
+
+    with StorageContext() as ctx:
+        todo = ctx.get_todo(todo_id)
+        if todo is None:
+            return "todo not found"
+        if todo.run_status != "queued":
+            return "not queued"
+
+        project = ctx.get_project(todo.project_id)
+        source_path = project.source_path if project else ""
+        if not source_path:
+            return "no source_path"
+
+        proj_id = todo.project_id
+
+        # Promote the queued todo to running — without touching anything else
+        # in the project. The currently running todo (if any) keeps going.
+        todo.status = "in_progress"
+        todo.run_status = "running"
+        todo.queued_at = None
+        if todo.run_started_at is None:
+            todo.run_started_at = _now()
+        todo_text = todo.text
+        run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
+        is_plan_only = todo.plan_only
+        todo_images = [img.filename for img in todo.images] if todo.images else None
+
+        # If this was a queued follow-up, surface the message for the resume call
+        if todo.pending_followup and todo.session_id:
+            followup_msg = todo.pending_followup
+            followup_session = todo.session_id
+            followup_images = list(todo.pending_followup_images)
+            followup_plan_only = todo.pending_followup_plan_only
+            todo.pending_followup = None
+            todo.pending_followup_images = []
+            todo.pending_followup_plan_only = False
+        else:
+            if todo.pending_followup:
+                log.warning("run_queued_now: clearing orphaned pending_followup on todo %s", todo.id)
+                todo.pending_followup = None
+                todo.pending_followup_images = []
+                todo.pending_followup_plan_only = False
+            todo.run_output = None
+
+    bus.emit_event_sync(EventType.QUEUE_DRAIN_STARTED, queue_type="project_run", project_id=proj_id, todo_id=todo_id)
+    if followup_session and followup_msg:
+        process_manager.spawn_thread(
+            todo_id, _followup_claude_for_todo,
+            (todo_id, followup_msg, followup_session, source_path, run_model, proj_id, followup_images, followup_plan_only),
+        )
+    else:
+        process_manager.spawn_thread(
+            todo_id, _run_claude_for_todo,
+            (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only, todo_images),
+        )
+    log.info("run_queued_now: bumped todo %s to run concurrently in project %s", todo_id, proj_id)
+    return None
 
 
 def dequeue_todo_run(todo_id: str) -> str | None:

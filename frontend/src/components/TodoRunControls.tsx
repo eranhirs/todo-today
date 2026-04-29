@@ -50,6 +50,20 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
     }
   };
 
+  const runNow = async () => {
+    if (disabled) {
+      addToast("You're offline — running tasks isn't available right now", "warning");
+      return;
+    }
+    try {
+      await api.runTodoNow(todo.id);
+      addToast(`Started "${todo.text}" — running alongside the current task`, "info");
+      onRefresh();
+    } catch (err) {
+      addToast(apiErrorMessage(err), "error");
+    }
+  };
+
   const stopRun = async () => {
     if (disabled) {
       addToast("You're offline — stopping tasks isn't available right now", "warning");
@@ -76,11 +90,19 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
 
   if (isQueued) {
     return (
-      <button
-        className="btn-icon btn-dequeue"
-        onClick={dequeue}
-        title="Remove from queue"
-      >✗</button>
+      <>
+        <button
+          className="btn-icon btn-run-now"
+          onClick={runNow}
+          disabled={disabled}
+          title="Run now — start this concurrently with the current task (may conflict on file edits)"
+        >⏩</button>
+        <button
+          className="btn-icon btn-dequeue"
+          onClick={dequeue}
+          title="Remove from queue"
+        >✗</button>
+      </>
     );
   }
 

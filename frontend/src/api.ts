@@ -122,7 +122,7 @@ export const api = {
   deleteImage: (filename: string) =>
     request<void>(`/todos/images/${filename}`, { method: "DELETE" }),
 
-  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean; is_read?: boolean }) =>
+  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean; is_read?: boolean; parent_todo_id?: string; autopilot?: boolean }) =>
     request<Todo>(`/todos/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
@@ -160,6 +160,9 @@ export const api = {
   dequeueTodo: (id: string) =>
     request<{ status: string }>(`/todos/${id}/dequeue`, { method: "POST" }),
 
+  runTodoNow: (id: string) =>
+    request<{ status: string }>(`/todos/${id}/run-now`, { method: "POST" }),
+
   followupTodo: (id: string, message: string, images: string[] = [], planOnly?: boolean) =>
     request<{ status: string }>(`/todos/${id}/followup`, {
       method: "POST",
@@ -186,6 +189,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ quota }),
     }),
+
+  setAutopilot: (id: string, enabled: boolean) =>
+    request<{ status: string; autopilot: boolean }>(`/todos/${id}/autopilot`, {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  dismissSuggestedFollowup: (id: string) =>
+    request<{ status: string }>(`/todos/${id}/suggested-followup`, { method: "DELETE" }),
 
   scheduleTodo: (id: string, runAfter: string | null) =>
     request<{ status: string; todo_id: string; run_after: string | null }>(`/todos/${id}/schedule`, {
@@ -233,6 +245,12 @@ export const api = {
   getHookEvents: () =>
     request<Record<string, { state: string; tool_name?: string; detail?: string; project_name?: string; timestamp: string; hook_event: string }>>("/claude/hooks/events"),
 
+  dismissHookEvent: (sessionKey: string) =>
+    request<{ status: string; session_key: string }>("/claude/hooks/events/dismiss", {
+      method: "POST",
+      body: JSON.stringify({ session_key: sessionKey }),
+    }),
+
   getHookLog: (limit = 100) =>
     request<{ ts: string; session_key: string; hook_event: string; state: string | null; project_name: string | null; detail: string | null }[]>(`/claude/hooks/log?limit=${limit}`),
 
@@ -261,7 +279,7 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
 
-  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number; scheduled_auto_run_quota?: number; autopilot_starts_at?: string; clear_scheduled_autopilot?: boolean; todo_quota?: number; run_model?: string; clear_run_model?: boolean }) =>
+  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number; scheduled_auto_run_quota?: number; autopilot_starts_at?: string; clear_scheduled_autopilot?: boolean; todo_quota?: number; run_model?: string; clear_run_model?: boolean; pinned?: boolean }) =>
     request<Project>(`/projects/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),

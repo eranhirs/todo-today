@@ -1,5 +1,8 @@
 export type TodoStatus = "next" | "in_progress" | "completed" | "consider" | "waiting" | "stale" | "rejected";
 
+/** Sentinel selectedProject value for the "All Pinned Projects" view. */
+export const PINNED_VIEW_ID = "__pinned__";
+
 /** Single source of truth for whether a todo counts as "unread". */
 export const isUnread = (t: Pick<Todo, "completed_by_run" | "is_read">): boolean =>
   t.completed_by_run && !t.is_read;
@@ -13,6 +16,7 @@ export interface Project {
   autopilot_starts_at: string | null;
   todo_quota: number;
   run_model: string | null;  // null = use global setting
+  pinned: boolean;
   created_at: string;
 }
 
@@ -26,6 +30,7 @@ export interface Todo {
   emoji: string | null;
   session_id: string | null;
   source_session_id: string | null;
+  parent_todo_id: string | null;  // Manually-set parent; takes precedence over source_session_id for parent resolution
   created_at: string;
   completed_at: string | null;
   rejected_at: string | null;
@@ -57,6 +62,10 @@ export interface Todo {
   run_finished_at: string | null;  // ISO-8601: when the last run/follow-up finished
   run_after: string | null;  // ISO-8601: skip autopilot until this time
   pending_session_autopilot: number;  // Quota to activate as session_autopilot once todo runs
+  autopilot: boolean;  // When True, analyzer-suggested follow-ups are auto-sent
+  suggested_followup: string | null;  // Analyzer's next-message suggestion
+  suggested_followup_at: string | null;  // ISO-8601: when suggestion was generated
+  suggested_followup_sent: boolean;  // Whether the suggestion was auto-sent
 }
 
 export interface Insight {

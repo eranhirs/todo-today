@@ -202,3 +202,4 @@ See [hooks.md](hooks.md) for full documentation, example payloads, and testing.
 | `/api/claude/hooks/install` | POST | Install hook entries into `~/.claude/settings.json` |
 | `/api/claude/hooks/uninstall` | POST | Remove hook entries |
 | `/api/claude/hooks/events` | GET | Sessions in notifiable states (polled for real-time notifications) |
+| `/api/claude/hooks/events/dismiss` | POST | Remove an orphaned hook state entry (powers the **Stop watching** toast action) |

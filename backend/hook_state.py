@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Literal, Optional, Set, TypedDict
@@ -116,6 +118,44 @@ def _is_waiting_state_stale(key: str, entry: StateEntry) -> bool:
         return mtime > hook_ts + 2  # 2s grace for filesystem timestamp granularity
     except OSError:
         return False
+
+
+def delete_hook_state(session_key: str) -> bool:
+    """Remove a session entry from hook_states.json under the same flock the
+    hook script uses. Returns True if the key existed and was removed.
+
+    Used to dismiss orphaned waiting states (CLI sessions not tied to any todo)
+    that would otherwise spam notifications until the 24h auto-expire kicks in.
+    """
+    if not _STATE_FILE.exists():
+        return False
+    lock_path = str(_STATE_FILE) + ".lock"
+    _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        try:
+            try:
+                with open(_STATE_FILE) as f:
+                    states = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                return False
+            if not isinstance(states, dict) or session_key not in states:
+                return False
+            del states[session_key]
+            fd, tmp_path = tempfile.mkstemp(dir=str(_STATE_FILE.parent), suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as tmp:
+                    json.dump(states, tmp, indent=2)
+                os.rename(tmp_path, _STATE_FILE)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+            return True
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
 
 
 def get_actionable_sessions(exclude_session_ids: Optional[Set[str]] = None) -> Dict[str, StateEntry]:

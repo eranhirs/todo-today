@@ -27,6 +27,18 @@ PRIORITY_KEYWORDS: dict[str, int] = {
 # Reverse: priority level -> canonical short label
 PRIORITY_LABELS: dict[int, str] = {1: "p1", 2: "p2", 3: "p3", 4: "p4"}
 
+# Special-purpose tags that toggle behavior (not shown as regular tag pills, and
+# do not count against the "unknown tag" filter for Claude-created todos).
+_AUTOPILOT_TAG = "autopilot"
+
+
+def has_autopilot_tag(text: str) -> bool:
+    """Return True if text contains the #autopilot hashtag."""
+    for m in TAG_RE.finditer(text):
+        if m.group(1).lower() == _AUTOPILOT_TAG:
+            return True
+    return False
+
 
 def is_priority_keyword(tag: str) -> bool:
     """Check if a tag name (without #) is a priority keyword."""
@@ -75,7 +87,7 @@ def filter_unknown_tags(text: str, known_tags: set[str]) -> str:
     """Remove tags from text that aren't in the known set. Used for Claude-created todos."""
     def _replace(m: re.Match) -> str:
         tag = m.group(1).lower()
-        if tag in known_tags:
+        if tag in known_tags or tag == _AUTOPILOT_TAG:
             return m.group(0)  # keep it
         return ""  # strip unknown tag
     return TAG_RE.sub(_replace, text).strip()

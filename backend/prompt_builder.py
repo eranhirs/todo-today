@@ -22,6 +22,7 @@ _TODO_FIELDS_TO_STRIP = {
     "btw_output_file", "btw_session_id", "pending_followup", "pending_followup_images",
     "pending_followup_plan_only", "pending_btw", "run_flush_lines", "images",
     "red_flags", "plan_file", "session_last_synced_ts", "run_output_base",
+    "suggested_followup", "suggested_followup_at", "suggested_followup_sent",
 }
 
 
@@ -43,6 +44,7 @@ _STATIC_INSTRUCTIONS = """You analyze Claude Code sessions to update a todo list
 6. `modified_todos`: [{id, text?, status?}]. Use actively — update existing todos rather than creating new ones with different wording.
 7. `dismiss_insight_ids`: IDs of stale insights to dismiss.
 8. `red_flags`: [{todo_id, label, explanation}]. Label = generic anti-pattern name (e.g. "Over-engineering", "Scope creep", "Silent failure"). Only flag genuine problems.
+9. `followups`: [{todo_id, message}]. For each todo whose run has finished (`run_status="done"`) but whose work is **not fully done yet**, suggest a concrete short next message to send Claude to continue. The message should read like a natural follow-up the user would type (e.g. "Now add tests for the new function", "The linter is failing on file X — fix it", "Also handle the edge case where input is empty"). **Only include a followup if there is genuinely more useful work to do** — do NOT suggest nitpicks, do NOT restate what was just done, do NOT invent unrelated work. Omit the todo if the task is complete or the next step is unclear. The app decides whether to auto-send the message based on a per-todo `autopilot` flag — always produce the suggestion regardless; the flag is handled downstream.
 
 ## Rules (ranked by importance)
 

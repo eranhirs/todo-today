@@ -26,11 +26,17 @@ export const NOTIF_ICONS = {
 
 export type ToastType = "info" | "warning" | "success" | "error";
 
+export interface ToastAction {
+  label: string;
+  handler: () => void;
+}
+
 export interface Toast {
   id: string;
   text: string;
   type: ToastType;
   onUndo?: () => void;
+  action?: ToastAction;
 }
 
 export interface NotificationLogEntry {
@@ -85,9 +91,9 @@ export function useNotifications() {
     };
   }, []);
 
-  const addToast = useCallback((text: string, type: ToastType = "info", options?: { onUndo?: () => void; duration?: number }) => {
+  const addToast = useCallback((text: string, type: ToastType = "info", options?: { onUndo?: () => void; action?: ToastAction; duration?: number }) => {
     const id = Math.random().toString(36).slice(2);
-    setToasts((prev) => [...prev, { id, text, type, onUndo: options?.onUndo }]);
+    setToasts((prev) => [...prev, { id, text, type, onUndo: options?.onUndo, action: options?.action }]);
     setNotificationLog((prev) => [
       { id, text, type, timestamp: new Date().toLocaleTimeString() },
       ...prev,
@@ -102,8 +108,8 @@ export function useNotifications() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const notify = useCallback((msg: string, type: ToastType, icon: string) => {
-    addToast(msg, type);
+  const notify = useCallback((msg: string, type: ToastType, icon: string, action?: ToastAction) => {
+    addToast(msg, type, action ? { action } : undefined);
     if ("Notification" in window && Notification.permission === "granted") {
       const n = new Notification("Claude Todos", { body: msg, icon });
       n.onclick = () => { window.focus(); n.close(); };
@@ -149,7 +155,11 @@ export function useNotifications() {
       for (const [key, entry] of Object.entries(events)) {
         next.set(key, entry.state);
 
-        if (silent) continue;
+        // Seed silently on the first poll of a fresh page load — these events
+        // already existed before the user opened the tab, so re-firing them on
+        // every refresh just spams. The toast log still records the prior alert
+        // and the user can resume the session via Claude Code directly.
+        if (silent || isFirstPoll) continue;
 
         const prevState = prev.get(key);
 
@@ -180,7 +190,16 @@ export function useNotifications() {
 
         const icon = entry.state === "waiting_for_tool_approval" ? NOTIF_ICONS.approval
           : NOTIF_ICONS.user_input;
-        notify(msg, type, icon);
+        const action: ToastAction = {
+          label: "Stop watching",
+          handler: () => {
+            // Drop locally first so subsequent polls don't re-fire while the
+            // request is in flight; the backend call is best-effort.
+            knownHookStates.current.delete(key);
+            api.dismissHookEvent(key).catch(() => { /* best-effort */ });
+          },
+        };
+        notify(msg, type, icon, action);
       }
 
       knownHookStates.current = next;
