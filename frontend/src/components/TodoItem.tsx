@@ -527,6 +527,14 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
               <span className={`todo-child-status-label status-${child.status}`}>
                 {child.status.replace("_", " ")}
               </span>
+              {child.status === "completed" && child.plan_only && (
+                <span
+                  className="todo-child-plan-only-badge"
+                  title={child.plan_file
+                    ? `Plan-only todo — plan was generated (${child.plan_file}) but not executed`
+                    : "Plan-only todo — plan was generated but not executed"}
+                >plan ✓ — not executed</span>
+              )}
               {grandchildren.length > 0 && renderChildTree(grandchildren, depth + 1, nextVisited)}
             </li>
           );

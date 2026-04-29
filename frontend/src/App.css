@@ -2977,6 +2977,14 @@ body {
   opacity: 0.7;
   flex-shrink: 0;
 }
+.todo-child-plan-only-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--blue);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+}
 
 /* Referenced-by (backlink) list in expanded metadata */
 .todo-referenced-by-info {
