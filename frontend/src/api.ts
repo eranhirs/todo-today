@@ -69,6 +69,9 @@ export const api = {
   searchTodos: (q: string, projectId?: string): Promise<Todo[]> =>
     request<Todo[]>(`/todos/search?q=${encodeURIComponent(q)}${projectId ? `&project_id=${projectId}` : ""}`),
 
+  getTodo: (id: string): Promise<Todo> =>
+    request<Todo>(`/todos/${encodeURIComponent(id)}`),
+
   createProject: (name: string, source_path = "") =>
     request<Project>("/projects", {
       method: "POST",

@@ -77,7 +77,12 @@ function App() {
 
   // `focus=<id>` URL param (set when a parent jump opens a new tab with cleared
   // filters) tells us to scroll to that todo on initial load. We strip it after
-  // reading so a refresh doesn't re-trigger the scroll.
+  // reading so a refresh doesn't re-trigger the scroll. `openedFromFocus` stays
+  // true for the lifetime of the tab so the pending-scroll fallback can avoid
+  // recursively spawning more tabs from a tab that was itself focus-opened.
+  const [openedFromFocus] = useState<boolean>(() =>
+    new URLSearchParams(window.location.search).has("focus")
+  );
   const [pendingScrollTodoId, setPendingScrollTodoId] = useState<string | null>(() => {
     const params = new URLSearchParams(window.location.search);
     const focus = params.get("focus");
@@ -366,6 +371,7 @@ function App() {
             onNavigateToTodo={handleNavigateToTodo}
             pendingScrollTodoId={pendingScrollTodoId}
             onPendingScrollHandled={handlePendingScrollHandled}
+            openedFromFocus={openedFromFocus}
           />
         )}
       </main>

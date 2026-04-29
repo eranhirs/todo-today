@@ -100,34 +100,69 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
   useEffect(() => { todosRef.current = todos; }, [todos]);
 
   // After project switch, scroll to the pending todo. If it's not in the DOM
-  // after a few rAF retries, the target is hidden — usually by the user's
-  // active filters, sometimes by pagination (completed pages not loaded yet).
-  // We surface a toast with an "Open in new tab" action so the user opts in
-  // explicitly: this avoids popup blockers (synchronous click handler) and
-  // can't infinite-loop. A tab opened with ?focus= sets `openedFromFocus`,
-  // which suppresses the action button so we don't recursively spawn tabs.
+  // after a few rAF retries, the target is hidden — usually by active filters,
+  // sometimes by pagination (completed pages not loaded yet).
+  //
+  // Two recovery paths:
+  // - In a normal tab: surface a toast with an "Open in new tab" action so the
+  //   user opts in explicitly. Click-driven open avoids popup blockers and
+  //   can't infinite-loop.
+  // - In a focus-opened tab (`openedFromFocus`): fetch the todo by id, then
+  //   drive the existing search bar with its text. The backend search scans
+  //   every todo (incl. paginated-away completed) so this surfaces the target
+  //   when nothing else does. We poll for the row to appear post-search, then
+  //   scroll. The action-button fallback is suppressed in this mode so a
+  //   focus-opened tab can't recursively spawn more tabs.
   useEffect(() => {
     if (!pendingScrollTodoId) return;
     const targetId = pendingScrollTodoId;
     let cancelled = false;
     let attempts = 0;
     const maxAttempts = 5;
+    let recoveryStarted = false;
 
-    const tryScroll = () => {
-      if (cancelled) return;
-      const el = document.querySelector(`[data-todo-id="${targetId}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: "smooth", block: "center" });
-        el.classList.remove("todo-highlight-flash");
-        void (el as HTMLElement).offsetWidth;
-        el.classList.add("todo-highlight-flash");
-        setTimeout(() => el.classList.remove("todo-highlight-flash"), 2000);
-        onPendingScrollHandled?.();
-        return;
-      }
-      if (attempts < maxAttempts) {
-        attempts++;
-        requestAnimationFrame(tryScroll);
+    const finish = (el: Element) => {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.remove("todo-highlight-flash");
+      void (el as HTMLElement).offsetWidth;
+      el.classList.add("todo-highlight-flash");
+      setTimeout(() => el.classList.remove("todo-highlight-flash"), 2000);
+      onPendingScrollHandled?.();
+    };
+
+    const pollForElement = () => {
+      let polls = 0;
+      const maxPolls = 25; // ~5s total at 200ms intervals
+      const tick = () => {
+        if (cancelled) return;
+        const el = document.querySelector(`[data-todo-id="${targetId}"]`);
+        if (el) { finish(el); return; }
+        if (polls++ >= maxPolls) {
+          addToast("Couldn't reach this todo", "warning");
+          onPendingScrollHandled?.();
+          return;
+        }
+        setTimeout(tick, 200);
+      };
+      // Initial wait covers search debounce (300ms) + network round trip
+      setTimeout(tick, 500);
+    };
+
+    const startRecovery = () => {
+      if (recoveryStarted) return;
+      recoveryStarted = true;
+      if (openedFromFocus) {
+        // Drive the search bar with the todo's own text so the backend search
+        // surfaces it even if it's paginated away from the loaded list.
+        api.getTodo(targetId).then((todo) => {
+          if (cancelled) return;
+          setSearchQuery(todo.text);
+          pollForElement();
+        }).catch(() => {
+          if (cancelled) return;
+          addToast("Couldn't fetch this todo", "warning");
+          onPendingScrollHandled?.();
+        });
         return;
       }
       const target = todosRef.current.find((t) => t.id === targetId);
@@ -135,22 +170,30 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
         onPendingScrollHandled?.();
         return;
       }
-      if (openedFromFocus) {
-        addToast("Couldn't reach this todo — it may be in completed/archived items not yet loaded", "warning");
-      } else {
-        addToast("Parent is hidden by your current filters", "info", {
-          action: {
-            label: "Open in new tab",
-            handler: () => {
-              const url = new URL(window.location.origin + window.location.pathname);
-              url.searchParams.set("project", target.project_id);
-              url.searchParams.set("focus", targetId);
-              window.open(url.toString(), "_blank", "noopener");
-            },
+      addToast("Parent is hidden by your current filters", "info", {
+        action: {
+          label: "Open in new tab",
+          handler: () => {
+            const url = new URL(window.location.origin + window.location.pathname);
+            url.searchParams.set("project", target.project_id);
+            url.searchParams.set("focus", targetId);
+            window.open(url.toString(), "_blank", "noopener");
           },
-        });
-      }
+        },
+      });
       onPendingScrollHandled?.();
+    };
+
+    const tryScroll = () => {
+      if (cancelled) return;
+      const el = document.querySelector(`[data-todo-id="${targetId}"]`);
+      if (el) { finish(el); return; }
+      if (attempts < maxAttempts) {
+        attempts++;
+        requestAnimationFrame(tryScroll);
+        return;
+      }
+      startRecovery();
     };
 
     requestAnimationFrame(tryScroll);
