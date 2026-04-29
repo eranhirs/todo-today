@@ -120,10 +120,34 @@ TODOS = [
     {
         "id": "todo_demo_06",
         "project_id": "proj_claude_todos",
-        "text": "Create demo environment for screenshots without interfering with real data",
+        "text": "Refactor the analysis pipeline to stream partial results to the UI #backend #frontend",
         "status": "in_progress",
         "source": "user",
-        "created_at": _ts(NOW - timedelta(hours=1)),
+        "created_at": _ts(NOW - timedelta(hours=2)),
+        "session_id": "sess_demo_06",
+        "run_status": "done",
+        "run_trigger": "manual",
+        "run_finished_at": _ts(NOW - timedelta(minutes=4)),
+        "run_started_at": _ts(NOW - timedelta(minutes=12)),
+        "run_cost_usd": 0.34,
+        "run_input_tokens": 18420,
+        "run_output_tokens": 6180,
+        "run_cache_read_tokens": 11200,
+        "run_duration_ms": 480_000,
+        "run_context_tokens": 29620,
+        "run_output": (
+            "Refactored the analysis pipeline to stream partial results to the UI as each "
+            "stage completes, instead of waiting for the full run.\n\n"
+            "**What changed**\n"
+            "- `backend/analysis/pipeline.py` — `analyze()` is now an async generator that\n"
+            "  yields `StageEvent` after each phase (read → summarize → diff → apply).\n"
+            "- `backend/routers/analysis.py` — new SSE endpoint `/api/analysis/stream/{id}`.\n"
+            "- `frontend/src/hooks/useAnalysisStream.ts` — subscribes and merges events.\n\n"
+            "First stage now renders in 1.3s (was 41s); full run still ~45s. 14/14 tests pass.\n\n"
+            "Open question: diff stage occasionally emits two events for the same todo when "
+            "a follow-up arrives mid-stream. Dedupe in the backend, or reconcile by id on "
+            "the frontend?"
+        ),
     },
     {
         "id": "todo_demo_07",

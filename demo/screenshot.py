@@ -27,7 +27,9 @@ ROOT = Path(__file__).resolve().parent.parent
 IMAGES_DIR = ROOT / "docs" / "images"
 
 # Smaller viewport = larger text relative to image size (zoomed-in feel)
-VIEWPORT = {"width": 1100, "height": 650}
+# Height is generous so an expanded todo (output + follow-up bar) AND a few
+# other todos all fit without scrolling past the project header.
+VIEWPORT = {"width": 1100, "height": 1000}
 
 # Time to let the app render and settle (polls, animations)
 SETTLE_SECONDS = 5
@@ -56,11 +58,24 @@ def take_screenshot(port: int, output_dir: Path) -> list[Path]:
             collapse_btn.click()
             time.sleep(0.5)
 
+        # Expand the showcase todo so its run output and follow-up bar are visible.
+        # This communicates that you can talk to Claude from the todo interface.
+        showcase = page.locator("[data-todo-id='todo_demo_06'] .todo-text").first
+        if showcase.count() > 0:
+            showcase.click()
+            time.sleep(0.8)
+
         # Full-page screenshot (sidebar minimized)
         png_path = output_dir / "screenshot.png"
         page.screenshot(path=str(png_path), full_page=False)
         paths.append(png_path)
         print(f"  Saved {png_path}")
+
+        # Collapse the showcase todo before continuing so it doesn't affect the
+        # autopilot screenshot below.
+        if showcase.count() > 0:
+            showcase.click()
+            time.sleep(0.3)
 
         # Expand sidebar back for the autopilot screenshot
         if collapse_btn.count() > 0:
