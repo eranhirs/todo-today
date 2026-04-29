@@ -31,14 +31,18 @@ interface Props {
   onNavigateToTodo?: (todoId: string, projectId: string) => void;
   pendingScrollTodoId?: string | null;
   onPendingScrollHandled?: () => void;
+  openedFromFocus?: boolean;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, viewLabel, projectsForAdd, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {}, analysisHistory = [], onNavigateToTodo, pendingScrollTodoId, onPendingScrollHandled }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, viewLabel, projectsForAdd, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {}, analysisHistory = [], onNavigateToTodo, pendingScrollTodoId, onPendingScrollHandled, openedFromFocus = false }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic, isOffline } = useAppContext();
-  const [showActive, setShowActiveRaw] = useState(() => getSectionExpanded("active", true));
-  const [showUpNext, setShowUpNextRaw] = useState(() => getSectionExpanded("upnext", true));
-  const [showBacklog, setShowBacklogRaw] = useState(() => getSectionExpanded("backlog", true));
-  const [showDone, setShowDoneRaw] = useState(() => getSectionExpanded("done", true));
+  // When the tab was opened by a parent-jump fallback (?focus=<id>), force every
+  // section open on first render so the target todo is actually in the DOM,
+  // regardless of the user's persisted collapse state.
+  const [showActive, setShowActiveRaw] = useState(() => openedFromFocus ? true : getSectionExpanded("active", true));
+  const [showUpNext, setShowUpNextRaw] = useState(() => openedFromFocus ? true : getSectionExpanded("upnext", true));
+  const [showBacklog, setShowBacklogRaw] = useState(() => openedFromFocus ? true : getSectionExpanded("backlog", true));
+  const [showDone, setShowDoneRaw] = useState(() => openedFromFocus ? true : getSectionExpanded("done", true));
   const setShowActive = (v: boolean) => { setShowActiveRaw(v); setSectionExpanded("active", v); };
   const setShowUpNext = (v: boolean) => { setShowUpNextRaw(v); setSectionExpanded("upnext", v); };
   const setShowBacklog = (v: boolean) => { setShowBacklogRaw(v); setSectionExpanded("backlog", v); };
@@ -96,9 +100,12 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
   useEffect(() => { todosRef.current = todos; }, [todos]);
 
   // After project switch, scroll to the pending todo. If it's not in the DOM
-  // after a few rAF retries, the parent is hidden by the user's active filters
-  // (search/tags/etc). In that case, open a new tab pointed at the todo with
-  // filters cleared, preserving the current tab's filter state.
+  // after a few rAF retries, the target is hidden — usually by the user's
+  // active filters, sometimes by pagination (completed pages not loaded yet).
+  // We surface a toast with an "Open in new tab" action so the user opts in
+  // explicitly: this avoids popup blockers (synchronous click handler) and
+  // can't infinite-loop. A tab opened with ?focus= sets `openedFromFocus`,
+  // which suppresses the action button so we don't recursively spawn tabs.
   useEffect(() => {
     if (!pendingScrollTodoId) return;
     const targetId = pendingScrollTodoId;
@@ -124,23 +131,31 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
         return;
       }
       const target = todosRef.current.find((t) => t.id === targetId);
-      if (target) {
-        const url = new URL(window.location.origin + window.location.pathname);
-        url.searchParams.set("project", target.project_id);
-        url.searchParams.set("focus", targetId);
-        const win = window.open(url.toString(), "_blank", "noopener");
-        if (!win) {
-          addToast("Parent is hidden by filters — popup blocked, clear filters to view it", "error");
-        } else {
-          addToast("Parent hidden by filters — opened in a new tab", "info");
-        }
+      if (!target) {
+        onPendingScrollHandled?.();
+        return;
+      }
+      if (openedFromFocus) {
+        addToast("Couldn't reach this todo — it may be in completed/archived items not yet loaded", "warning");
+      } else {
+        addToast("Parent is hidden by your current filters", "info", {
+          action: {
+            label: "Open in new tab",
+            handler: () => {
+              const url = new URL(window.location.origin + window.location.pathname);
+              url.searchParams.set("project", target.project_id);
+              url.searchParams.set("focus", targetId);
+              window.open(url.toString(), "_blank", "noopener");
+            },
+          },
+        });
       }
       onPendingScrollHandled?.();
     };
 
     requestAnimationFrame(tryScroll);
     return () => { cancelled = true; };
-  }, [pendingScrollTodoId, onPendingScrollHandled, addToast]);
+  }, [pendingScrollTodoId, onPendingScrollHandled, addToast, openedFromFocus]);
 
   // Fetch available commands/skills scoped to the selected project
   useEffect(() => {

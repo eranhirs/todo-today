@@ -4,8 +4,13 @@ import type { OptimisticActions } from "../hooks/useOptimistic";
 
 export type ToastType = "info" | "warning" | "success" | "error";
 
+export interface ToastActionOption {
+  label: string;
+  handler: () => void;
+}
+
 export interface AppContextValue {
-  addToast: (text: string, type?: ToastType, options?: { onUndo?: () => void; duration?: number }) => void;
+  addToast: (text: string, type?: ToastType, options?: { onUndo?: () => void; duration?: number; action?: ToastActionOption }) => void;
   onRefresh: () => void;
   onOptimisticUpdate: (fn: (todos: Todo[]) => Todo[]) => void;
   optimistic: OptimisticActions;
