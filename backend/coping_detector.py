@@ -124,6 +124,11 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "\"Leave for later\"",
         "Punting work to an undefined future instead of completing it now.",
     ),
+    (
+        re.compile(r"\bunaware\b", re.IGNORECASE),
+        "\"Unaware\"",
+        "Claiming ignorance to deflect responsibility — investigate instead of assuming.",
+    ),
     # ── Unilateral action: fixing without discussing ──────────────
     (
         re.compile(r"\bthe fix:", re.IGNORECASE),

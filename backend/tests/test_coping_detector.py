@@ -108,3 +108,11 @@ def test_other_patterns_still_detected():
         "edge cases that might come up in the future."
     )
     assert "Extra layer of protection" in _labels(output)
+
+
+def test_unaware_is_flagged():
+    output = (
+        "I was unaware that the migration script had been updated last week "
+        "to also touch the secondary index on the orders table."
+    )
+    assert "\"Unaware\"" in _labels(output)
