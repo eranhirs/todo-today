@@ -15,6 +15,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..event_bus import EventType, bus
+from ..image_storage import (
+    ALLOWED_IMAGE_TYPES,
+    MAX_IMAGE_SIZE,
+    delete_image_files,
+    format_image_suffix,
+    get_image_dir,
+    is_safe_filename,
+)
 from ..models import ImageAttachment, Todo, TodoCreate, TodoReorder, TodoUpdate, _now
 from ..tags import collect_all_tags, has_autopilot_tag, rename_tag_in_text, parse_tags, parse_priority
 from ..run_manager import (
@@ -36,29 +44,12 @@ from ..storage import StorageContext
 
 _DEMO_MODE = os.environ.get("TODO_DEMO", "").lower() in ("1", "true", "yes")
 
-# Image storage: either local (next to todos.json) or ephemeral (/tmp)
-_TMP_IMAGE_DIR = Path("/tmp/claude-todos-images")
-
-
-def _get_image_dir() -> Path:
-    """Return the image directory based on the local_image_storage setting."""
-    from ..storage import DATA_DIR, load_metadata
-    try:
-        meta = load_metadata()
-        if meta.local_image_storage:
-            d = DATA_DIR / "images"
-            d.mkdir(parents=True, exist_ok=True)
-            return d
-    except Exception:
-        pass
-    _TMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    return _TMP_IMAGE_DIR
-
-_ALLOWED_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
-_MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/todos", tags=["todos"])
+
+# Backwards-compatible aliases — projects.py and tests reference these names.
+_get_image_dir = get_image_dir
 
 from ..command_registry import get_all_registry_commands
 
@@ -269,18 +260,25 @@ async def search_todos(q: str, project_id: Optional[str] = None):
     return await run_in_thread(_do)
 
 
+def _safe_image_path(filename: str) -> Path:
+    """Resolve a user-supplied filename inside the image dir or 400."""
+    if not is_safe_filename(filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return get_image_dir() / filename
+
+
 @router.post("/images", status_code=201)
 async def upload_image(file: UploadFile) -> dict:
     """Upload an image to be attached to a todo. Returns the filename."""
-    if file.content_type not in _ALLOWED_IMAGE_TYPES:
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported image type: {file.content_type}")
     ext = mimetypes.guess_extension(file.content_type) or ".png"
     if ext == ".jpe":
         ext = ".jpg"
     filename = f"{uuid.uuid4().hex[:16]}{ext}"
-    filepath = _get_image_dir() / filename
+    filepath = get_image_dir() / filename
     data = await file.read()
-    if len(data) > _MAX_IMAGE_SIZE:
+    if len(data) > MAX_IMAGE_SIZE:
         raise HTTPException(status_code=400, detail="Image too large (max 20 MB)")
     await run_in_thread(filepath.write_bytes, data)
     return {"filename": filename}
@@ -289,10 +287,7 @@ async def upload_image(file: UploadFile) -> dict:
 @router.get("/images/{filename}")
 async def get_image(filename: str) -> FileResponse:
     """Serve an uploaded image."""
-    # Prevent path traversal
-    if "/" in filename or "\\" in filename or ".." in filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    filepath = _get_image_dir() / filename
+    filepath = _safe_image_path(filename)
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="Image not found")
     return FileResponse(filepath)
@@ -301,9 +296,7 @@ async def get_image(filename: str) -> FileResponse:
 @router.delete("/images/{filename}", status_code=204)
 async def delete_image(filename: str) -> None:
     """Delete an uploaded image."""
-    if "/" in filename or "\\" in filename or ".." in filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
-    filepath = _get_image_dir() / filename
+    filepath = _safe_image_path(filename)
     if filepath.exists():
         await run_in_thread(filepath.unlink)
 
@@ -532,11 +525,7 @@ async def delete_todo(todo_id: str) -> None:
         raise HTTPException(status_code=404, detail="Todo not found")
     # Delete associated image files outside the lock
     if result:
-        image_dir = _get_image_dir()
-        for fname in result:
-            fp = image_dir / fname
-            if fp.exists():
-                fp.unlink(missing_ok=True)
+        delete_image_files(result)
     bus.emit_event_sync(EventType.TODO_DELETED, todo_id=todo_id)
 
 
@@ -729,8 +718,7 @@ async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
                     # Update the displayed message in run_output
                     if t.run_output:
                         # Compute image suffix from pending images
-                        n_imgs = len(t.pending_followup_images)
-                        old_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+                        old_suffix = format_image_suffix(t.pending_followup_images)
                         old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{old_suffix}\n<<END_USER_MSG>>\n"
                         new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{old_suffix}\n<<END_USER_MSG>>\n"
                         t.run_output = t.run_output.replace(old_line, new_line)
@@ -786,7 +774,7 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
             if not todo.session_id:
                 return {"error": "no_session"}
 
-            img_suffix = f" [+{len(body.images)} image{'s' if len(body.images) != 1 else ''}]" if body.images else ""
+            img_suffix = format_image_suffix(body.images)
 
             # Auto-preserve plan_only constraint: if the client didn't explicitly
             # set plan_only, inherit from the todo's own plan_only value so that

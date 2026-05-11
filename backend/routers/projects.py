@@ -5,6 +5,7 @@ from ..storage import run_in_thread
 from fastapi import APIRouter, HTTPException
 
 from ..event_bus import EventType, bus
+from ..image_storage import delete_image_files
 from ..models import Project, ProjectCreate, ProjectUpdate
 from ..storage import StorageContext
 
@@ -105,10 +106,5 @@ async def delete_project(project_id: str) -> None:
         raise HTTPException(status_code=404, detail="Project not found")
     # Delete associated image files outside the lock
     if result:
-        from .todos import _get_image_dir
-        image_dir = _get_image_dir()
-        for fname in result:
-            fp = image_dir / fname
-            if fp.exists():
-                fp.unlink(missing_ok=True)
+        delete_image_files(result)
     bus.emit_event_sync(EventType.PROJECT_DELETED, project_id=project_id)

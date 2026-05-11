@@ -21,6 +21,7 @@ from typing import Optional
 
 from .coping_detector import detect_coping_phrases
 from .event_bus import EventType, bus
+from .image_storage import format_image_suffix, get_image_dir
 from .models import _now
 from .output_parser import (
     detect_exit_plan_mode,
@@ -563,8 +564,7 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
             t.status = "in_progress"
             t.completed_at = None
             # Append the follow-up message to output now that it's actually starting
-            n_imgs = len(followup_images)
-            img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+            img_suffix = format_image_suffix(followup_images)
             t.run_output = (t.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {followup_msg}{img_suffix}\n<<END_USER_MSG>>\n"
 
     if followup_msg and session_id:
@@ -657,8 +657,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 )
         # Append image references so Claude can read them
         if images:
-            from .routers.todos import _get_image_dir
-            img_dir = _get_image_dir()
+            img_dir = get_image_dir()
             prompt += "\n\nThis task has attached images. Read each one to see the visual context:"
             for img in images:
                 prompt += f"\n- {img_dir / img}"
@@ -782,8 +781,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
         # Append image references so Claude can read them
         prompt = message
         if images:
-            from .routers.todos import _get_image_dir
-            img_dir = _get_image_dir()
+            img_dir = get_image_dir()
             prompt += "\n\nThis follow-up has attached images. Read each one to see the visual context:"
             for img in images:
                 prompt += f"\n- {img_dir / img}"
@@ -1548,8 +1546,7 @@ def cancel_pending_followup(todo_id: str) -> str | None:
             return "no pending followup"
 
         msg = t.pending_followup
-        n_imgs = len(t.pending_followup_images)
-        img_suffix = f" [+{n_imgs} image{'s' if n_imgs != 1 else ''}]" if n_imgs else ""
+        img_suffix = format_image_suffix(t.pending_followup_images)
 
         # Remove followup images from todo's image list
         followup_fnames = set(t.pending_followup_images)
