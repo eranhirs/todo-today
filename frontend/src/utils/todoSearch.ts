@@ -32,13 +32,51 @@ export function buildReferencedByMap(todos: Todo[]): Map<string, Todo[]> {
   return map;
 }
 
-/** Case-insensitive search across todo text and run_output. */
+/**
+ * Relaxed case-insensitive search across todo text and run_output. The query
+ * is split on whitespace and every token must appear as a substring in either
+ * field — so "debug tree" matches "debug the decision tree".
+ */
 export function matchesTodo(todo: Todo, query: string): boolean {
-  const q = query.toLowerCase();
-  return (
-    todo.text.toLowerCase().includes(q) ||
-    (todo.run_output != null && todo.run_output.toLowerCase().includes(q))
-  );
+  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  const text = todo.text.toLowerCase();
+  const output = todo.run_output != null ? todo.run_output.toLowerCase() : "";
+  return tokens.every((tok) => text.includes(tok) || output.includes(tok));
+}
+
+/**
+ * Rank how well a todo matches a query, lower is better. Used to order mention
+ * suggestions so exact phrase matches come before fuzzy multi-token matches.
+ *   0 — exact phrase appears in the title
+ *   1 — all tokens appear in title in the order typed (e.g. "debug … tree")
+ *   2 — all tokens appear in title in any order
+ *   3 — match relies on run_output (last resort)
+ *   4 — no token-level match (shouldn't normally reach sort)
+ */
+function matchScore(todo: Todo, query: string): number {
+  const q = query.toLowerCase().trim();
+  if (!q) return 0;
+  const text = todo.text.toLowerCase();
+  if (text.includes(q)) return 0;
+  const tokens = q.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1) {
+    let cursor = 0;
+    let inOrder = true;
+    for (const tok of tokens) {
+      const idx = text.indexOf(tok, cursor);
+      if (idx === -1) {
+        inOrder = false;
+        break;
+      }
+      cursor = idx + tok.length;
+    }
+    if (inOrder) return 1;
+  }
+  if (tokens.every((tok) => text.includes(tok))) return 2;
+  const output = todo.run_output != null ? todo.run_output.toLowerCase() : "";
+  if (output && tokens.every((tok) => text.includes(tok) || output.includes(tok))) return 3;
+  return 4;
 }
 
 /**
@@ -63,6 +101,18 @@ export function sortForMentions(todos: Todo[]): Todo[] {
 }
 
 /**
+ * Sort by query relevance first (exact > in-order > any-order > run_output),
+ * then fall back to the standard mention ordering. With no query, behaves
+ * exactly like sortForMentions.
+ */
+function sortForMentionsByQuery(todos: Todo[], query: string): Todo[] {
+  const q = query.trim();
+  if (!q) return sortForMentions(todos);
+  const ranked = sortForMentions(todos);
+  return [...ranked].sort((a, b) => matchScore(a, q) - matchScore(b, q));
+}
+
+/**
  * Filter and sort todos for @ mention suggestions.
  * Reuses matchesTodo for search and sortForMentions for ordering.
  */
@@ -78,7 +128,7 @@ export function filterMentionSuggestions(
   if (query) {
     matches = matches.filter((t) => matchesTodo(t, query));
   }
-  return sortForMentions(matches).slice(0, limit);
+  return sortForMentionsByQuery(matches, query).slice(0, limit);
 }
 
 /**
@@ -99,5 +149,5 @@ export function filterParentSuggestions(
   if (query) {
     matches = matches.filter((t) => matchesTodo(t, query));
   }
-  return sortForMentions(matches).slice(0, limit);
+  return sortForMentionsByQuery(matches, query).slice(0, limit);
 }
