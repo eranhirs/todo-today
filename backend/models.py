@@ -38,6 +38,7 @@ class Project(BaseModel):
     run_model: Optional[str] = None  # None = use global setting, "opus"/"sonnet"/"haiku" = override
     pinned: bool = False  # When True, project is shown in the pinned sidebar section (not collapsible)
     created_at: str = Field(default_factory=_now)
+    deleted_at: Optional[str] = None  # ISO-8601 timestamp; non-null = soft-deleted (in trash, restorable)
 
 
 class Todo(BaseModel):

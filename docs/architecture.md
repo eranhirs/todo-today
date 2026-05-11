@@ -341,6 +341,19 @@ The sidebar renders projects in two sections:
 
 Each project row has a star toggle (☆ / ★) that calls `PUT /api/projects/{id}` with `{pinned: bool}` to move the project between sections. "All Projects" (the aggregate view across every project) stays above both sections.
 
+### Soft-Delete (Trash) and Undo
+
+Project deletion is two-stage so a misclick on the row's `×` is recoverable. The first click opens a confirmation dialog (Cancel autofocused, Escape dismisses); confirming calls `DELETE /api/projects/{id}`, which sets `deleted_at` on the project rather than removing it. The frontend immediately shows a toast with an **Undo** action that calls `POST /api/projects/{id}/restore` to clear `deleted_at`. Toasts last 12 seconds, but the project is preserved on disk regardless — `GET /api/projects/trash` lists trashed projects so they can be restored later, and the lifespan startup purges anything past a 30-day retention window via `purge_old_trashed_projects`.
+
+Soft-deleted projects are filtered out of:
+- `GET /api/projects` and `GET /api/projects/{id}` (404 while trashed)
+- `GET /api/state` (both the projects list and todos belonging to those projects)
+- `GET /api/todos`, `/api/todos/completed`, `/api/todos/search`, `/api/todos/tags`
+- Autopilot, scheduled-todo, and session-autopilot loops in `scheduler.py`
+- Session discovery (`session_discovery._match_sessions_to_projects`) so new sessions don't auto-attach to a trashed project's `source_path`
+
+This means once a project is trashed it accrues no new state — todos already attached are preserved as-is, and a restore returns the project to exactly where it was.
+
 ## Hooks Integration
 
 Optional real-time session state detection via Claude Code hooks. See [hooks.md](hooks.md) for full details, event payloads, and testing instructions.

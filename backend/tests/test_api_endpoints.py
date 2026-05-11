@@ -46,20 +46,64 @@ class TestProjectsAPI:
         assert resp.json()["auto_run_quota"] == 50  # clamped to max
 
     def test_delete_project(self, client):
+        # Soft delete: project disappears from main list/state but is restorable.
         resp = client.delete("/api/projects/proj_aaa")
         assert resp.status_code == 204
 
-        # Verify deleted
+        # Hidden from main list and lookup
         resp = client.get("/api/projects/proj_aaa")
         assert resp.status_code == 404
+        resp = client.get("/api/projects")
+        assert resp.json() == []
 
-        # Todos for that project should also be deleted
+        # Todos for that project are filtered out of the main view
         resp = client.get("/api/todos")
         assert resp.status_code == 200
         assert resp.json() == []
 
+        # Project shows up in trash
+        resp = client.get("/api/projects/trash")
+        assert resp.status_code == 200
+        trashed = resp.json()
+        assert len(trashed) == 1
+        assert trashed[0]["id"] == "proj_aaa"
+        assert trashed[0]["deleted_at"]
+
     def test_delete_project_not_found(self, client):
         resp = client.delete("/api/projects/proj_nonexistent")
+        assert resp.status_code == 404
+
+    def test_restore_project(self, client):
+        # Soft-delete, then restore — project and its todos come back.
+        resp = client.delete("/api/projects/proj_aaa")
+        assert resp.status_code == 204
+
+        resp = client.post("/api/projects/proj_aaa/restore")
+        assert resp.status_code == 200
+        assert resp.json()["id"] == "proj_aaa"
+        assert resp.json()["deleted_at"] is None
+
+        # Now visible again with its todos restored
+        resp = client.get("/api/projects/proj_aaa")
+        assert resp.status_code == 200
+        resp = client.get("/api/todos")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 3
+
+    def test_restore_project_not_in_trash(self, client):
+        # Restoring a project that was never deleted is a 400.
+        resp = client.post("/api/projects/proj_aaa/restore")
+        assert resp.status_code == 400
+
+    def test_delete_project_permanent(self, client):
+        # Permanent delete bypasses the trash and removes todos for good.
+        resp = client.delete("/api/projects/proj_aaa?permanent=true")
+        assert resp.status_code == 204
+
+        resp = client.get("/api/projects/trash")
+        assert resp.json() == []
+        # Restore should now 404 — there's nothing left to restore.
+        resp = client.post("/api/projects/proj_aaa/restore")
         assert resp.status_code == 404
 
 
