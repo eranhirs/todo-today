@@ -46,6 +46,7 @@ Update project name, source_path, autopilot quota, or todo quota.
 `clear_scheduled_autopilot`: boolean — when true, clears both `scheduled_auto_run_quota` and `autopilot_starts_at`.
 `todo_quota`: 0 = unlimited, 1+ = max todo runs per 24-hour sliding window. When the limit is reached, new runs return HTTP 429. Todos can always be created freely. Follow-ups on already-run todos don't count against the limit.
 `run_model`: `null` = use global setting, `"opus"`/`"sonnet"`/`"haiku"` = override the global run model for this project. Use `clear_run_model: true` to reset to global.
+`run_effort`: `null` = use global setting, `"low"`/`"medium"`/`"high"`/`"xhigh"`/`"max"` = override the global Claude `--effort` level for runs in this project. Use `clear_run_effort: true` to reset to global.
 
 ### `DELETE /api/projects/{project_id}`
 Delete a project and all its todos.
@@ -86,6 +87,12 @@ Delete a todo.
 ### `POST /api/todos/{todo_id}/run`
 Kick off a background Claude Code session to complete the todo. Claude runs in the project's `source_path` directory using `claude -p`. The todo is immediately set to `in_progress` with `run_status: "running"`.
 
+Optional body:
+```json
+{ "plan_only": true, "effort": "max" }
+```
+`effort` must be one of `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` (or omitted). When supplied, it's persisted on the todo as `run_effort` so subsequent follow-ups inherit it. Resolution order: per-todo > per-project > global default (`Settings.run_effort`).
+
 Returns `{ "status": "started" }`.
 
 When Claude finishes, the todo is marked `completed` with `run_status: "done"` and `run_output` containing Claude's response. The output is also scanned for "coping" phrases (e.g. "belt-and-suspenders", "defensive", "just in case"), surprise indicators (sentences ending with `!`), and strategy pivots (lines starting with "Wait") — any matches are stored in `red_flags` — an array of `{ label, explanation, excerpt }` objects. Cost and token usage are extracted from the stream-json result and stored in `run_cost_usd`, `run_input_tokens`, `run_output_tokens`, `run_cache_read_tokens`, and `run_duration_ms`. Costs accumulate across follow-ups and plan retries. On failure, `run_status` is set to `"error"` and `run_output` contains the error message (costs are still tracked).
@@ -101,8 +108,10 @@ Remove a queued todo from the run queue. Returns `{ "status": "dequeued" }`.
 ### `POST /api/todos/{todo_id}/followup`
 Send a follow-up message to a completed/stopped Claude session. If another todo in the project is running, the follow-up is queued and auto-starts when the project becomes free.
 ```json
-{ "message": "Also handle the edge case where..." }
+{ "message": "Also handle the edge case where...", "effort": "high" }
 ```
+Optional `effort`: one of `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Persisted on the todo as `run_effort` so subsequent follow-ups inherit it. Pass `""` to clear the per-todo override. The user can also embed `/effort:high` at the start of a follow-up message — the frontend strips the prefix and sends it via this field.
+
 Returns `{ "status": "started" }` or `{ "status": "queued" }`.
 
 ### `PATCH /api/todos/{todo_id}/followup`
@@ -136,6 +145,7 @@ Returns the current settings object:
   "analysis_interval_minutes": 30,
   "analysis_model": "haiku",
   "run_model": "opus",
+  "run_effort": "high",
   "heartbeat_enabled": true,
   "hook_analysis_enabled": true
 }
@@ -144,11 +154,13 @@ Returns the current settings object:
 ### `PUT /api/claude/settings`
 Partial update — only supplied fields are changed. Returns the full updated settings object.
 ```json
-{ "analysis_interval_minutes": 15, "run_model": "sonnet" }
+{ "analysis_interval_minutes": 15, "run_model": "sonnet", "run_effort": "xhigh" }
 ```
 If `analysis_interval_minutes` is changed, the scheduler is automatically rescheduled.
 
 Both `analysis_model` and `run_model` can be changed. Valid model values: `"opus"`, `"sonnet"`, `"haiku"`. Per-project `run_model` overrides (set via `PUT /api/projects/{id}`) take precedence over the global setting.
+
+`run_effort` is the Claude CLI `--effort` level used for `claude -p` invocations. Valid values: `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` (see [Claude Code docs](https://code.claude.com/docs/en/model-config#adjust-effort-level)). Resolution order at run time: per-todo > per-project > this global default. Default: `"high"`.
 
 The settings object is also included in the `GET /api/state` response as `state.settings`.
 

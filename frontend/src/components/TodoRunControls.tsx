@@ -1,6 +1,7 @@
-import type { Todo } from "../types";
+import { EFFORT_LEVELS, type EffortLevel, type Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
+import { useState } from "react";
 
 interface Props {
   todo: Todo;
@@ -11,11 +12,22 @@ interface Props {
   quotaCountdown?: string;
   disabled?: boolean;
   runModel?: string;
+  /** Resolved default effort (per-todo > project > global) — initial value of the picker. */
+  runEffort?: string;
 }
 
-export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, runModel = "opus" }: Props) {
+export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, runModel = "opus", runEffort = "high" }: Props) {
   const isRunning = todo.run_status === "running";
   const isQueued = todo.run_status === "queued";
+  // Per-run effort override picker. The `effortPick` state tracks the user's
+  // choice for the next run: an EffortLevel persists it on the todo, "" clears
+  // any per-todo override (inherit project/global), null = leave unchanged.
+  // The displayed value defaults to the current per-todo override if any,
+  // otherwise the resolved (project/global) value.
+  const initialEffort = (todo.run_effort ?? runEffort) as string;
+  const [effortPick, setEffortPick] = useState<EffortLevel | "" | null>(null);
+  // Show "default" when there's no per-todo override yet AND the user hasn't picked
+  const displayValue = effortPick !== null ? effortPick : (todo.run_effort ?? "");
 
   const runWithClaude = async (planOnly?: boolean) => {
     if (disabled) {
@@ -23,13 +35,17 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
       return;
     }
     try {
-      const result = await api.runTodo(todo.id, planOnly);
+      // Send the picked value when set: a level persists it on the todo, "" clears any per-todo override.
+      const effortToSend = effortPick === null ? undefined : effortPick;
+      const result = await api.runTodo(todo.id, planOnly, effortToSend);
       const label = planOnly ? "planning" : "running";
+      const effortNote = effortPick ? ` at ${effortPick} effort` : "";
       if (result.status === "queued") {
-        addToast(`Queued "${todo.text}" — will ${planOnly ? "plan" : "run"} when the current task finishes`, "info");
+        addToast(`Queued "${todo.text}" — will ${planOnly ? "plan" : "run"}${effortNote} when the current task finishes`, "info");
       } else {
-        addToast(`Started ${label} "${todo.text}" with Claude`, "info");
+        addToast(`Started ${label} "${todo.text}" with Claude${effortNote}`, "info");
       }
+      setEffortPick(null);
       onRefresh();
     } catch (err) {
       addToast(apiErrorMessage(err), "error");
@@ -112,22 +128,37 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
     ? `Daily run limit reached${quotaCountdown ? ` — next slot in ${quotaCountdown}` : ""}`
     : "";
 
+  const effortNote = `, effort ${effortPick ?? initialEffort}${todo.run_effort ? " (todo)" : effortPick ? " (override)" : ""}`;
+
   return (
     <>
       {quotaBlocked && quotaCountdown && (
         <span className="run-quota-countdown" title={quotaTitle}>⏸ {quotaCountdown}</span>
       )}
+      <select
+        className={`effort-select${todo.run_effort ? " effort-overridden" : ""}`}
+        value={displayValue}
+        onChange={(e) => setEffortPick(e.target.value === "" ? "" : e.target.value as EffortLevel)}
+        disabled={disabled || quotaBlocked}
+        title={`Claude --effort for the next run. "default" inherits project/global (${initialEffort}); picking a level persists it on this todo.`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <option value="">default ({initialEffort})</option>
+        {EFFORT_LEVELS.map((lv) => (
+          <option key={lv} value={lv}>{lv}</option>
+        ))}
+      </select>
       <button
         className="btn-icon btn-plan"
         onClick={() => runWithClaude(true)}
         disabled={quotaBlocked}
-        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? `Plan with Claude [${runModel}] (queued — another task is running)` : `Plan with Claude [${runModel}] — analyze and outline an approach without making code changes`}
+        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? `Plan with Claude [${runModel}${effortNote}] (queued — another task is running)` : `Plan with Claude [${runModel}${effortNote}] — analyze and outline an approach without making code changes`}
       >📋</button>
       <button
         className="btn-icon btn-run"
         onClick={() => runWithClaude(false)}
         disabled={quotaBlocked}
-        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? `Run with Claude [${runModel}] (queued — another task is running)` : `Run with Claude [${runModel}] — implement this task, making code changes as needed`}
+        title={disabled ? "Server offline" : quotaBlocked ? quotaTitle : projectBusy ? `Run with Claude [${runModel}${effortNote}] (queued — another task is running)` : `Run with Claude [${runModel}${effortNote}] — implement this task, making code changes as needed`}
       >▶</button>
     </>
   );

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import type { Todo } from "../types";
+import { EFFORT_LEVELS, type EffortLevel, type Todo } from "../types";
 import { api } from "../api";
 import { apiErrorMessage } from "../errors";
 import { type CommandInfo } from "../utils/commands";
@@ -10,6 +10,17 @@ interface Props {
   showOutput: boolean;
   disabled?: boolean;
   allCommands?: CommandInfo[];
+  /** Resolved effort level (per-todo > project > global) — used to show what
+   *  the next follow-up will run at and as the initial value of the picker. */
+  effectiveEffort?: string;
+}
+
+/** Strip a leading /effort:<level> token from a follow-up message and return
+ *  both pieces. Lets users override effort inline (matches the CLI's /effort). */
+function extractInlineEffort(text: string): { effort: EffortLevel | null; rest: string } {
+  const m = text.match(/^\s*\/effort[:= ]?(low|medium|high|xhigh|max)\b\s*/i);
+  if (!m) return { effort: null, rest: text };
+  return { effort: m[1].toLowerCase() as EffortLevel, rest: text.slice(m[0].length) };
 }
 
 /** Must match backend OUTPUT_MAX_CHARS in run_manager.py */
@@ -190,7 +201,7 @@ function writeDraft(prefix: string, todoId: string, text: string): void {
   }
 }
 
-export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: Props) {
+export function TodoOutput({ todo, showOutput, disabled = false, allCommands, effectiveEffort = "high" }: Props) {
   const { addToast, onRefresh } = useAppContext();
   const commands = allCommands ?? [];
   const [followupText, setFollowupText] = useState(() => readDraft(FOLLOWUP_DRAFT_PREFIX, todo.id));
@@ -247,6 +258,16 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
   const [editingFollowup, setEditingFollowup] = useState(false);
   const [editFollowupText, setEditFollowupText] = useState("");
   const editFollowupRef = useRef<HTMLTextAreaElement>(null);
+
+  // Per-follow-up effort override picker. null = leave the todo's effort unchanged
+  // (use whatever resolves on the backend); a level = persist it on the todo;
+  // "" = clear any per-todo override (inherit project/global on the next run).
+  const [followupEffortPick, setFollowupEffortPick] = useState<EffortLevel | "" | null>(null);
+  // Initial value to show in the picker — todo override > resolved (project/global)
+  const initialEffort = (todo.run_effort ?? effectiveEffort) as string;
+  // What the dropdown should display: the user's pick if any, otherwise the
+  // todo's persisted override (or "" → "default" option) if none.
+  const followupDisplayValue = followupEffortPick !== null ? followupEffortPick : (todo.run_effort ?? "");
 
   // Command autocomplete state (shared — only one input visible at a time)
   const [cmdSuggestions, setCmdSuggestions] = useState<CommandInfo[]>([]);
@@ -513,20 +534,32 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
       addToast("You're offline — follow-ups aren't available right now", "warning");
       return;
     }
-    const msg = followupText.trim();
-    if (!msg && pendingImages.length === 0) return;
+    const raw = followupText.trim();
+    if (!raw && pendingImages.length === 0) return;
+    // Allow users to override effort inline with `/effort:high <message>`.
+    const { effort: inlineEffort, rest } = extractInlineEffort(raw);
+    const msg = rest;
+    // Resolve the effort to send: inline `/effort:` wins, otherwise the picker.
+    // Picker semantics: null = leave unchanged (don't send), "" = clear per-todo override, level = persist.
+    const effortToSend: EffortLevel | "" | undefined =
+      inlineEffort ?? (followupEffortPick === null ? undefined : followupEffortPick);
     setSending(true);
     try {
       const imageFilenames = pendingImages.map((img) => img.filename);
-      const result = await api.followupTodo(todo.id, msg, imageFilenames, planOnly);
+      const result = await api.followupTodo(todo.id, msg, imageFilenames, planOnly, effortToSend);
       setFollowupText("");
+      setFollowupEffortPick(null);
       // Revoke preview URLs
       pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       setPendingImages([]);
+      const effortNote =
+        effortToSend === "" ? " (effort cleared — inheriting project/global)"
+        : effortToSend ? ` (effort: ${effortToSend})`
+        : "";
       if (result.status === "queued") {
-        addToast(`Follow-up queued — will ${planOnly ? "plan" : "run"} when the current task finishes`, "info");
+        addToast(`Follow-up queued — will ${planOnly ? "plan" : "run"}${effortNote ? "," : ""}${effortNote} when the current task finishes`, "info");
       } else {
-        addToast(planOnly ? "Plan-only follow-up sent" : "Follow-up sent", "info");
+        addToast(`${planOnly ? "Plan-only follow-up sent" : "Follow-up sent"}${effortNote}`, "info");
       }
       onRefresh();
     } catch {
@@ -565,18 +598,27 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
       }
     } else {
       // Default: queue as a follow-up that runs after the current run finishes
+      const { effort: inlineEffort, rest } = extractInlineEffort(raw);
+      const msg = rest;
+      const effortToSend: EffortLevel | "" | undefined =
+        inlineEffort ?? (followupEffortPick === null ? undefined : followupEffortPick);
       setSending(true);
       try {
         const imageFilenames = pendingImages.map((img) => img.filename);
-        const result = await api.followupTodo(todo.id, raw, imageFilenames, planOnly);
+        const result = await api.followupTodo(todo.id, msg, imageFilenames, planOnly, effortToSend);
         setBtwText("");
+        setFollowupEffortPick(null);
         // Revoke preview URLs
         pendingImages.forEach((img) => URL.revokeObjectURL(img.previewUrl));
         setPendingImages([]);
+        const effortNote =
+          effortToSend === "" ? " (effort cleared — inheriting project/global)"
+          : effortToSend ? ` (effort: ${effortToSend})`
+          : "";
         if (result.status === "queued") {
-          addToast(`Follow-up queued — will ${planOnly ? "plan" : "run"} when the current task finishes`, "info");
+          addToast(`Follow-up queued — will ${planOnly ? "plan" : "run"}${effortNote} when the current task finishes`, "info");
         } else {
-          addToast(planOnly ? "Plan-only follow-up sent" : "Follow-up sent", "info");
+          addToast(`${planOnly ? "Plan-only follow-up sent" : "Follow-up sent"}${effortNote}`, "info");
         }
         onRefresh();
       } catch (err) {
@@ -852,6 +894,21 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
                 e.target.value = "";
               }}
             />
+            {activeTab !== "btw" && (
+              <select
+                className={`effort-select${todo.run_effort ? " effort-overridden" : ""}`}
+                value={followupDisplayValue}
+                onChange={(e) => setFollowupEffortPick(e.target.value === "" ? "" : e.target.value as EffortLevel)}
+                disabled={disabled}
+                title={`Claude --effort for the next follow-up. "default" inherits project/global (${initialEffort}); picking a level persists it on this todo.`}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <option value="">default ({initialEffort})</option>
+                {EFFORT_LEVELS.map((lv) => (
+                  <option key={lv} value={lv}>{lv}</option>
+                ))}
+              </select>
+            )}
             <div className="followup-input-wrapper">
               <textarea
                 ref={btwInputRef}
@@ -1022,6 +1079,18 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
                 e.target.value = "";
               }}
             />
+            <select
+              className="effort-select"
+              value={followupEffortPick ?? initialEffort}
+              onChange={(e) => setFollowupEffortPick(e.target.value as EffortLevel)}
+              disabled={disabled}
+              title={`Claude --effort for the next follow-up (default: ${initialEffort}). Persists on this todo.`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {EFFORT_LEVELS.map((lv) => (
+                <option key={lv} value={lv}>{lv}</option>
+              ))}
+            </select>
             <div className="followup-input-wrapper">
               <textarea
                 ref={followupRef}

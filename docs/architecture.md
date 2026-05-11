@@ -140,6 +140,18 @@ When a manual run is requested while another non-plan-only todo in the same proj
 3. Output is tailed from a JSONL file in `data/runs/` and flushed to the todo store every 5 seconds
 4. On completion, `_finalize_run` applies the result: sets `run_status` to `done` and `status` to `waiting` (not immediately completed), detects plan files, scans for coping phrases / surprise (`!`) / strategy pivots (`Wait`), and extracts cost/token usage from stream-json `result` events. Coping/surprise scanning runs over a *prose-only* projection of the output: fenced code blocks, inline code spans, tool-use summary lines (`$ command`, `[Read: ...]`), markdown tables/headers, and short label lines are stripped before pattern matching, so exclamations inside code (`array[i]!`, `console.log("hi!")`) don't trigger the surprise flag. The analyzer then promotes the todo to `completed` only when the session is truly done AND there is no ongoing discussion — if the user's last messages raise questions, express uncertainty, or continue discussing the topic, the todo stays as `waiting` even if the run succeeded. Plan-only runs are an exception: they complete immediately since the deliverable (the plan) is already produced.
 
+### Effort Levels
+
+The Claude CLI exposes an `--effort` flag that controls adaptive reasoning depth (`low`, `medium`, `high`, `xhigh`, `max`). See the [Claude Code model-config docs](https://code.claude.com/docs/en/model-config#adjust-effort-level). Claude Todos resolves the effort level for each invocation using a three-tier override chain:
+
+1. **Per-todo** (`Todo.run_effort`) — set via the run-controls picker, the follow-up bar picker, an inline `/effort:high` token in the follow-up message, or the `effort` field on `POST /api/todos/{id}/run` and `POST /api/todos/{id}/followup`. Persists on the todo so subsequent follow-ups inherit it.
+2. **Per-project** (`Project.run_effort`) — settable through `PUT /api/projects/{id}` with `run_effort` (or cleared with `clear_run_effort: true`).
+3. **Global default** (`Settings.run_effort`) — exposed via `GET/PUT /api/claude/settings`, with the picker rendered in the ClaudeStatus sidebar. Defaults to `high` if nothing is set.
+
+The resolution helper lives at `backend/run_manager.py:_resolve_effort` and is used by `start_todo_run`, `_process_queue`, `run_queued_now`, `start_followup` (autopilot), `_start_pending_followup`, the `/followup` endpoint, and `start_btw`. The resolved value is appended as `--effort <level>` to the `claude -p` command in `_invoke_claude` and `run_btw_for_todo`.
+
+The frontend surfaces a small `effort-select` next to the run/follow-up buttons. Changing it for a follow-up sends the new level on the next request, and the backend persists it on the todo so subsequent follow-ups keep using that level (matches the CLI's session-persistent `/effort` behavior). Users can also type `/effort:low send tests` directly into the follow-up input as a one-shot override — the prefix is stripped before the message is sent.
+
 ### Plan Mode Auto-Accept
 
 Claude may enter plan mode during a run. When it calls `ExitPlanMode`, the auto-accept loop detects this and resumes with "Plan accepted. Now implement it fully." This repeats up to 3 times (`_MAX_PLAN_RETRIES`).

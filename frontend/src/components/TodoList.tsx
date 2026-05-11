@@ -26,6 +26,7 @@ interface Props {
   loadingMoreCompleted?: boolean;
   unreadCounts?: Record<string, number>;
   globalRunModel?: string;
+  globalRunEffort?: string;
   sessionAutopilot?: Record<string, number>;
   analysisHistory?: AnalysisEntry[];
   onNavigateToTodo?: (todoId: string, projectId: string) => void;
@@ -34,7 +35,7 @@ interface Props {
   openedFromFocus?: boolean;
 }
 
-export function TodoList({ todos, projects, selectedProjectId, viewLabel, projectsForAdd, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", sessionAutopilot = {}, analysisHistory = [], onNavigateToTodo, pendingScrollTodoId, onPendingScrollHandled, openedFromFocus = false }: Props) {
+export function TodoList({ todos, projects, selectedProjectId, viewLabel, projectsForAdd, projectSummaries, focusedTodoId, editingTodoId, addInputRef, completedTotal = 0, hasMoreCompleted = false, onLoadMoreCompleted, loadingMoreCompleted = false, unreadCounts = {}, globalRunModel = "opus", globalRunEffort = "high", sessionAutopilot = {}, analysisHistory = [], onNavigateToTodo, pendingScrollTodoId, onPendingScrollHandled, openedFromFocus = false }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic, isOffline } = useAppContext();
   // When the tab was opened by a parent-jump fallback (?focus=<id>), force every
   // section open on first render so the target todo is actually in the DOM,
@@ -595,6 +596,7 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
   const projectName = (id: string) => getDisplayName(id) ?? projects.find((p) => p.id === id)?.name ?? "Unknown";
   const projectSourcePath = (id: string) => projects.find((p) => p.id === id)?.source_path ?? "";
   const projectRunModel = (id: string) => projects.find((p) => p.id === id)?.run_model || globalRunModel;
+  const projectRunEffort = (id: string) => projects.find((p) => p.id === id)?.run_effort || globalRunEffort;
 
   const summary = selectedProjectId ? projectSummaries[selectedProjectId] : null;
 
@@ -748,7 +750,7 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
       className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       data-todo-id={t.id}
     >
-      <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+      <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
     </div>
   );
 
@@ -863,6 +865,39 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
               <option value="opus">opus</option>
               <option value="sonnet">sonnet</option>
               <option value="haiku">haiku</option>
+            </select>
+          </label>
+          <label className="project-settings-item">
+            <span className="project-settings-label">Effort</span>
+            <span
+              className="help-tooltip"
+              title={"Claude --effort level for runs in this project. " +
+                "\"global\" inherits the global default. Per-todo overrides take precedence. " +
+                "low/medium/high/xhigh/max — see https://code.claude.com/docs/en/model-config#adjust-effort-level"}
+            >?</span>
+            <select
+              className={`project-settings-select${selectedProject.run_effort ? " quota-active" : ""}`}
+              value={selectedProject.run_effort || ""}
+              onChange={async (e) => {
+                const val = e.target.value;
+                try {
+                  if (val === "") {
+                    await api.updateProject(selectedProject.id, { clear_run_effort: true });
+                  } else {
+                    await api.updateProject(selectedProject.id, { run_effort: val });
+                  }
+                  onRefresh();
+                } catch (err) {
+                  addToast(err instanceof Error ? err.message : "Failed to update effort", "error");
+                }
+              }}
+            >
+              <option value="">global</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
             </select>
           </label>
         </div>
@@ -1154,7 +1189,7 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
                             {projGroups.size > 1 && <div className="project-group-header project-group-header-sub">{projectName(pid)}</div>}
                             {projItems.map((t) => (
                               <div key={t.id}>
-                                <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                                <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
                               </div>
                             ))}
                           </div>
@@ -1167,7 +1202,7 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
                       <div className="done-group-header">{day}</div>
                       {items.map((t) => (
                         <div key={t.id}>
-                          <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                          <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
                         </div>
                       ))}
                     </div>

@@ -17,6 +17,12 @@ def _now() -> str:
 
 TodoStatus = Literal["next", "in_progress", "completed", "consider", "waiting", "stale", "rejected"]
 
+# Effort levels accepted by the Claude CLI's --effort flag.
+# See https://code.claude.com/docs/en/model-config#adjust-effort-level
+EffortLevel = Literal["low", "medium", "high", "xhigh", "max"]
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT: str = "high"
+
 
 class ImageAttachment(BaseModel):
     filename: str
@@ -36,6 +42,7 @@ class Project(BaseModel):
     autopilot_starts_at: Optional[str] = None  # ISO timestamp: when to activate scheduled_auto_run_quota
     todo_quota: int = 0  # 0 = unlimited, 1+ = max todo runs per 24h sliding window
     run_model: Optional[str] = None  # None = use global setting, "opus"/"sonnet"/"haiku" = override
+    run_effort: Optional[str] = None  # None = use global setting, "low"/"medium"/"high"/"xhigh"/"max" = override
     pinned: bool = False  # When True, project is shown in the pinned sidebar section (not collapsible)
     created_at: str = Field(default_factory=_now)
     deleted_at: Optional[str] = None  # ISO-8601 timestamp; non-null = soft-deleted (in trash, restorable)
@@ -97,6 +104,7 @@ class Todo(BaseModel):
     run_context_tokens: Optional[int] = None  # last turn's input+cache_read — true current context size
     run_finished_at: Optional[str] = None  # ISO-8601 timestamp: when the last run/follow-up finished
     run_after: Optional[str] = None  # ISO-8601 timestamp: skip this todo until this time passes
+    run_effort: Optional[str] = None  # Claude CLI --effort override: "low"/"medium"/"high"/"xhigh"/"max"; None = inherit project/global default
     autopilot: bool = False  # When True, analyzer-generated follow-ups are auto-sent to keep the session alive
     suggested_followup: Optional[str] = None  # Analyzer-generated next message (shown to user when autopilot is off)
     suggested_followup_at: Optional[str] = None  # ISO-8601 timestamp: when the suggestion was generated
@@ -183,6 +191,7 @@ class Settings(BaseModel):
     analysis_interval_minutes: int = Field(default=30, ge=1, le=60)
     analysis_model: str = "haiku"
     run_model: str = "opus"
+    run_effort: str = DEFAULT_EFFORT  # default Claude CLI --effort level for runs and follow-ups
     heartbeat_enabled: bool = True
     hook_analysis_enabled: bool = True
     local_image_storage: bool = False
@@ -194,6 +203,7 @@ class SettingsUpdate(BaseModel):
     analysis_interval_minutes: Optional[int] = Field(default=None, ge=1, le=60)
     analysis_model: Optional[str] = None
     run_model: Optional[str] = None
+    run_effort: Optional[str] = None
     heartbeat_enabled: Optional[bool] = None
     hook_analysis_enabled: Optional[bool] = None
     local_image_storage: Optional[bool] = None
@@ -215,6 +225,7 @@ class Metadata(BaseModel):
     analysis_interval_minutes: int = 30
     analysis_model: str = "haiku"
     run_model: str = "opus"
+    run_effort: str = DEFAULT_EFFORT
     insights: List[Insight] = []
     analysis_session_ids: List[str] = []
     heartbeat_enabled: bool = True
@@ -232,6 +243,7 @@ class Metadata(BaseModel):
             analysis_interval_minutes=self.analysis_interval_minutes,
             analysis_model=self.analysis_model,
             run_model=self.run_model,
+            run_effort=self.run_effort,
             heartbeat_enabled=self.heartbeat_enabled,
             hook_analysis_enabled=self.hook_analysis_enabled,
             local_image_storage=self.local_image_storage,
@@ -246,6 +258,10 @@ class Metadata(BaseModel):
             self.analysis_model = update.analysis_model
         if update.run_model is not None:
             self.run_model = update.run_model
+        if update.run_effort is not None:
+            if update.run_effort not in EFFORT_LEVELS:
+                raise ValueError(f"run_effort must be one of {EFFORT_LEVELS}")
+            self.run_effort = update.run_effort
         if update.heartbeat_enabled is not None:
             self.heartbeat_enabled = update.heartbeat_enabled
         if update.hook_analysis_enabled is not None:
@@ -281,6 +297,8 @@ class ProjectUpdate(BaseModel):
     todo_quota: Optional[int] = None
     run_model: Optional[str] = None  # None = use global, "opus"/"sonnet"/"haiku" = override
     clear_run_model: bool = False  # When True, clears per-project run_model override
+    run_effort: Optional[str] = None  # None = use global, "low"/"medium"/"high"/"xhigh"/"max" = override
+    clear_run_effort: bool = False  # When True, clears per-project run_effort override
     pinned: Optional[bool] = None
 
 
@@ -303,6 +321,8 @@ class TodoUpdate(BaseModel):
     run_after: Optional[str] = None  # ISO-8601 timestamp; set to "" to clear
     parent_todo_id: Optional[str] = None  # Set to "" to clear the manual parent link
     autopilot: Optional[bool] = None  # Toggle the autopilot flag on the todo
+    run_effort: Optional[str] = None  # Per-todo effort override; "" or "default" to clear and inherit
+    clear_run_effort: bool = False  # When True, clears per-todo run_effort override
 
 
 class TodoReorder(BaseModel):

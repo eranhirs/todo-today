@@ -47,6 +47,7 @@ interface Props {
   onOutputOpen?: (todoId: string) => void;
   onNavigateToTodo?: (todoId: string, projectId: string) => void;
   runModel?: string;
+  runEffort?: string;
   sessionAutopilot?: Record<string, number>;
   parentTodo?: Todo | null;
   referencedBy?: Todo[];
@@ -64,7 +65,7 @@ const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
 ];
 
 
-export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, onNavigateToTodo, runModel = "opus", sessionAutopilot = {}, parentTodo = null, referencedBy = [], analysisHistory = [] }: Props) {
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, onNavigateToTodo, runModel = "opus", runEffort = "high", sessionAutopilot = {}, parentTodo = null, referencedBy = [], analysisHistory = [] }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic } = useAppContext();
   const commands = allCommands ?? [];
   const [editing, setEditing] = useState(false);
@@ -763,6 +764,22 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         {todo.run_trigger === "autopilot" && (
           <span className="badge badge-autopilot" title="Run by autopilot">🚀</span>
         )}
+        {todo.run_effort && (
+          <button
+            className="badge badge-effort"
+            title={`This todo overrides effort to "${todo.run_effort}". Click to clear and inherit project/global default.`}
+            onClick={async (e) => {
+              e.stopPropagation();
+              try {
+                await api.updateTodo(todo.id, { clear_run_effort: true });
+                onRefresh();
+                addToast("Cleared per-todo effort override", "info");
+              } catch {
+                addToast("Failed to clear effort override", "error");
+              }
+            }}
+          >🎚 {todo.run_effort}</button>
+        )}
         {isActive && !todo.manual && (
           <button
             className={`badge badge-session-keep-alive${todo.autopilot ? " active" : ""}`}
@@ -1230,7 +1247,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         </div>
       );
     })()}
-    <TodoOutput todo={todo} showOutput={showOutput} disabled={disabled} allCommands={allCommands} />
+    <TodoOutput todo={todo} showOutput={showOutput} disabled={disabled} allCommands={allCommands} effectiveEffort={runEffort} />
     </>
   );
 }

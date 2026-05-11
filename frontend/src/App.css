@@ -1589,6 +1589,30 @@ body {
   font-weight: 600;
 }
 
+/* Effort selector — used in run controls and follow-up bar */
+.effort-select {
+  padding: 1px 2px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  cursor: pointer;
+  min-width: 0;
+  width: 64px;
+  margin: 0 2px;
+}
+.effort-select:hover {
+  border-color: var(--accent-light);
+  color: var(--text);
+}
+.effort-select.effort-overridden {
+  color: var(--accent-light);
+  border-color: var(--accent-light);
+  background: rgba(108, 92, 231, 0.1);
+  font-weight: 600;
+}
+
 /* Todo schedule control */
 .todo-schedule-control {
   display: inline-flex;

@@ -306,6 +306,24 @@ _detect_exit_plan_mode = detect_exit_plan_mode
 _detect_plan_mode = detect_plan_mode
 
 
+def _resolve_effort(todo, project, metadata) -> str:
+    """Resolve the effort level for a Claude run.
+
+    Precedence: per-todo override > per-project override > global setting.
+    Falls back to DEFAULT_EFFORT if nothing else is set.
+    """
+    from .models import DEFAULT_EFFORT, EFFORT_LEVELS
+    candidates = (
+        getattr(todo, "run_effort", None) if todo is not None else None,
+        getattr(project, "run_effort", None) if project is not None else None,
+        getattr(metadata, "run_effort", None) if metadata is not None else None,
+    )
+    for value in candidates:
+        if value and value in EFFORT_LEVELS:
+            return value
+    return DEFAULT_EFFORT
+
+
 # ── BTW (by-the-way) sessions — delegated to btw_manager ────────
 from .btw_manager import is_btw_running, run_btw_for_todo, start_btw  # noqa: E402, F401
 
@@ -325,11 +343,13 @@ def _invoke_claude(
     output_file: Path,
     resume: bool = False,
     plan_only: bool = False,
+    effort: Optional[str] = None,
 ) -> tuple[Optional[dict], list[dict], int]:
     """Run a single claude -p invocation with a detached subprocess writing to output_file.
 
     Returns (final_result, stream_objects, returncode).
     """
+    from .models import EFFORT_LEVELS
     disallowed = ["AskUserQuestion"]
     if plan_only:
         disallowed.extend(["Bash", "NotebookEdit"])
@@ -339,6 +359,9 @@ def _invoke_claude(
         "--disallowedTools", ",".join(disallowed),
         "--model", model,
     ]
+    if effort and effort in EFFORT_LEVELS:
+        cmd.extend(["--effort", effort])
+    log.info("claude run for todo %s: model=%s effort=%s plan_only=%s resume=%s", todo_id, model, effort or "(default)", plan_only, resume)
     if plan_only:
         # Restrict Write/Edit to the project's plans/ directory via a PreToolUse
         # hook so Claude can save and refine its plan file but cannot use
@@ -522,6 +545,7 @@ def start_followup(todo_id: str, message: str) -> str | None:
         session_id = todo.session_id
         plan_only = todo.plan_only
         run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
+        run_effort = _resolve_effort(todo, project, ctx.metadata)
 
         # Move the todo back to active state and append the follow-up marker.
         todo.completed_at = None
@@ -535,7 +559,7 @@ def start_followup(todo_id: str, message: str) -> str | None:
 
     process_manager.spawn_thread(
         todo_id, _followup_claude_for_todo,
-        (todo_id, message, session_id, source_path, run_model, project_id, None, plan_only),
+        (todo_id, message, session_id, source_path, run_model, project_id, None, plan_only, run_effort),
     )
     return None
 
@@ -549,6 +573,7 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
     followup_msg = None
     followup_images: list[str] = []
     followup_plan_only = False
+    followup_effort: Optional[str] = None
     session_id = None
     with StorageContext() as ctx:
         t = ctx.get_todo(todo_id)
@@ -563,6 +588,10 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
             t.run_status = "running"
             t.status = "in_progress"
             t.completed_at = None
+            # Resolve effort using the todo's current per-todo override (the
+            # follow-up may have asked for a different level via /effort:high)
+            project = ctx.get_project(t.project_id)
+            followup_effort = _resolve_effort(t, project, ctx.metadata)
             # Append the follow-up message to output now that it's actually starting
             img_suffix = format_image_suffix(followup_images)
             t.run_output = (t.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {followup_msg}{img_suffix}\n<<END_USER_MSG>>\n"
@@ -570,7 +599,7 @@ def _start_pending_followup(todo_id: str, source_path: str, model: str, project_
     if followup_msg and session_id:
         process_manager.spawn_thread(
             todo_id, _followup_claude_for_todo,
-            (todo_id, followup_msg, session_id, source_path, model, project_id, followup_images, followup_plan_only),
+            (todo_id, followup_msg, session_id, source_path, model, project_id, followup_images, followup_plan_only, followup_effort),
         )
         return True
     return False
@@ -620,7 +649,7 @@ def _resolve_todo_references(todo_text: str) -> str:
     return result_text
 
 
-def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "", plan_only: bool = False, images: list[str] | None = None) -> None:
+def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: str = "opus", project_id: str = "", plan_only: bool = False, images: list[str] | None = None, effort: Optional[str] = None) -> None:
     """Background thread: run claude -p, auto-accepting plan mode if needed."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
     try:
@@ -698,7 +727,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
             final_result, stream_objects, returncode = _invoke_claude(
                 todo_id, prompt, session_id, source_path, model, env,
                 accumulated, session_header, output_file, resume=is_resume,
-                plan_only=plan_only,
+                plan_only=plan_only, effort=effort,
             )
             all_stream_objects.extend(stream_objects)
 
@@ -762,7 +791,7 @@ def _run_claude_for_todo(todo_id: str, todo_text: str, source_path: str, model: 
                 autopilot_continue(project_id)
 
 
-def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "", images: list[str] | None = None, plan_only: bool = False) -> None:
+def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, source_path: str, model: str = "opus", project_id: str = "", images: list[str] | None = None, plan_only: bool = False, effort: Optional[str] = None) -> None:
     """Background thread: send a follow-up message to an existing Claude session."""
     output_file = _RUNS_DIR / f"{todo_id}.jsonl"
     try:
@@ -795,7 +824,7 @@ def _followup_claude_for_todo(todo_id: str, message: str, session_id: str, sourc
         final_result, stream_objects, returncode = _invoke_claude(
             todo_id, prompt, session_id, source_path, model, env,
             accumulated, session_header, output_file, resume=True,
-            plan_only=plan_only,
+            plan_only=plan_only, effort=effort,
         )
 
         _finalize_run(todo_id, final_result, returncode, accumulated, session_header, output_file, plan_only=plan_only, stream_objects=stream_objects, source_path=source_path, run_started_at=run_started_at)
@@ -1232,10 +1261,11 @@ def start_todo_run(todo_id: str, autopilot: bool = False) -> str | None:
         proj_id = todo.project_id
         # Resolve model: per-project override > global setting
         run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
+        run_effort = _resolve_effort(todo, project, ctx.metadata)
         is_plan_only = todo.plan_only
         todo_images = [img.filename for img in todo.images] if todo.images else None
 
-    process_manager.spawn_thread(todo_id, _run_claude_for_todo, (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only, todo_images))
+    process_manager.spawn_thread(todo_id, _run_claude_for_todo, (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only, todo_images, run_effort))
     return None
 
 
@@ -1287,6 +1317,7 @@ def _process_queue(project_id: str) -> None:
         todo_text = candidate.text
         # Resolve model: per-project override > global setting
         run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
+        run_effort = _resolve_effort(candidate, project, ctx.metadata)
         is_plan_only = candidate.plan_only
         todo_images = [img.filename for img in candidate.images] if candidate.images else None
 
@@ -1313,12 +1344,12 @@ def _process_queue(project_id: str) -> None:
     if followup_session and followup_msg:
         process_manager.spawn_thread(
             todo_id, _followup_claude_for_todo,
-            (todo_id, followup_msg, followup_session, source_path, run_model, project_id, followup_images, followup_plan_only),
+            (todo_id, followup_msg, followup_session, source_path, run_model, project_id, followup_images, followup_plan_only, run_effort),
         )
     else:
         process_manager.spawn_thread(
             todo_id, _run_claude_for_todo,
-            (todo_id, todo_text, source_path, run_model, project_id, is_plan_only, todo_images),
+            (todo_id, todo_text, source_path, run_model, project_id, is_plan_only, todo_images, run_effort),
         )
     log.info("Queue: auto-started todo %s for project %s", todo_id, project_id)
 
@@ -1484,6 +1515,7 @@ def run_queued_now(todo_id: str) -> str | None:
             todo.run_started_at = _now()
         todo_text = todo.text
         run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
+        run_effort = _resolve_effort(todo, project, ctx.metadata)
         is_plan_only = todo.plan_only
         todo_images = [img.filename for img in todo.images] if todo.images else None
 
@@ -1508,12 +1540,12 @@ def run_queued_now(todo_id: str) -> str | None:
     if followup_session and followup_msg:
         process_manager.spawn_thread(
             todo_id, _followup_claude_for_todo,
-            (todo_id, followup_msg, followup_session, source_path, run_model, proj_id, followup_images, followup_plan_only),
+            (todo_id, followup_msg, followup_session, source_path, run_model, proj_id, followup_images, followup_plan_only, run_effort),
         )
     else:
         process_manager.spawn_thread(
             todo_id, _run_claude_for_todo,
-            (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only, todo_images),
+            (todo_id, todo_text, source_path, run_model, proj_id, is_plan_only, todo_images, run_effort),
         )
     log.info("run_queued_now: bumped todo %s to run concurrently in project %s", todo_id, proj_id)
     return None
