@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProjectList } from "./components/ProjectList";
 import { TodoList } from "./components/TodoList";
 import { Dashboard } from "./components/Dashboard";
@@ -35,6 +35,8 @@ function App() {
     notifyNewWaitingTodos,
     notifyHookEvents,
     notifyRunCompletions,
+    notifyRunForTodo,
+    clearRunNotification,
   } = useNotifications();
 
   const {
@@ -56,7 +58,42 @@ function App() {
     notifyHookEvents,
   });
 
-  useEventBus({ onRefreshNeeded: refresh });
+  // Mirror state into a ref so SSE event handlers (which subscribe once) can
+  // read the current todos/projects when an event fires.
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const { subscribe } = useEventBus({ onRefreshNeeded: refresh });
+
+  // Fire run-completion browser notifications directly from SSE events.
+  // The polling-driven `notifyRunCompletions` path can miss notifications when:
+  //   1. The tab is hidden — `triggerRefresh` defers the refresh, and the
+  //      eventual refresh on return is forced silent to avoid stale bursts.
+  //   2. A run is fast enough that the running→done transition happens within
+  //      a single 500ms refresh debounce window, so polling never observes
+  //      "running" and thus has no transition to react to.
+  // Both paths share `recentlyNotifiedRunIds` for dedup.
+  useEffect(() => {
+    const fire = (outcome: "success" | "error") => (e: { data: Record<string, unknown> }) => {
+      const todoId = e.data.todo_id as string | undefined;
+      if (!todoId) return;
+      const s = stateRef.current;
+      if (!s) return;
+      const todo = s.todos.find((t) => t.id === todoId);
+      if (!todo) return;
+      notifyRunForTodo(todo, s.projects, outcome);
+    };
+    const handleStart = (e: { data: Record<string, unknown> }) => {
+      const todoId = e.data.todo_id as string | undefined;
+      if (todoId) clearRunNotification(todoId);
+    };
+    const unsubs = [
+      subscribe("run.completed", fire("success")),
+      subscribe("run.failed", fire("error")),
+      subscribe("run.started", handleStart),
+    ];
+    return () => { for (const u of unsubs) u(); };
+  }, [subscribe, notifyRunForTodo, clearRunNotification]);
 
   const {
     showShortcuts,
@@ -235,26 +272,95 @@ function App() {
           <button
             className="btn-link"
             style={{ marginLeft: 8, fontSize: "0.75rem", opacity: 0.7 }}
-            onClick={() => {
-              if (!("Notification" in window) || Notification.permission !== "granted") {
-                addToast("Browser notifications not permitted", "error");
+            onClick={async () => {
+              const log = (msg: string) => { console.warn("[notif-diag]", msg); };
+
+              if (!("Notification" in window)) {
+                log("Notification API is not present on window");
+                addToast("✗ Browser does not support the Notification API", "error", { duration: 20_000 });
                 return;
               }
-              const samples: [string, string, keyof typeof NOTIF_ICONS][] = [
-                ["New waiting todo", "Refactor auth module", "todo"],
-                ["Waiting for approval", "Bash: rm -rf node_modules", "approval"],
-                ["Waiting for user input", "Which database should I use?", "user_input"],
-                ["Session finished", "Completed 3 tasks", "ended"],
-                ["Run completed", "Deploy script succeeded", "run_success"],
-                ["Run failed", "Tests failed with 2 errors", "run_error"],
-              ];
-              addToast("Notification in 3s — switch to another tab!", "info");
+              log(`Notification API present. userAgent=${navigator.userAgent}`);
+
+              if (!window.isSecureContext) {
+                log("Page is not a secure context — Notification API blocks non-HTTPS/non-localhost origins");
+                addToast("✗ Not a secure context (need HTTPS or localhost) — Notification API will be blocked", "error", { duration: 20_000 });
+                return;
+              }
+              log(`Secure context OK. origin=${window.location.origin}`);
+
+              let perm = Notification.permission;
+              log(`Initial permission state: ${perm}`);
+              addToast(`Permission: ${perm}`, perm === "granted" ? "success" : "warning");
+
+              if (perm === "default") {
+                addToast("Requesting notification permission…", "info");
+                try {
+                  perm = await Notification.requestPermission();
+                  log(`Permission after request: ${perm}`);
+                  addToast(`After request: ${perm}`, perm === "granted" ? "success" : "warning");
+                } catch (err) {
+                  log(`requestPermission threw: ${err}`);
+                  addToast(`✗ requestPermission failed: ${err}`, "error", { duration: 20_000 });
+                  return;
+                }
+              }
+
+              if (perm === "denied") {
+                addToast("✗ Permission denied — open the site settings (lock icon) and allow notifications, then reload", "error", { duration: 30_000 });
+                return;
+              }
+              if (perm !== "granted") {
+                addToast(`✗ Cannot proceed — permission is "${perm}"`, "error", { duration: 20_000 });
+                return;
+              }
+
+              addToast("Firing test notification now (no delay)…", "info");
+              let shown = false;
+              let errored = false;
+              try {
+                const n = new Notification("Claude Todos — Diagnostic", {
+                  body: "If you see this, browser notifications work. ✓",
+                  icon: NOTIF_ICONS.todo,
+                  tag: "claude-todos-diagnostic",
+                  requireInteraction: false,
+                });
+                log("Notification constructor returned without throwing");
+                n.onshow = () => {
+                  shown = true;
+                  log("onshow fired — browser displayed the notification");
+                };
+                n.onerror = (e) => {
+                  errored = true;
+                  log(`onerror fired: ${JSON.stringify(e)}`);
+                };
+                n.onclick = () => { window.focus(); n.close(); };
+                n.onclose = () => log("onclose fired");
+
+                setTimeout(() => {
+                  if (errored) {
+                    addToast("✗ Notification fired but reported an error — check console", "error", { duration: 30_000 });
+                  } else if (shown) {
+                    addToast("✓ Notification was shown by the browser. If you didn't see it, check OS Do-Not-Disturb / focus mode / notification center.", "success", { duration: 30_000 });
+                  } else {
+                    addToast("? onshow never fired within 1.5s — the browser likely suppressed it (OS Do-Not-Disturb, focus mode, or browser background-tab throttling). Check console for details.", "warning", { duration: 30_000 });
+                    log("onshow did not fire within 1.5s — likely OS-level suppression. On Linux check ~/.config/dunst, GNOME Do-Not-Disturb, or browser-level notification settings. On macOS check System Settings → Notifications → <browser>. Some browsers also suppress notifications when the page is focused or after recent dismissal.");
+                  }
+                  log(`document.hasFocus=${document.hasFocus()}, document.hidden=${document.hidden}, visibilityState=${document.visibilityState}`);
+                }, 1500);
+              } catch (err: any) {
+                log(`Notification constructor threw: ${err?.message ?? err}`);
+                addToast(`✗ Notification constructor threw: ${err?.message ?? err}`, "error", { duration: 30_000 });
+                return;
+              }
+
               setTimeout(() => {
-                const idx = (window as any).__notifTestIdx ?? 0;
-                const [, body, key] = samples[idx % samples.length];
-                (window as any).__notifTestIdx = idx + 1;
-                notify(`[Test] ${body}`, idx % 2 === 0 ? "warning" : "success", NOTIF_ICONS[key]);
-              }, 3000);
+                addToast("Firing 2nd notification in 3s — switch to another tab to test background delivery!", "info");
+                setTimeout(() => {
+                  notify("[Test] Background-tab notification", "warning", NOTIF_ICONS.todo);
+                  log("Fired delayed notification via notify()");
+                }, 3000);
+              }, 2000);
             }}
           >
             Test
@@ -366,6 +472,7 @@ function App() {
             loadingMoreCompleted={loadingMore}
             unreadCounts={pinnedUnreadCounts}
             globalRunModel={state.settings.run_model}
+            globalRunEffort={state.settings.run_effort}
             sessionAutopilot={state.session_autopilot ?? {}}
             analysisHistory={state.metadata.history}
             onNavigateToTodo={handleNavigateToTodo}

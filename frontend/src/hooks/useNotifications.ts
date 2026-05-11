@@ -52,6 +52,10 @@ export function useNotifications() {
   const [showNotifLog, setShowNotifLog] = useState(false);
   const knownWaitingIds = useRef<Set<string> | null>(null);
   const knownRunningIds = useRef<Set<string>>(new Set());
+  // Set of todo ids whose latest run completion has already been notified —
+  // shared between the SSE-driven path (notifyRunForTodo) and the polling path
+  // (notifyRunCompletions) so the same completion never fires twice.
+  const recentlyNotifiedRunIds = useRef<Set<string>>(new Set());
   const knownHookStates = useRef<Map<string, string>>(new Map());
   const hookSeeded = useRef(false);
   const titleFlashTimer = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -111,7 +115,10 @@ export function useNotifications() {
   const notify = useCallback((msg: string, type: ToastType, icon: string, action?: ToastAction) => {
     addToast(msg, type, action ? { action } : undefined);
     if ("Notification" in window && Notification.permission === "granted") {
-      const n = new Notification("Claude Todos", { body: msg, icon });
+      // requireInteraction keeps the notification on screen until the user
+      // dismisses or clicks it — without it Chrome/Edge auto-close after ~4s,
+      // which is too short to read multi-line messages like run completions.
+      const n = new Notification("Claude Todos", { body: msg, icon, requireInteraction: true });
       n.onclick = () => { window.focus(); n.close(); };
     }
     // Always flash the title when tab is not focused — native notifications
@@ -208,6 +215,36 @@ export function useNotifications() {
     }
   }, [notify]);
 
+  // Fires a run-completion notification for a single todo (used by both the
+  // SSE event handler and the polling-based path). Dedupes via
+  // recentlyNotifiedRunIds so the same completion isn't announced twice.
+  // `outcome` overrides the success/error/stopped detection — needed for the
+  // SSE path because the cached todo's run_status may still be "running" when
+  // the event arrives (state hasn't been refetched yet).
+  const notifyRunForTodo = useCallback((todo: Todo, projects: Project[], outcome?: "success" | "error" | "stopped") => {
+    if (recentlyNotifiedRunIds.current.has(todo.id)) return;
+    const resolved = outcome ?? (
+      todo.run_status === "error" ? "error" :
+      todo.run_status === "stopped" ? "stopped" :
+      "success"
+    );
+    // Skip notification for paused (stopped) runs — the pause action
+    // already shows its own toast, so a "run completed" would be redundant.
+    if (resolved === "stopped") return;
+    recentlyNotifiedRunIds.current.add(todo.id);
+    const isError = resolved === "error";
+    const project = projects.find((p) => p.id === todo.project_id);
+    const projectLabel = project ? ` [${getDisplayName(project.id) || project.name}]` : "";
+    const msg = isError ? `Run failed${projectLabel}: ${todo.text}` : `Run completed${projectLabel}: ${todo.text}`;
+    notify(msg, isError ? "error" : "success", isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success);
+  }, [notify]);
+
+  // Called when a new run starts for a todo — clears the dedup entry so the
+  // next completion can fire a notification.
+  const clearRunNotification = useCallback((todoId: string) => {
+    recentlyNotifiedRunIds.current.delete(todoId);
+  }, []);
+
   const notifyRunCompletions = useCallback((todos: Todo[], projects: Project[], silent?: boolean) => {
     const prev = knownRunningIds.current;
     const nowRunning = new Set(
@@ -218,22 +255,19 @@ export function useNotifications() {
       for (const id of prev) {
         if (!nowRunning.has(id)) {
           const todo = todos.find((t) => t.id === id);
-          if (todo) {
-            // Skip notification for paused (stopped) runs — the pause action
-            // already shows its own toast, so a "run completed" would be redundant.
-            if (todo.run_status === "stopped") continue;
-            const isError = todo.run_status === "error";
-            const project = projects.find((p) => p.id === todo.project_id);
-            const projectLabel = project ? ` [${getDisplayName(project.id) || project.name}]` : "";
-            const msg = isError ? `Run failed${projectLabel}: ${todo.text}` : `Run completed${projectLabel}: ${todo.text}`;
-            notify(msg, isError ? "error" : "success", isError ? NOTIF_ICONS.run_error : NOTIF_ICONS.run_success);
-          }
+          if (todo) notifyRunForTodo(todo, projects);
         }
       }
     }
 
+    // Reset dedup entries for todos that are running again — a new run after a
+    // previous completion deserves its own notification when it finishes.
+    for (const id of nowRunning) {
+      recentlyNotifiedRunIds.current.delete(id);
+    }
+
     knownRunningIds.current = nowRunning;
-  }, [notify]);
+  }, [notifyRunForTodo]);
 
   return {
     toasts,
@@ -246,6 +280,8 @@ export function useNotifications() {
     notifyNewWaitingTodos,
     notifyHookEvents,
     notifyRunCompletions,
+    notifyRunForTodo,
+    clearRunNotification,
     NOTIF_ICONS,
   };
 }
