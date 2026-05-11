@@ -216,6 +216,9 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
   const [copied, setCopied] = useState(false);
   const [pendingImages, setPendingImages] = useState<{ filename: string; previewUrl: string }[]>([]);
   const [uploading, setUploading] = useState(false);
+  // True from the moment a follow-up/btw send begins until the server responds.
+  // Blocks duplicate sends from rapid Enter presses or button double-clicks.
+  const [sending, setSending] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
   const btwOutputRef = useRef<HTMLPreElement>(null);
   const runPinnedToBottom = useRef(true);
@@ -505,12 +508,14 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
   }, [handleImageUpload]);
 
   const sendFollowup = async (planOnly: boolean) => {
+    if (sending) return;
     if (disabled) {
       addToast("You're offline — follow-ups aren't available right now", "warning");
       return;
     }
     const msg = followupText.trim();
     if (!msg && pendingImages.length === 0) return;
+    setSending(true);
     try {
       const imageFilenames = pendingImages.map((img) => img.filename);
       const result = await api.followupTodo(todo.id, msg, imageFilenames, planOnly);
@@ -526,10 +531,13 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
       onRefresh();
     } catch {
       addToast("Failed to send follow-up", "error");
+    } finally {
+      setSending(false);
     }
   };
 
   const sendRunningMessage = async (planOnly = false) => {
+    if (sending) return;
     if (disabled) {
       addToast("You're offline — messages aren't available right now", "warning");
       return;
@@ -543,6 +551,7 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
     if (isBtwMessage) {
       const msg = onBtwTab ? raw : raw.replace(/^\/btw\s*/i, "").trim();
       if (!msg) return;
+      setSending(true);
       try {
         await api.btwTodo(todo.id, msg);
         setBtwText("");
@@ -551,9 +560,12 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
       } catch (err) {
         const detail = err instanceof Error ? err.message : "Failed to send /btw";
         addToast(detail, "error");
+      } finally {
+        setSending(false);
       }
     } else {
       // Default: queue as a follow-up that runs after the current run finishes
+      setSending(true);
       try {
         const imageFilenames = pendingImages.map((img) => img.filename);
         const result = await api.followupTodo(todo.id, raw, imageFilenames, planOnly);
@@ -570,6 +582,8 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
       } catch (err) {
         const detail = err instanceof Error ? err.message : "Failed to queue follow-up";
         addToast(detail, "error");
+      } finally {
+        setSending(false);
       }
     }
   };
@@ -843,15 +857,16 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
                 ref={btwInputRef}
                 className="followup-input"
                 rows={1}
-                placeholder={disabled ? "Server offline — changes disabled" : isBtwRunning ? "/btw running — wait for it to finish..." : activeTab === "btw" ? "Send /btw message (runs in parallel)..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
+                placeholder={disabled ? "Server offline — changes disabled" : sending ? "Sending…" : isBtwRunning ? "/btw running — wait for it to finish..." : activeTab === "btw" ? "Send /btw message (runs in parallel)..." : "Queue follow-up for when this finishes (or /btw for side-channel)..."}
                 value={btwText}
-                disabled={disabled}
+                disabled={disabled || sending}
                 onChange={(e) => setBtwText(e.target.value)}
                 onPaste={handleFollowupPaste}
                 onKeyDown={(e) => {
                   if (handleCmdKeyDown(e, btwInputRef, setBtwText, btwText)) return;
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
+                    if (sending) return;
                     sendRunningMessage(e.altKey);
                   }
                   if (e.key === "Escape") {
@@ -888,9 +903,9 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
             <button
               className={`btn-icon ${altHeld && activeTab === "run" ? "btn-plan" : "btn-run"}`}
               onClick={() => sendRunningMessage(altHeld && activeTab === "run")}
-              disabled={disabled}
-              title={altHeld && activeTab === "run" ? "Queue plan-only follow-up (Alt+Enter)" : activeTab === "run" ? "Queue follow-up (Enter) · Hold ⌥ for plan-only" : "Send message (Enter)"}
-            >{altHeld && activeTab === "run" ? "📋" : "↵"}</button>
+              disabled={disabled || sending}
+              title={sending ? "Sending…" : altHeld && activeTab === "run" ? "Queue plan-only follow-up (Alt+Enter)" : activeTab === "run" ? "Queue follow-up (Enter) · Hold ⌥ for plan-only" : "Send message (Enter)"}
+            >{sending ? "⏳" : altHeld && activeTab === "run" ? "📋" : "↵"}</button>
           </div>
         </div>
       )}
@@ -939,17 +954,21 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
             >Use</button>
             <button
               className="btn-link suggested-followup-send"
+              disabled={sending}
               onClick={() => {
+                if (sending) return;
                 const msg = todo.suggested_followup!;
                 setFollowupText("");
+                setSending(true);
                 api.followupTodo(todo.id, msg, []).then(() => {
                   addToast("Follow-up sent", "success");
                   api.dismissSuggestedFollowup(todo.id).catch(() => {});
                   onRefresh();
-                }).catch(() => addToast("Failed to send follow-up", "error"));
+                }).catch(() => addToast("Failed to send follow-up", "error"))
+                  .finally(() => setSending(false));
               }}
-              title="Send the suggestion as a follow-up immediately"
-            >Send</button>
+              title={sending ? "Sending…" : "Send the suggestion as a follow-up immediately"}
+            >{sending ? "Sending…" : "Send"}</button>
             <button
               className="btn-link suggested-followup-dismiss"
               onClick={async () => {
@@ -1008,15 +1027,16 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
                 ref={followupRef}
                 className="followup-input"
                 rows={1}
-                placeholder={disabled ? "Server offline — changes disabled" : todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
+                placeholder={disabled ? "Server offline — changes disabled" : sending ? "Sending…" : todo.run_status === "stopped" ? "Continue this session..." : "Send follow-up to this session..."}
                 value={followupText}
-                disabled={disabled}
+                disabled={disabled || sending}
                 onChange={(e) => setFollowupText(e.target.value)}
                 onPaste={handleFollowupPaste}
                 onKeyDown={(e) => {
                   if (handleCmdKeyDown(e, followupRef, setFollowupText, followupText)) return;
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
+                    if (sending) return;
                     sendFollowup(e.altKey);
                   }
                 }}
@@ -1043,9 +1063,9 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands }: 
             <button
               className={`btn-icon ${altHeld ? "btn-plan" : "btn-run"}`}
               onClick={() => sendFollowup(altHeld)}
-              disabled={disabled}
-              title={altHeld ? "Send plan-only follow-up (Alt+Enter)" : "Send follow-up (Enter) · Hold ⌥ for plan-only"}
-            >{altHeld ? "📋" : "▶"}</button>
+              disabled={disabled || sending}
+              title={sending ? "Sending…" : altHeld ? "Send plan-only follow-up (Alt+Enter)" : "Send follow-up (Enter) · Hold ⌥ for plan-only"}
+            >{sending ? "⏳" : altHeld ? "📋" : "▶"}</button>
           </div>
         </div>
       )}
