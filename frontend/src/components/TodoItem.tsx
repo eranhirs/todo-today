@@ -51,6 +51,7 @@ interface Props {
   sessionAutopilot?: Record<string, number>;
   parentTodo?: Todo | null;
   referencedBy?: Todo[];
+  references?: Todo[];
   analysisHistory?: AnalysisEntry[];
 }
 
@@ -65,7 +66,7 @@ const STATUS_OPTIONS: { value: TodoStatus; label: string; icon: string }[] = [
 ];
 
 
-export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, onNavigateToTodo, runModel = "opus", runEffort = "high", sessionAutopilot = {}, parentTodo = null, referencedBy = [], analysisHistory = [] }: Props) {
+export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFocused = false, triggerEdit, projectBusy = false, atRunQuotaLimit = false, quotaCountdown = "", disabled = false, sourcePath = "", onOutputOpen, onNavigateToTodo, runModel = "opus", runEffort = "high", sessionAutopilot = {}, parentTodo = null, referencedBy = [], references = [], analysisHistory = [] }: Props) {
   const { addToast, onRefresh, onOptimisticUpdate, optimistic } = useAppContext();
   const commands = allCommands ?? [];
   const [editing, setEditing] = useState(false);
@@ -695,6 +696,19 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
             }}
           >↗ ref {referencedBy.length}</span>
         )}
+        {references.length > 0 && (
+          <span
+            className="references-badge"
+            title={`References ${references.length} todo${references.length > 1 ? "s" : ""} — click to expand`}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (!showOutput) {
+                setShowOutput(true);
+                onOutputOpen?.(todo.id);
+              }
+            }}
+          >↘ refs {references.length}</span>
+        )}
         {todo.user_ordered && <span className="pinned-badge" title="Pinned order — you manually reordered this item">📌</span>}
         {isRunning && <PixelDino title={todo.plan_only ? "Claude is planning this..." : "Claude is working on this..."} />}
         {isQueued && <span className="queued-badge" title="Queued — waiting for current task to finish">queued</span>}
@@ -836,7 +850,7 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
           );
         })()}
         {todo.run_status === "error" && <span className="badge-run-error" title="Run failed">err</span>}
-        {isActive && !todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} runModel={runModel} />}
+        {isActive && !todo.manual && <TodoRunControls todo={todo} onRefresh={onRefresh} addToast={addToast} projectBusy={projectBusy} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={disabled} runModel={runModel} runEffort={runEffort} />}
         {!isRunning && !isQueued && (todo.status === "next" || todo.status === "completed") && !todo.manual && (() => {
           const sessionKey = todo.session_id || todo.source_session_id;
           const activeQuota = sessionKey ? (sessionAutopilot[sessionKey] ?? 0) : (todo.pending_session_autopilot ?? 0);
@@ -1157,6 +1171,28 @@ export function TodoItem({ todo, allTags = [], allTodos = [], allCommands, isFoc
         <span className="todo-referenced-by-label">Referenced by ({referencedBy.length}):</span>
         <ul className="todo-referenced-by-list">
           {referencedBy.map((ref) => (
+            <li key={ref.id} className="todo-referenced-by-item">
+              <span className={`todo-child-status status-${ref.status}`}>
+                {STATUS_OPTIONS.find(s => s.value === ref.status)?.icon ?? "·"}
+              </span>
+              <span
+                className="todo-child-link clickable"
+                onClick={() => goToTodo(ref.id, ref.project_id)}
+                title="Click to jump to this todo"
+              >{truncateText(ref.text, 120)}</span>
+              <span className={`todo-child-status-label status-${ref.status}`}>
+                {ref.status.replace("_", " ")}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    )}
+    {showOutput && references.length > 0 && (
+      <div className="todo-referenced-by-info todo-references-info">
+        <span className="todo-referenced-by-label todo-references-label">References ({references.length}):</span>
+        <ul className="todo-referenced-by-list">
+          {references.map((ref) => (
             <li key={ref.id} className="todo-referenced-by-item">
               <span className={`todo-child-status status-${ref.status}`}>
                 {STATUS_OPTIONS.find(s => s.value === ref.status)?.icon ?? "·"}

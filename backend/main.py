@@ -164,7 +164,7 @@ def _cleanup_stale_runs() -> None:
             t.project_id for t in ctx.store.todos
             if t.run_status == "queued" and t.project_id
         })
-        autopilot_project_ids = [p.id for p in ctx.store.projects if p.auto_run_quota > 0]
+        autopilot_project_ids = [p.id for p in ctx.store.projects if p.auto_run_quota > 0 and not p.deleted_at]
     for pid in queued_project_ids:
         _process_queue(pid)
     # After cleanup, try autopilot continuation for all projects with quota
@@ -184,6 +184,14 @@ async def lifespan(app: FastAPI):
 
     # Run startup cleanup in a thread so it doesn't block the event loop
     await run_in_thread(_cleanup_stale_runs)
+    # Permanently purge soft-deleted projects past the 30-day retention window.
+    try:
+        from .routers.projects import purge_old_trashed_projects
+        purged = await run_in_thread(purge_old_trashed_projects)
+        if purged:
+            log.info("Purged %d soft-deleted project(s) past retention window", purged)
+    except Exception:
+        log.exception("Failed to purge trashed projects")
     start_scheduler()
     # Catch up on hook events that fired while the server was down
     missed = get_missed_hook_sessions()
@@ -260,7 +268,11 @@ async def full_state(request: Request):
 
     def _do() -> FullState:
         with StorageContext(read_only=True) as ctx:
-            all_todos = ctx.store.todos
+            # Hide soft-deleted projects (and their todos) from the main UI;
+            # they remain on disk in case the user undoes the deletion.
+            active_projects = [p for p in ctx.store.projects if not p.deleted_at]
+            active_project_ids = {p.id for p in active_projects}
+            all_todos = [t for t in ctx.store.todos if t.project_id in active_project_ids]
             # Split: keep all non-completed, cap completed to first page
             non_completed = [t for t in all_todos if t.status != "completed"]
             completed = sorted(
@@ -280,7 +292,7 @@ async def full_state(request: Request):
                     unread_counts["_total"] += 1
                     unread_counts[t.project_id] = unread_counts.get(t.project_id, 0) + 1
             return FullState(
-                projects=ctx.store.projects,
+                projects=active_projects,
                 todos=non_completed + capped_completed,
                 metadata=ctx.metadata,
                 settings=ctx.metadata.get_settings(),

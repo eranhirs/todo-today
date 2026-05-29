@@ -33,6 +33,28 @@ export function buildReferencedByMap(todos: Todo[]): Map<string, Todo[]> {
 }
 
 /**
+ * Build a forward map of todo_id → list of todos that this todo mentions.
+ * Mirror of buildReferencedByMap so the UI can surface outgoing references too.
+ * Mentions whose target id is not in `todos` (e.g. paginated away or deleted)
+ * are skipped.
+ */
+export function buildReferencesMap(todos: Todo[]): Map<string, Todo[]> {
+  const byId = new Map<string, Todo>();
+  for (const t of todos) byId.set(t.id, t);
+  const map = new Map<string, Todo[]>();
+  for (const t of todos) {
+    const refs: Todo[] = [];
+    for (const refId of parseMentionIds(t.text)) {
+      if (refId === t.id) continue;
+      const target = byId.get(refId);
+      if (target) refs.push(target);
+    }
+    if (refs.length > 0) map.set(t.id, refs);
+  }
+  return map;
+}
+
+/**
  * Relaxed case-insensitive search across todo text and run_output. The query
  * is split on whitespace and every token must appear as a substring in either
  * field — so "debug tree" matches "debug the decision tree".

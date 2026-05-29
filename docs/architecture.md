@@ -240,14 +240,14 @@ If the focused todo still isn't in the rendered list after rAF retries — for i
 
 Parent resolution is computed client-side from the loaded todo list: `parent_todo_id → id-lookup`, then fallback to `source_session_id → session_id-lookup`. If the parent is in a different project or not loaded (e.g., paginated away), the badge won't appear. Child lookup follows the same precedence — a todo with a manual `parent_todo_id` is counted as a child of that specific todo and no longer as a session-based child.
 
-### Referenced-by Backlinks
+### Referenced-by Backlinks & Outgoing References
 
-Todos can reference other todos inline via `@[title](todo_id)` mentions (inserted through the `@` autocomplete in the add and edit inputs). The UI surfaces the inverse relationship on the referenced todo:
+Todos can reference other todos inline via `@[title](todo_id)` mentions (inserted through the `@` autocomplete in the add and edit inputs). The UI surfaces this both ways:
 
-1. **List view** — an `↗ ref N` badge appears showing how many other todos link to this one. Clicking the badge expands the metadata.
-2. **Expanded metadata** — a "Referenced by (N)" section lists every referencing todo with its status; clicking an entry scrolls to it.
+1. **List view** — an `↗ ref N` badge appears on a todo when other todos link to it (incoming backlinks); a `↘ refs N` badge appears when the todo itself mentions other todos (outgoing references). Clicking either badge expands the metadata.
+2. **Expanded metadata** — a "Referenced by (N)" section lists every referencing todo, and a "References (N)" section lists every todo this one mentions. Each entry shows status and click-jumps to the target.
 
-The map is computed client-side in `TodoList.tsx` via `buildReferencedByMap(todos)` (see `utils/todoSearch.ts`), which scans each todo's `text` for `@[...](id)` patterns and indexes them by referenced id. Self-references are ignored. The backlink badge only appears if the referencing todo is in the loaded list (paginated-away completed todos won't contribute).
+The maps are computed client-side in `TodoList.tsx` via `buildReferencedByMap(todos)` and `buildReferencesMap(todos)` (see `utils/todoSearch.ts`), which scan each todo's `text` for `@[...](id)` patterns. Self-references are ignored. Both directions require the other end to be in the loaded list (paginated-away completed todos won't contribute).
 
 When the analyzer creates a new todo, only `source_session_id` is pre-populated (pointing to the parent session). `session_id` represents the todo's *own* run session and is left unset until the todo actually runs — except for new todos with status `waiting`, which stand in for an existing external session that needs user action (follow-ups must resume that session). Setting `session_id` on other new todos would cause them to appear as their own parent in the UI, since `sessionToTodo` would resolve `source_session_id → self`.
 

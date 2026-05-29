@@ -1,5 +1,9 @@
 export type TodoStatus = "next" | "in_progress" | "completed" | "consider" | "waiting" | "stale" | "rejected";
 
+/** Claude CLI effort levels (https://code.claude.com/docs/en/model-config#adjust-effort-level) */
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORT_LEVELS: EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
 /** Sentinel selectedProject value for the "All Pinned Projects" view. */
 export const PINNED_VIEW_ID = "__pinned__";
 
@@ -16,8 +20,10 @@ export interface Project {
   autopilot_starts_at: string | null;
   todo_quota: number;
   run_model: string | null;  // null = use global setting
+  run_effort: EffortLevel | null;  // null = use global setting
   pinned: boolean;
   created_at: string;
+  deleted_at: string | null;  // Non-null = soft-deleted (hidden from main UI, restorable from trash)
 }
 
 export interface Todo {
@@ -62,6 +68,7 @@ export interface Todo {
   run_finished_at: string | null;  // ISO-8601: when the last run/follow-up finished
   run_after: string | null;  // ISO-8601: skip autopilot until this time
   pending_session_autopilot: number;  // Quota to activate as session_autopilot once todo runs
+  run_effort: EffortLevel | null;  // null = inherit project/global
   autopilot: boolean;  // When True, analyzer-suggested follow-ups are auto-sent
   suggested_followup: string | null;  // Analyzer's next-message suggestion
   suggested_followup_at: string | null;  // ISO-8601: when suggestion was generated
@@ -109,6 +116,7 @@ export interface Settings {
   analysis_interval_minutes: number;
   analysis_model: string;
   run_model: string;
+  run_effort: EffortLevel;
   heartbeat_enabled: boolean;
   hook_analysis_enabled: boolean;
   token_budget_usd: number;

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import type { Metadata, SessionInfo, Settings } from "../types";
+import type { EffortLevel, Metadata, SessionInfo, Settings } from "../types";
 import { api } from "../api";
 import { timeAgo, epochTimeAgo } from "../utils/formatting";
 import { useAppContext } from "../contexts/AppContext";
@@ -14,6 +14,13 @@ interface Props {
 
 const INTERVAL_OPTIONS = [1, 2, 5, 10, 15, 30, 60];
 const MODEL_OPTIONS = ["haiku", "sonnet", "opus"];
+const EFFORT_OPTIONS: { value: string; label: string; tip: string }[] = [
+  { value: "low", label: "low", tip: "Smallest thinking budget — fast, cheap, pattern matching only" },
+  { value: "medium", label: "medium", tip: "Moderate reasoning — meaningful thinking but bounded" },
+  { value: "high", label: "high", tip: "Substantial reasoning — multiple approaches, backtracking" },
+  { value: "xhigh", label: "xhigh", tip: "Recommended default on Opus 4.7 — best for most coding tasks" },
+  { value: "max", label: "max", tip: "Full thinking budget — deepest reasoning, may overthink" },
+];
 
 export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunning, onRefresh }: Props) {
   const { addToast } = useAppContext();
@@ -395,6 +402,24 @@ export function ClaudeStatus({ metadata, settings, analysisLocked, autopilotRunn
         >
           {MODEL_OPTIONS.map((m) => (
             <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
+        <span className="hooks-label" style={{ marginLeft: "0.5rem" }}>Effort:</span>
+        <select
+          className="model-select"
+          value={settings.run_effort}
+          onChange={async (e) => {
+            try {
+              await api.updateSettings({ run_effort: e.target.value as EffortLevel });
+              onRefresh();
+            } catch (err) {
+              addToast(err instanceof Error ? err.message : "Failed to update effort", "error");
+            }
+          }}
+          title="Default Claude CLI --effort level for todo runs and follow-ups. Per-project and per-todo overrides take precedence. See https://code.claude.com/docs/en/model-config#adjust-effort-level"
+        >
+          {EFFORT_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value} title={o.tip}>{o.label}</option>
           ))}
         </select>
       </div>

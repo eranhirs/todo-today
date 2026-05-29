@@ -78,11 +78,16 @@ async def update_settings(body: SettingsUpdate) -> Settings:
     reschedule = body.analysis_interval_minutes is not None
     def _do():
         with StorageContext() as ctx:
-            return ctx.metadata.apply_settings(body)
-    new_settings = await run_in_thread(_do)
+            try:
+                return ctx.metadata.apply_settings(body)
+            except ValueError as e:
+                return {"error": str(e)}
+    result = await run_in_thread(_do)
+    if isinstance(result, dict) and "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
     if reschedule and body.analysis_interval_minutes is not None:
         set_interval(body.analysis_interval_minutes)
-    return new_settings
+    return result
 
 
 @router.get("/status")

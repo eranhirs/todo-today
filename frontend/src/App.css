@@ -2738,6 +2738,24 @@ body {
   text-decoration: underline;
 }
 
+.references-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--purple, #c678dd);
+  letter-spacing: 0.03em;
+  flex-shrink: 0;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.references-badge:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+.todo-references-label {
+  color: var(--purple, #c678dd) !important;
+}
+
 .manual-badge {
   font-size: 0.6rem;
   text-transform: uppercase;

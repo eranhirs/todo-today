@@ -12,26 +12,33 @@ export const isStaticDemo = !!_w.__DEMO_STATE__;
 /** ETag tracking for /api/state — enables 304 Not Modified responses */
 let _stateETag: string | null = null;
 
-async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  let res: Response;
+/** Run fetch and remap network failures into a typed ApiError. */
+async function safeFetch(input: string, init?: RequestInit): Promise<Response> {
   try {
-    res = await fetch(`${BASE}${path}`, {
-      headers: { "Content-Type": "application/json" },
-      ...opts,
-    });
+    return await fetch(input, init);
   } catch (err) {
     throw ApiError.networkError(err);
   }
-  if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`;
-    let errorCode: string | null = null;
-    try {
-      const body = await res.json();
-      if (body.detail) detail = body.detail;
-      if (body.error_code) errorCode = body.error_code;
-    } catch { /* ignore parse errors */ }
-    throw ApiError.fromResponse(res.status, detail, errorCode);
-  }
+}
+
+/** Throw an ApiError describing the failed response. */
+async function throwForResponse(res: Response): Promise<never> {
+  let detail = `${res.status} ${res.statusText}`;
+  let errorCode: string | null = null;
+  try {
+    const body = await res.json();
+    if (body.detail) detail = body.detail;
+    if (body.error_code) errorCode = body.error_code;
+  } catch { /* ignore parse errors */ }
+  throw ApiError.fromResponse(res.status, detail, errorCode);
+}
+
+async function request<T>(path: string, opts?: RequestInit): Promise<T> {
+  const res = await safeFetch(`${BASE}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  if (!res.ok) await throwForResponse(res);
   if (res.status === 204) return undefined as T;
   return res.json();
 }
@@ -42,23 +49,9 @@ export const api = {
     if (isStaticDemo) return _w.__DEMO_STATE__!;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (_stateETag) headers["If-None-Match"] = _stateETag;
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/state`, { headers });
-    } catch (err) {
-      throw ApiError.networkError(err);
-    }
+    const res = await safeFetch(`${BASE}/state`, { headers });
     if (res.status === 304) return null; // no changes since last fetch
-    if (!res.ok) {
-      let detail = `${res.status} ${res.statusText}`;
-      let errorCode: string | null = null;
-      try {
-        const body = await res.json();
-        if (body.detail) detail = body.detail;
-        if (body.error_code) errorCode = body.error_code;
-      } catch { /* ignore */ }
-      throw ApiError.fromResponse(res.status, detail, errorCode);
-    }
+    if (!res.ok) await throwForResponse(res);
     _stateETag = res.headers.get("ETag");
     return res.json();
   },
@@ -81,6 +74,9 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/projects/${id}`, { method: "DELETE" }),
 
+  restoreProject: (id: string) =>
+    request<Project>(`/projects/${id}/restore`, { method: "POST" }),
+
   getTags: () => request<string[]>("/todos/tags"),
 
   getCommands: (projectId?: string) => request<{ name: string; description: string; type: "command" | "skill" }[]>(`/todos/commands${projectId ? `?project_id=${projectId}` : ""}`),
@@ -100,23 +96,11 @@ export const api = {
   uploadImage: async (file: File): Promise<{ filename: string }> => {
     const formData = new FormData();
     formData.append("file", file);
-    let res: Response;
-    try {
-      res = await fetch(`${BASE}/todos/images`, {
-        method: "POST",
-        body: formData,
-      });
-    } catch (err) {
-      throw ApiError.networkError(err);
-    }
-    if (!res.ok) {
-      let detail = `${res.status} ${res.statusText}`;
-      try {
-        const body = await res.json();
-        if (body.detail) detail = body.detail;
-      } catch { /* ignore */ }
-      throw ApiError.fromResponse(res.status, detail, null);
-    }
+    const res = await safeFetch(`${BASE}/todos/images`, {
+      method: "POST",
+      body: formData,
+    });
+    if (!res.ok) await throwForResponse(res);
     return res.json();
   },
 
@@ -125,7 +109,7 @@ export const api = {
   deleteImage: (filename: string) =>
     request<void>(`/todos/images/${filename}`, { method: "DELETE" }),
 
-  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean; is_read?: boolean; parent_todo_id?: string; autopilot?: boolean }) =>
+  updateTodo: (id: string, data: { text?: string; status?: TodoStatus; project_id?: string; source?: "claude" | "user"; user_ordered?: boolean; is_read?: boolean; parent_todo_id?: string; autopilot?: boolean; run_effort?: string | null; clear_run_effort?: boolean }) =>
     request<Todo>(`/todos/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),
@@ -151,10 +135,15 @@ export const api = {
       body: JSON.stringify({ todo_ids: todoIds, moved_id: movedId }),
     }),
 
-  runTodo: (id: string, planOnly?: boolean) =>
+  runTodo: (id: string, planOnly?: boolean, effort?: string | null) =>
     request<{ status: string }>(`/todos/${id}/run`, {
       method: "POST",
-      body: planOnly !== undefined ? JSON.stringify({ plan_only: planOnly }) : undefined,
+      body: (planOnly !== undefined || effort !== undefined)
+        ? JSON.stringify({
+            ...(planOnly !== undefined && { plan_only: planOnly }),
+            ...(effort !== undefined && { effort }),
+          })
+        : undefined,
     }),
 
   stopTodo: (id: string) =>
@@ -166,10 +155,15 @@ export const api = {
   runTodoNow: (id: string) =>
     request<{ status: string }>(`/todos/${id}/run-now`, { method: "POST" }),
 
-  followupTodo: (id: string, message: string, images: string[] = [], planOnly?: boolean) =>
+  followupTodo: (id: string, message: string, images: string[] = [], planOnly?: boolean, effort?: string | null) =>
     request<{ status: string }>(`/todos/${id}/followup`, {
       method: "POST",
-      body: JSON.stringify({ message, images, ...(planOnly !== undefined && { plan_only: planOnly }) }),
+      body: JSON.stringify({
+        message,
+        images,
+        ...(planOnly !== undefined && { plan_only: planOnly }),
+        ...(effort !== undefined && { effort }),
+      }),
     }),
 
   editFollowup: (id: string, message: string) =>
@@ -282,7 +276,7 @@ export const api = {
       body: JSON.stringify({ enabled }),
     }),
 
-  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number; scheduled_auto_run_quota?: number; autopilot_starts_at?: string; clear_scheduled_autopilot?: boolean; todo_quota?: number; run_model?: string; clear_run_model?: boolean; pinned?: boolean }) =>
+  updateProject: (id: string, data: { name?: string; source_path?: string; auto_run_quota?: number; scheduled_auto_run_quota?: number; autopilot_starts_at?: string; clear_scheduled_autopilot?: boolean; todo_quota?: number; run_model?: string; clear_run_model?: boolean; run_effort?: string | null; clear_run_effort?: boolean; pinned?: boolean }) =>
     request<Project>(`/projects/${id}`, {
       method: "PUT",
       body: JSON.stringify(data),

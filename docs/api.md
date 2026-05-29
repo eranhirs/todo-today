@@ -49,7 +49,20 @@ Update project name, source_path, autopilot quota, or todo quota.
 `run_effort`: `null` = use global setting, `"low"`/`"medium"`/`"high"`/`"xhigh"`/`"max"` = override the global Claude `--effort` level for runs in this project. Use `clear_run_effort: true` to reset to global.
 
 ### `DELETE /api/projects/{project_id}`
-Delete a project and all its todos.
+Soft-delete a project. The project and its todos are hidden from the main UI but
+preserved on disk so the action can be undone via `POST /api/projects/{id}/restore`.
+Soft-deleted projects are skipped by autopilot, the analyzer, and session
+discovery, so they don't accrue new state while in trash. Pass `?permanent=true`
+to permanently delete (also removes todos and image files); this is intended for
+the trash UI's "delete forever" action and bypasses the undo path. Soft-deleted
+projects whose `deleted_at` is older than 30 days are purged on server startup.
+
+### `POST /api/projects/{project_id}/restore`
+Restore a soft-deleted project (clears `deleted_at`). Returns the restored
+project. 404 if the project doesn't exist; 400 if it isn't in the trash.
+
+### `GET /api/projects/trash`
+List soft-deleted projects, sorted by `deleted_at` descending.
 
 ## Todos
 

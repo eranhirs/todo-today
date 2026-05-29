@@ -54,6 +54,16 @@ const REFRESH_EVENTS = new Set<BusEventType>([
   "hook.session_update",
 ]);
 
+/** Terminal run events — refresh immediately (skip debounce) so the output
+ * appears as soon as the user sees the completion notification. The debounce
+ * is meant to coalesce high-frequency events like run.progress; for these
+ * end-of-run signals the user is actively waiting to see the result. */
+const IMMEDIATE_REFRESH_EVENTS = new Set<BusEventType>([
+  "run.completed",
+  "run.failed",
+  "run.stopped",
+]);
+
 type EventHandler = (event: BusEvent) => void;
 
 interface UseEventBusOptions {
@@ -102,12 +112,22 @@ export function useEventBus({
   // Track whether a refresh was requested while the tab was hidden
   const pendingRefreshRef = useRef(false);
 
-  const triggerRefresh = useCallback(() => {
+  const triggerRefresh = useCallback((immediate = false) => {
     // While the tab is hidden, don't fire refreshes — just note that one is needed.
     // The visibility handler in useAppState will do a single refresh on return,
     // and we flush any SSE-deferred refresh there too.
     if (document.hidden) {
       pendingRefreshRef.current = true;
+      return;
+    }
+    if (immediate) {
+      // Cancel any pending debounced refresh — we're firing now, so the
+      // queued one would be redundant.
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      onRefreshRef.current?.();
       return;
     }
     if (refreshTimerRef.current) return; // already scheduled
@@ -206,8 +226,12 @@ export function useEventBus({
               }
             }
 
-            // Trigger refresh if this is a state-changing event
-            if (REFRESH_EVENTS.has(eventType)) {
+            // Trigger refresh if this is a state-changing event.
+            // Terminal run events skip the debounce so the output appears
+            // alongside the completion notification (the user is waiting).
+            if (IMMEDIATE_REFRESH_EVENTS.has(eventType)) {
+              triggerRefresh(true);
+            } else if (REFRESH_EVENTS.has(eventType)) {
               triggerRefresh();
             }
           } catch {

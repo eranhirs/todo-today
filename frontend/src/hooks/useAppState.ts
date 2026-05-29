@@ -114,11 +114,17 @@ export function useAppState({
         });
       }
 
-      // Re-prepend in-flight optimistic new todos so they don't vanish during create
+      // Re-prepend in-flight optimistic new todos so they don't vanish during
+      // create. We auto-clear entries whose ID the server has confirmed —
+      // callers re-key the pending entry to the real ID after a successful
+      // POST so a racing stale fetch can't erase the new todo.
       const pending = optimistic.pendingNewTodos.current;
       if (pending.size > 0) {
         const serverIds = new Set(data.todos.map((t) => t.id));
-        const stillPending = [...pending.values()].filter((t) => !serverIds.has(t.id));
+        for (const id of [...pending.keys()]) {
+          if (serverIds.has(id)) pending.delete(id);
+        }
+        const stillPending = [...pending.values()];
         if (stillPending.length > 0) {
           data.todos = [...stillPending, ...data.todos];
         }

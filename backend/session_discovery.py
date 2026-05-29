@@ -309,9 +309,10 @@ def _match_sessions_to_projects(
     project to be auto-created.  Returns ``{project_id: [sessions...]}``.
     """
     # Build lookup: source_path → project_id
+    # Skip soft-deleted projects so new sessions don't auto-attach to trash.
     path_to_pid: dict[str, str] = {}
     for p in ctx.store.projects:
-        if p.source_path:
+        if p.source_path and not p.deleted_at:
             path_to_pid[p.source_path] = p.id
 
     result: dict[str, list[dict]] = {}

@@ -387,6 +387,7 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
       run_finished_at: null,
       run_after: null,
       pending_session_autopilot: 0,
+      run_effort: null,
       autopilot: /(?:^|\s)#autopilot(?:\s|$)/i.test(trimmed),
       suggested_followup: null,
       suggested_followup_at: null,
@@ -408,6 +409,16 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
 
     try {
       const created = await api.createTodo(pid, finalText || "(image attached)", planOnly, imageFilenames);
+      // Replace the placeholder with the real todo atomically. Re-key the
+      // pending entry to the real ID so a stale in-flight refresh that lacks
+      // the new todo can't erase it — it stays preserved by re-prepend until
+      // a refresh confirms the server has it (then auto-cleared).
+      optimistic.removePendingNewTodo(tempId);
+      optimistic.addPendingNewTodo(created);
+      onOptimisticUpdate((todos) => {
+        const withoutPlaceholder = todos.filter((t) => t.id !== tempId);
+        return [created, ...withoutPlaceholder.filter((t) => t.id !== created.id)];
+      });
       if (shouldRun) {
         try {
           const result = await api.runTodo(created.id);
@@ -420,7 +431,6 @@ export function AddTodo({ projectId, projects, allTags = [], allTodos = [], allC
           addToast(`Added todo but failed to run: ${apiErrorMessage(err)}`, "error");
         }
       }
-      optimistic.removePendingNewTodo(tempId);
       onRefresh();
       // Scroll to and highlight the newly added todo after the DOM updates
       const newId = created.id;

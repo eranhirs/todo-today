@@ -898,7 +898,21 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands, ef
               <select
                 className={`effort-select${todo.run_effort ? " effort-overridden" : ""}`}
                 value={followupDisplayValue}
-                onChange={(e) => setFollowupEffortPick(e.target.value === "" ? "" : e.target.value as EffortLevel)}
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  const pick = val === "" ? "" : (val as EffortLevel);
+                  setFollowupEffortPick(pick);
+                  try {
+                    if (pick === "") {
+                      await api.updateTodo(todo.id, { clear_run_effort: true });
+                    } else {
+                      await api.updateTodo(todo.id, { run_effort: pick });
+                    }
+                    onRefresh();
+                  } catch (err) {
+                    addToast(apiErrorMessage(err), "error");
+                  }
+                }}
                 disabled={disabled}
                 title={`Claude --effort for the next follow-up. "default" inherits project/global (${initialEffort}); picking a level persists it on this todo.`}
                 onClick={(e) => e.stopPropagation()}
@@ -1082,7 +1096,16 @@ export function TodoOutput({ todo, showOutput, disabled = false, allCommands, ef
             <select
               className="effort-select"
               value={followupEffortPick ?? initialEffort}
-              onChange={(e) => setFollowupEffortPick(e.target.value as EffortLevel)}
+              onChange={async (e) => {
+                const pick = e.target.value as EffortLevel;
+                setFollowupEffortPick(pick);
+                try {
+                  await api.updateTodo(todo.id, { run_effort: pick });
+                  onRefresh();
+                } catch (err) {
+                  addToast(apiErrorMessage(err), "error");
+                }
+              }}
               disabled={disabled}
               title={`Claude --effort for the next follow-up (default: ${initialEffort}). Persists on this todo.`}
               onClick={(e) => e.stopPropagation()}

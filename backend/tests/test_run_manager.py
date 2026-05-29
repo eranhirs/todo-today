@@ -289,6 +289,59 @@ class TestCommandProxyDispatch:
         mock_run.assert_not_called()
 
 
+class TestEffortResolution:
+    """Effort levels are resolved per-todo > project > global default."""
+
+    def test_resolve_effort_default(self):
+        from backend.models import DEFAULT_EFFORT
+        from backend.run_manager import _resolve_effort
+        assert _resolve_effort(None, None, None) == DEFAULT_EFFORT
+
+    def test_resolve_effort_global(self):
+        from backend.run_manager import _resolve_effort
+        meta = Metadata(run_effort="medium")
+        assert _resolve_effort(None, None, meta) == "medium"
+
+    def test_resolve_effort_project_overrides_global(self):
+        from backend.run_manager import _resolve_effort
+        meta = Metadata(run_effort="medium")
+        proj = Project(id="proj_e1", name="x", source_path="/tmp", run_effort="high")
+        assert _resolve_effort(None, proj, meta) == "high"
+
+    def test_resolve_effort_todo_overrides_project(self):
+        from backend.run_manager import _resolve_effort
+        meta = Metadata(run_effort="medium")
+        proj = Project(id="proj_e1", name="x", source_path="/tmp", run_effort="high")
+        todo = Todo(id="todo_e1", project_id="proj_e1", text="x", run_effort="max")
+        assert _resolve_effort(todo, proj, meta) == "max"
+
+    def test_invalid_value_falls_through(self):
+        from backend.models import DEFAULT_EFFORT
+        from backend.run_manager import _resolve_effort
+        meta = Metadata(run_effort="bogus")
+        # Bogus is not in EFFORT_LEVELS, so it's skipped and we fall back to default
+        assert _resolve_effort(None, None, meta) == DEFAULT_EFFORT
+
+    @patch("backend.run_manager._run_claude_for_todo")
+    def test_start_todo_run_passes_resolved_effort(self, mock_run):
+        """start_todo_run should pass the resolved effort as the 8th positional arg."""
+        from backend.run_manager import process_manager, start_todo_run
+        from backend.storage import save_metadata
+        proj = Project(id="proj_eff", name="EffTest", source_path="/tmp/eff", run_effort="xhigh")
+        todo = Todo(id="todo_eff", project_id="proj_eff", text="run", status="next")
+        _seed(todos=[todo], projects=[proj])
+        # global is medium; project overrides to xhigh
+        save_metadata(Metadata(run_effort="medium"))
+
+        result = start_todo_run("todo_eff")
+        assert result is None
+        process_manager._running_tasks["todo_eff"].join(timeout=5)
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0]
+        # _run_claude_for_todo(todo_id, todo_text, source_path, model, project_id, plan_only, images, effort)
+        assert args[7] == "xhigh"
+
+
 class TestDequeueTodoRun:
     def test_dequeues_successfully(self):
         from backend.run_manager import dequeue_todo_run

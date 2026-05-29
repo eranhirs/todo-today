@@ -2,6 +2,7 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { type Project, type Todo, PINNED_VIEW_ID } from "../types";
 import { api } from "../api";
 import { getDisplayName, setDisplayName } from "../utils/displayNames";
+import { useAppContext } from "../contexts/AppContext";
 
 interface Props {
   projects: Project[];
@@ -24,9 +25,11 @@ interface ProjectCounts {
 const COLLAPSED_KEY = "projects-section-collapsed";
 
 export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh, unreadCounts }: Props) {
+  const { addToast } = useAppContext();
   const [name, setName] = useState("");
   const [adding, setAdding] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<{ id: string; name: string; todoCount: number } | null>(null);
+  const cancelDeleteRef = useRef<HTMLButtonElement>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -161,16 +164,56 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh, 
 
   const handleDeleteClick = (id: string, projectName: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setConfirmDelete({ id, name: projectName });
+    const todoCount = todos.filter((t) => t.project_id === id).length;
+    setConfirmDelete({ id, name: projectName, todoCount });
   };
 
   const handleDeleteConfirm = async () => {
     if (!confirmDelete) return;
-    await api.deleteProject(confirmDelete.id);
-    if (selectedId === confirmDelete.id) onSelect(null);
+    const { id, name: projectName, todoCount } = confirmDelete;
     setConfirmDelete(null);
+    try {
+      await api.deleteProject(id);
+    } catch {
+      addToast(`Couldn't delete "${projectName}"`, "error");
+      return;
+    }
+    if (selectedId === id) onSelect(null);
     onRefresh();
+    const todoLabel = todoCount === 0 ? "" : ` (${todoCount} todo${todoCount === 1 ? "" : "s"})`;
+    addToast(`Deleted "${projectName}"${todoLabel}`, "info", {
+      action: {
+        label: "Undo",
+        handler: async () => {
+          try {
+            await api.restoreProject(id);
+            onSelect(id);
+            onRefresh();
+            addToast(`Restored "${projectName}"`, "success");
+          } catch {
+            addToast(`Couldn't restore "${projectName}"`, "error");
+          }
+        },
+      },
+    });
   };
+
+  // Autofocus the Cancel button so an Enter keypress dismisses the dialog
+  // rather than confirming a destructive action.
+  useEffect(() => {
+    if (confirmDelete && cancelDeleteRef.current) {
+      cancelDeleteRef.current.focus();
+    }
+  }, [confirmDelete]);
+
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setConfirmDelete(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [confirmDelete]);
 
   const handleTogglePin = async (e: React.MouseEvent, p: Project) => {
     e.stopPropagation();
@@ -328,11 +371,16 @@ export function ProjectList({ projects, todos, selectedId, onSelect, onRefresh, 
       )}
       {confirmDelete && (
         <div className="confirm-overlay" onClick={() => setConfirmDelete(null)}>
-          <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+          <div className="confirm-dialog" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
             <p>Delete project <strong>{confirmDelete.name}</strong>?</p>
-            <p className="confirm-warning">This will delete all todos in this project.</p>
+            <p className="confirm-warning">
+              {confirmDelete.todoCount > 0
+                ? `${confirmDelete.todoCount} todo${confirmDelete.todoCount === 1 ? "" : "s"} will be hidden along with the project.`
+                : "The project will be hidden."}
+              {" "}You can undo this from the toast or restore it later from Trash.
+            </p>
             <div className="confirm-actions">
-              <button className="btn-cancel" onClick={() => setConfirmDelete(null)}>Cancel</button>
+              <button ref={cancelDeleteRef} className="btn-cancel" onClick={() => setConfirmDelete(null)}>Cancel</button>
               <button className="btn-danger" onClick={handleDeleteConfirm}>Delete</button>
             </div>
           </div>

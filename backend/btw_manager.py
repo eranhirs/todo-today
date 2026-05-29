@@ -64,7 +64,7 @@ def _flush_btw_progress(todo_id: str, output: str, is_continuation: bool = False
     bus.emit_event_sync(EventType.RUN_PROGRESS, todo_id=todo_id)
 
 
-def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", main_session_id: str = "", btw_session_id: str | None = None) -> None:
+def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = "opus", main_session_id: str = "", btw_session_id: str | None = None, effort: str | None = None) -> None:
     """Background thread: run a concurrent /btw Claude session alongside the main run.
 
     First call: forks the main session via --resume --fork-session so Claude has
@@ -106,12 +106,18 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
         # Ensure clean output file
         output_file.write_text("")
 
+        from .models import EFFORT_LEVELS
+        effort_args: list[str] = []
+        if effort and effort in EFFORT_LEVELS:
+            effort_args = ["--effort", effort]
+
         if is_continuation:
             # Resume the existing btw session
             cmd = [
                 "claude", "-p", "--output-format", "stream-json", "--verbose",
                 "--dangerously-skip-permissions",
                 "--model", model,
+                *effort_args,
                 "--resume", btw_session_id,
             ]
         else:
@@ -120,6 +126,7 @@ def run_btw_for_todo(todo_id: str, message: str, source_path: str, model: str = 
                 "claude", "-p", "--output-format", "stream-json", "--verbose",
                 "--dangerously-skip-permissions",
                 "--model", model,
+                *effort_args,
                 "--resume", main_session_id,
                 "--fork-session",
             ]
@@ -272,10 +279,13 @@ def start_btw(todo_id: str, message: str) -> str | None:
         btw_session_id = todo.btw_session_id
         # Resolve model: per-project override > global setting
         run_model = (project.run_model if project and project.run_model else None) or ctx.metadata.run_model
+        # Resolve effort: per-todo > per-project > global default
+        from .run_manager import _resolve_effort
+        run_effort = _resolve_effort(todo, project, ctx.metadata)
 
     thread = threading.Thread(
         target=run_btw_for_todo,
-        args=(todo_id, message, source_path, run_model, main_session_id, btw_session_id),
+        args=(todo_id, message, source_path, run_model, main_session_id, btw_session_id, run_effort),
         daemon=True,
     )
     thread.start()

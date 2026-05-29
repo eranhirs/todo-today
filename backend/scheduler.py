@@ -100,8 +100,9 @@ async def _auto_run_todos_inner() -> bool:
     """
     started_any = False
     with StorageContext(read_only=True) as ctx:
-        todos = list(ctx.store.todos)
-        projects = {p.id: p for p in ctx.store.projects}
+        active_project_ids = {p.id for p in ctx.store.projects if not p.deleted_at}
+        todos = [t for t in ctx.store.todos if t.project_id in active_project_ids]
+        projects = {p.id: p for p in ctx.store.projects if not p.deleted_at}
 
     # Group eligible todos by project
     from .run_manager import _is_run_after_pending
@@ -153,8 +154,9 @@ async def _auto_run_todos_inner() -> bool:
     # --- Scheduled-todo pass (run_after expired → start without requiring quota) ---
     # Re-read todos to get fresh state after project-level autopilot may have started some
     with StorageContext(read_only=True) as ctx:
-        sched_todos = list(ctx.store.todos)
-        sched_projects = {p.id: p for p in ctx.store.projects}
+        sched_active_ids = {p.id for p in ctx.store.projects if not p.deleted_at}
+        sched_todos = [t for t in ctx.store.todos if t.project_id in sched_active_ids]
+        sched_projects = {p.id: p for p in ctx.store.projects if not p.deleted_at}
 
     # Track which projects already have a running todo (skip those)
     busy_projects = {t.project_id for t in sched_todos if t.run_status == "running"}
@@ -185,8 +187,9 @@ async def _auto_run_todos_inner() -> bool:
     # --- Session-scoped autopilot pass ---
     with StorageContext(read_only=True) as ctx:
         session_ap = dict(ctx.metadata.session_autopilot)
-        all_todos = list(ctx.store.todos)
-        projects = {p.id: p for p in ctx.store.projects}
+        sap_active_ids = {p.id for p in ctx.store.projects if not p.deleted_at}
+        all_todos = [t for t in ctx.store.todos if t.project_id in sap_active_ids]
+        projects = {p.id: p for p in ctx.store.projects if not p.deleted_at}
 
     if session_ap:
         for t in all_todos:
@@ -353,6 +356,8 @@ def _activate_scheduled_autopilot() -> bool:
     activated = False
     with StorageContext() as ctx:
         for p in ctx.store.projects:
+            if p.deleted_at:
+                continue
             if p.scheduled_auto_run_quota > 0 and p.autopilot_starts_at:
                 try:
                     starts_at = datetime.fromisoformat(p.autopilot_starts_at.replace("Z", "+00:00").replace("+00:00", ""))

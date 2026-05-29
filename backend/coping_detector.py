@@ -83,6 +83,11 @@ _PATTERNS: list[tuple[re.Pattern, str, str]] = [
         "Bypass",
         "Bypassing something signals the underlying issue wasn't addressed.",
     ),
+    (
+        re.compile(r"\bmirror(?:s|ed|ing)?\b", re.IGNORECASE),
+        "\"Mirrors\"",
+        "Suggests writing duplicated code — extract a shared helper instead.",
+    ),
     # ── Deflection: avoiding the task ────────────────────────────
     (
         re.compile(r"\bpre-?existing (?:issue|problem|bug|error|failure)", re.IGNORECASE),

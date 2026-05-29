@@ -7,7 +7,7 @@ import { parseTags, PRIORITY_INFO } from "../utils/tags";
 import { type CommandInfo } from "../utils/commands";
 import { getDisplayName, setDisplayName } from "../utils/displayNames";
 import { getSectionExpanded, setSectionExpanded } from "../utils/sectionState";
-import { buildReferencedByMap, matchesTodo } from "../utils/todoSearch";
+import { buildReferencedByMap, buildReferencesMap, matchesTodo } from "../utils/todoSearch";
 import { useAppContext } from "../contexts/AppContext";
 
 interface Props {
@@ -264,6 +264,15 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
   const resolveReferencedBy = useCallback(
     (t: Todo): Todo[] => referencedByMap.get(t.id) ?? [],
     [referencedByMap]
+  );
+
+  // Forward map: todo_id → todos that this todo's text mentions via @[...](id).
+  // Mirrors referencedByMap so the UI can show outgoing references on the
+  // referencing todo as well, not just on the referenced one.
+  const referencesMap = useMemo(() => buildReferencesMap(todos), [todos]);
+  const resolveReferences = useCallback(
+    (t: Todo): Todo[] => referencesMap.get(t.id) ?? [],
+    [referencesMap]
   );
 
   const projectFiltered = selectedProjectId
@@ -750,7 +759,7 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
       className={`todo-drag-wrapper${dropTargetId === t.id && dragSection.current === section ? ` drop-${dropPosition}` : ""}`}
       data-todo-id={t.id}
     >
-      <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+      <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} references={resolveReferences(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
     </div>
   );
 
@@ -1189,7 +1198,7 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
                             {projGroups.size > 1 && <div className="project-group-header project-group-header-sub">{projectName(pid)}</div>}
                             {projItems.map((t) => (
                               <div key={t.id}>
-                                <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                                <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} references={resolveReferences(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
                               </div>
                             ))}
                           </div>
@@ -1202,7 +1211,7 @@ export function TodoList({ todos, projects, selectedProjectId, viewLabel, projec
                       <div className="done-group-header">{day}</div>
                       {items.map((t) => (
                         <div key={t.id}>
-                          <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
+                          <TodoItem todo={t} allTags={allTags} allTodos={projectFiltered} allCommands={allCommands} isFocused={focusedTodoId === t.id} triggerEdit={editingTodoId === t.id} projectBusy={busyProjects.has(t.project_id) && t.run_status !== "running"} atRunQuotaLimit={atRunQuotaLimit} quotaCountdown={quotaCountdown} disabled={isOffline} sourcePath={projectSourcePath(t.project_id)} onOutputOpen={handleOutputOpen} runModel={projectRunModel(t.project_id)} runEffort={projectRunEffort(t.project_id)} sessionAutopilot={sessionAutopilot} parentTodo={resolveParent(t)} referencedBy={resolveReferencedBy(t)} references={resolveReferences(t)} analysisHistory={analysisHistory} onNavigateToTodo={onNavigateToTodo} />
                         </div>
                       ))}
                     </div>

@@ -790,6 +790,11 @@ export function Dashboard({ todos, projects, projectSummaries, history, onSelect
                     {proj.run_model}
                   </span>
                 )}
+                {proj.run_effort && (
+                  <span className="dash-model-badge" title={`This project uses --effort ${proj.run_effort} for runs (overrides global setting)`}>
+                    {proj.run_effort}
+                  </span>
+                )}
               </div>
             );
           })}

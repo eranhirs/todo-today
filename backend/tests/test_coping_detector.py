@@ -110,9 +110,39 @@ def test_other_patterns_still_detected():
     assert "Extra layer of protection" in _labels(output)
 
 
+def test_mirrors_is_flagged():
+    output = (
+        "I added a new helper that mirrors the core logic of the existing "
+        "endpoint so the behaviors line up across both paths."
+    )
+    assert "\"Mirrors\"" in _labels(output)
+
+
+def test_mirroring_in_prose_is_flagged():
+    output = (
+        "The implementation works by mirroring the validation rules from the "
+        "original handler into this one to keep behavior consistent."
+    )
+    assert "\"Mirrors\"" in _labels(output)
+
+
 def test_unaware_is_flagged():
     output = (
         "I was unaware that the migration script had been updated last week "
         "to also touch the secondary index on the orders table."
     )
     assert "\"Unaware\"" in _labels(output)
+
+
+def test_mirror_inside_code_block_not_flagged():
+    output = (
+        "Here is the change I landed in the helper module to keep behavior "
+        "aligned with the existing path elsewhere in the package:\n"
+        "```python\n"
+        "# Mirrors the core logic of the followup endpoint\n"
+        "def helper():\n"
+        "    pass\n"
+        "```\n"
+        "That keeps the change self-contained and easy to review later."
+    )
+    assert "\"Mirrors\"" not in _labels(output)

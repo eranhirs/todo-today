@@ -138,7 +138,21 @@ export function TodoRunControls({ todo, onRefresh, addToast, projectBusy = false
       <select
         className={`effort-select${todo.run_effort ? " effort-overridden" : ""}`}
         value={displayValue}
-        onChange={(e) => setEffortPick(e.target.value === "" ? "" : e.target.value as EffortLevel)}
+        onChange={async (e) => {
+          const val = e.target.value;
+          const pick = val === "" ? "" : (val as EffortLevel);
+          setEffortPick(pick);
+          try {
+            if (pick === "") {
+              await api.updateTodo(todo.id, { clear_run_effort: true });
+            } else {
+              await api.updateTodo(todo.id, { run_effort: pick });
+            }
+            onRefresh();
+          } catch (err) {
+            addToast(apiErrorMessage(err), "error");
+          }
+        }}
         disabled={disabled || quotaBlocked}
         title={`Claude --effort for the next run. "default" inherits project/global (${initialEffort}); picking a level persists it on this todo.`}
         onClick={(e) => e.stopPropagation()}

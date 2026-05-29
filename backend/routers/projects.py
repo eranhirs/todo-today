@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 
 from ..event_bus import EventType, bus
 from ..image_storage import delete_image_files
-from ..models import Project, ProjectCreate, ProjectUpdate, _now
+from ..models import EFFORT_LEVELS, Project, ProjectCreate, ProjectUpdate, _now
 from ..storage import StorageContext
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -48,10 +48,8 @@ async def create_project(body: ProjectCreate) -> Project:
 async def get_project(project_id: str) -> Project:
     def _do():
         with StorageContext(read_only=True) as ctx:
-            for p in ctx.store.projects:
-                if p.id == project_id and not p.deleted_at:
-                    return p
-        return None
+            p = ctx.get_project(project_id)
+            return p if p and not p.deleted_at else None
     result = await run_in_thread(_do)
     if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -62,37 +60,49 @@ async def get_project(project_id: str) -> Project:
 async def update_project(project_id: str, body: ProjectUpdate) -> Project:
     def _do():
         with StorageContext() as ctx:
-            for p in ctx.store.projects:
-                if p.id == project_id and not p.deleted_at:
-                    if body.name is not None:
-                        p.name = body.name
-                    if body.source_path is not None:
-                        p.source_path = body.source_path
-                    if body.auto_run_quota is not None:
-                        p.auto_run_quota = max(0, min(50, body.auto_run_quota))
-                    if body.clear_scheduled_autopilot:
-                        p.scheduled_auto_run_quota = 0
-                        p.autopilot_starts_at = None
-                    else:
-                        if body.scheduled_auto_run_quota is not None:
-                            p.scheduled_auto_run_quota = max(0, min(50, body.scheduled_auto_run_quota))
-                        if body.autopilot_starts_at is not None:
-                            p.autopilot_starts_at = body.autopilot_starts_at
-                    if body.todo_quota is not None:
-                        p.todo_quota = max(0, body.todo_quota)
-                    if body.clear_run_model:
-                        p.run_model = None
-                    elif body.run_model is not None:
-                        if body.run_model in ("opus", "sonnet", "haiku"):
-                            p.run_model = body.run_model
-                    if body.pinned is not None:
-                        p.pinned = body.pinned
-                    bus.emit_event_sync(EventType.PROJECT_UPDATED, project_id=p.id)
-                    return p
-        return None
+            p = ctx.get_project(project_id)
+            if p is None or p.deleted_at:
+                return None
+            if body.name is not None:
+                p.name = body.name
+            if body.source_path is not None:
+                p.source_path = body.source_path
+            if body.auto_run_quota is not None:
+                p.auto_run_quota = max(0, min(50, body.auto_run_quota))
+            if body.clear_scheduled_autopilot:
+                p.scheduled_auto_run_quota = 0
+                p.autopilot_starts_at = None
+            else:
+                if body.scheduled_auto_run_quota is not None:
+                    p.scheduled_auto_run_quota = max(0, min(50, body.scheduled_auto_run_quota))
+                if body.autopilot_starts_at is not None:
+                    p.autopilot_starts_at = body.autopilot_starts_at
+            if body.todo_quota is not None:
+                p.todo_quota = max(0, body.todo_quota)
+            if body.clear_run_model:
+                p.run_model = None
+            elif body.run_model is not None:
+                if body.run_model in ("opus", "sonnet", "haiku"):
+                    p.run_model = body.run_model
+            if body.clear_run_effort:
+                p.run_effort = None
+            elif body.run_effort is not None:
+                eff = body.run_effort.strip() if isinstance(body.run_effort, str) else body.run_effort
+                if not eff:
+                    p.run_effort = None
+                elif eff in EFFORT_LEVELS:
+                    p.run_effort = eff
+                else:
+                    return "invalid_effort"
+            if body.pinned is not None:
+                p.pinned = body.pinned
+            bus.emit_event_sync(EventType.PROJECT_UPDATED, project_id=p.id)
+            return p
     result = await run_in_thread(_do)
     if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
+    if result == "invalid_effort":
+        raise HTTPException(status_code=400, detail=f"Invalid effort level. Must be one of: {', '.join(EFFORT_LEVELS)}")
     return result
 
 
@@ -130,13 +140,13 @@ async def delete_project(project_id: str, permanent: bool = False) -> None:
     # Soft delete: mark with deleted_at; keep all todos intact for undo.
     def _do_soft():
         with StorageContext() as ctx:
-            for p in ctx.store.projects:
-                if p.id == project_id:
-                    if p.deleted_at:
-                        return "already_deleted"
-                    p.deleted_at = _now()
-                    return "ok"
-        return None
+            p = ctx.get_project(project_id)
+            if p is None:
+                return None
+            if p.deleted_at:
+                return "already_deleted"
+            p.deleted_at = _now()
+            return "ok"
     result = await run_in_thread(_do_soft)
     if result is None:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -151,13 +161,13 @@ async def restore_project(project_id: str) -> Project:
     """Restore a soft-deleted project. Returns 404 if not in trash."""
     def _do():
         with StorageContext() as ctx:
-            for p in ctx.store.projects:
-                if p.id == project_id:
-                    if not p.deleted_at:
-                        return "not_deleted"
-                    p.deleted_at = None
-                    return p
-        return None
+            p = ctx.get_project(project_id)
+            if p is None:
+                return None
+            if not p.deleted_at:
+                return "not_deleted"
+            p.deleted_at = None
+            return p
     result = await run_in_thread(_do)
     if result is None:
         raise HTTPException(status_code=404, detail="Project not found")

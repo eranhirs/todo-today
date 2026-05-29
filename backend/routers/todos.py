@@ -10,7 +10,7 @@ import yaml
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -23,7 +23,7 @@ from ..image_storage import (
     get_image_dir,
     is_safe_filename,
 )
-from ..models import ImageAttachment, Todo, TodoCreate, TodoReorder, TodoUpdate, _now
+from ..models import EFFORT_LEVELS, ImageAttachment, Todo, TodoCreate, TodoReorder, TodoUpdate, _now
 from ..tags import collect_all_tags, has_autopilot_tag, rename_tag_in_text, parse_tags, parse_priority
 from ..run_manager import (
     OUTPUT_MAX_CHARS,
@@ -43,6 +43,21 @@ from ..run_manager import (
 from ..storage import StorageContext
 
 _DEMO_MODE = os.environ.get("TODO_DEMO", "").lower() in ("1", "true", "yes")
+
+
+def _require_not_demo() -> None:
+    """FastAPI dependency: 403 when running in demo mode."""
+    if _DEMO_MODE:
+        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+
+
+def _validate_effort(effort: Optional[str]) -> None:
+    """Raise 400 if ``effort`` is set to an unknown value (empty string clears)."""
+    if effort is not None and effort != "" and effort not in EFFORT_LEVELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid effort level. Must be one of: {', '.join(EFFORT_LEVELS)}",
+        )
 
 
 log = logging.getLogger(__name__)
@@ -141,7 +156,7 @@ def _discover_commands(project_id: str | None = None) -> list[dict]:
         try:
             with StorageContext(read_only=True) as ctx:
                 for p in ctx.store.projects:
-                    if p.source_path:
+                    if p.source_path and not p.deleted_at:
                         _scan_claude_dir(Path(p.source_path) / ".claude", results, seen_names)
         except Exception:
             pass
@@ -181,7 +196,8 @@ async def list_tags() -> list[str]:
     """Return all unique tags found across all todo texts."""
     def _do():
         with StorageContext(read_only=True) as ctx:
-            return collect_all_tags([t.text for t in ctx.store.todos])
+            active_ids = {p.id for p in ctx.store.projects if not p.deleted_at}
+            return collect_all_tags([t.text for t in ctx.store.todos if t.project_id in active_ids])
     return await run_in_thread(_do)
 
 
@@ -219,7 +235,8 @@ async def rename_tag(body: TagRename) -> dict:
 async def list_todos(project_id: Optional[str] = None) -> list[Todo]:
     def _do():
         with StorageContext(read_only=True) as ctx:
-            todos = ctx.store.todos
+            active_ids = {p.id for p in ctx.store.projects if not p.deleted_at}
+            todos = [t for t in ctx.store.todos if t.project_id in active_ids]
             if project_id:
                 todos = [t for t in todos if t.project_id == project_id]
             return todos
@@ -231,8 +248,9 @@ async def load_more_completed(offset: int = 0, limit: int = 50, project_id: Opti
     """Load completed todos with pagination. Used for infinite scroll."""
     def _do():
         with StorageContext(read_only=True) as ctx:
+            active_ids = {p.id for p in ctx.store.projects if not p.deleted_at}
             completed = sorted(
-                [t for t in ctx.store.todos if t.status == "completed" and (not project_id or t.project_id == project_id)],
+                [t for t in ctx.store.todos if t.status == "completed" and t.project_id in active_ids and (not project_id or t.project_id == project_id)],
                 key=lambda t: t.completed_at or "",
                 reverse=True,
             )
@@ -250,8 +268,11 @@ async def search_todos(q: str, project_id: Optional[str] = None):
             query = q.strip().lower()
             if not query:
                 return []
+            active_ids = {p.id for p in ctx.store.projects if not p.deleted_at}
             results = []
             for t in ctx.store.todos:
+                if t.project_id not in active_ids:
+                    continue
                 if project_id and t.project_id != project_id:
                     continue
                 if query in t.text.lower() or (t.run_output and query in t.run_output.lower()):
@@ -314,12 +335,8 @@ async def create_todo(body: TodoCreate) -> Todo:
         todo.completed_at = _now()
     def _do():
         with StorageContext() as ctx:
-            project = None
-            for p in ctx.store.projects:
-                if p.id == body.project_id:
-                    project = p
-                    break
-            if project is None:
+            project = ctx.get_project(body.project_id)
+            if project is None or project.deleted_at:
                 return "not_found"
             # Auto-assign sort_order: min existing - 1 so new todos appear at top
             min_order = min((t.sort_order for t in ctx.store.todos if t.project_id == body.project_id), default=1)
@@ -353,10 +370,7 @@ async def reorder_todos(body: TodoReorder) -> dict:
 async def get_todo(todo_id: str) -> Todo:
     def _do():
         with StorageContext(read_only=True) as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    return t
-        return None
+            return ctx.get_todo(todo_id)
     result = await run_in_thread(_do)
     if result is None:
         raise HTTPException(status_code=404, detail="Todo not found")
@@ -367,82 +381,91 @@ async def get_todo(todo_id: str) -> Todo:
 async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
     def _do():
         with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    if body.text is not None:
-                        t.text = body.text
-                        t.original_text = None  # User chose this text — clear analyzer rename history
-                        # Re-derive manual flag, is_command, priority, autopilot from text
-                        t.manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
-                        t.is_command = _is_command_todo(body.text, t.project_id)
-                        t.priority = parse_priority(body.text)
-                        t.autopilot = has_autopilot_tag(body.text)
-                    if body.project_id is not None:
-                        t.project_id = body.project_id
-                    if body.status is not None:
-                        was_completed = t.status == "completed"
-                        was_rejected = t.status == "rejected"
-                        t.status = body.status
-                        if body.status == "completed" and not was_completed:
-                            t.completed_at = _now()
-                        elif body.status != "completed" and was_completed:
-                            t.completed_at = None
-                        if body.status == "rejected" and not was_rejected:
-                            t.rejected_at = _now()
-                        elif body.status != "rejected" and was_rejected:
-                            t.rejected_at = None
-                    if body.source is not None:
-                        t.source = body.source
-                    if body.stale_reason is not None:
-                        t.stale_reason = body.stale_reason
-                    if body.is_read is not None:
-                        t.is_read = body.is_read
-                    if body.run_after is not None:
-                        t.run_after = body.run_after if body.run_after else None
-                    if body.autopilot is not None:
-                        t.autopilot = body.autopilot
-                        # Flipping autopilot off resets any pending suggestion state.
-                        if not body.autopilot:
-                            t.suggested_followup_sent = False
-                    if body.parent_todo_id is not None:
-                        new_parent_id = body.parent_todo_id.strip() or None
-                        if new_parent_id == t.id:
-                            return "invalid_parent"
-                        if new_parent_id is not None:
-                            if not any(p.id == new_parent_id for p in ctx.store.todos):
-                                return "parent_not_found"
-                        t.parent_todo_id = new_parent_id
-                    if body.user_ordered is not None:
-                        t.user_ordered = body.user_ordered
-                        # When unpinning, recalculate sort_order for unpinned siblings by created_at
-                        if not body.user_ordered:
-                            siblings = [
-                                s for s in ctx.store.todos
-                                if s.project_id == t.project_id
-                            ]
-                            # Pinned items keep their sort_order; unpinned get re-slotted by created_at
-                            pinned = sorted(
-                                [s for s in siblings if s.user_ordered],
-                                key=lambda s: s.sort_order,
-                            )
-                            unpinned = sorted(
-                                [s for s in siblings if not s.user_ordered],
-                                key=lambda s: s.created_at,
-                            )
-                            # Merge: pinned occupy their slots, unpinned fill remaining slots
-                            pinned_slots = {s.sort_order for s in pinned}
-                            slot = 0
-                            for s in unpinned:
-                                while slot in pinned_slots:
-                                    slot += 1
-                                s.sort_order = slot
-                                slot += 1
-                    # Clear stale_reason when moving away from stale
-                    if body.status is not None and body.status != "stale":
-                        t.stale_reason = None
-                    bus.emit_event_sync(EventType.TODO_UPDATED, todo_id=t.id, status=t.status)
-                    return t
-        return None
+            t = ctx.get_todo(todo_id)
+            if t is None:
+                return None
+            if body.text is not None:
+                t.text = body.text
+                t.original_text = None  # User chose this text — clear analyzer rename history
+                # Re-derive manual flag, is_command, priority, autopilot from text
+                t.manual = bool(re.search(r'(?:^|\s)/manual(?:\s|$)', body.text))
+                t.is_command = _is_command_todo(body.text, t.project_id)
+                t.priority = parse_priority(body.text)
+                t.autopilot = has_autopilot_tag(body.text)
+            if body.project_id is not None:
+                t.project_id = body.project_id
+            if body.status is not None:
+                was_completed = t.status == "completed"
+                was_rejected = t.status == "rejected"
+                t.status = body.status
+                if body.status == "completed" and not was_completed:
+                    t.completed_at = _now()
+                elif body.status != "completed" and was_completed:
+                    t.completed_at = None
+                if body.status == "rejected" and not was_rejected:
+                    t.rejected_at = _now()
+                elif body.status != "rejected" and was_rejected:
+                    t.rejected_at = None
+            if body.source is not None:
+                t.source = body.source
+            if body.stale_reason is not None:
+                t.stale_reason = body.stale_reason
+            if body.is_read is not None:
+                t.is_read = body.is_read
+            if body.run_after is not None:
+                t.run_after = body.run_after if body.run_after else None
+            if body.autopilot is not None:
+                t.autopilot = body.autopilot
+                # Flipping autopilot off resets any pending suggestion state.
+                if not body.autopilot:
+                    t.suggested_followup_sent = False
+            if body.clear_run_effort:
+                t.run_effort = None
+            elif body.run_effort is not None:
+                eff = body.run_effort.strip() if isinstance(body.run_effort, str) else body.run_effort
+                if not eff:
+                    t.run_effort = None
+                elif eff in EFFORT_LEVELS:
+                    t.run_effort = eff
+                else:
+                    return "invalid_effort"
+            if body.parent_todo_id is not None:
+                new_parent_id = body.parent_todo_id.strip() or None
+                if new_parent_id == t.id:
+                    return "invalid_parent"
+                if new_parent_id is not None and ctx.get_todo(new_parent_id) is None:
+                    return "parent_not_found"
+                t.parent_todo_id = new_parent_id
+            if body.user_ordered is not None:
+                t.user_ordered = body.user_ordered
+                # When unpinning, recalculate sort_order for unpinned siblings by created_at
+                if not body.user_ordered:
+                    siblings = [
+                        s for s in ctx.store.todos
+                        if s.project_id == t.project_id
+                    ]
+                    # Pinned items keep their sort_order; unpinned get re-slotted by created_at
+                    pinned = sorted(
+                        [s for s in siblings if s.user_ordered],
+                        key=lambda s: s.sort_order,
+                    )
+                    unpinned = sorted(
+                        [s for s in siblings if not s.user_ordered],
+                        key=lambda s: s.created_at,
+                    )
+                    # Merge: pinned occupy their slots, unpinned fill remaining slots
+                    pinned_slots = {s.sort_order for s in pinned}
+                    slot = 0
+                    for s in unpinned:
+                        while slot in pinned_slots:
+                            slot += 1
+                        s.sort_order = slot
+                        slot += 1
+            # Clear stale_reason when moving away from stale
+            if body.status is not None and body.status != "stale":
+                t.stale_reason = None
+            bus.emit_event_sync(EventType.TODO_UPDATED, todo_id=t.id, status=t.status)
+            return t
     result = await run_in_thread(_do)
     if result is None:
         raise HTTPException(status_code=404, detail="Todo not found")
@@ -450,6 +473,8 @@ async def update_todo(todo_id: str, body: TodoUpdate) -> Todo:
         raise HTTPException(status_code=400, detail="A todo cannot be its own parent")
     if result == "parent_not_found":
         raise HTTPException(status_code=404, detail="Parent todo not found")
+    if result == "invalid_effort":
+        raise HTTPException(status_code=400, detail=f"Invalid effort level. Must be one of: {', '.join(EFFORT_LEVELS)}")
     return result
 
 
@@ -463,17 +488,17 @@ async def resolve_red_flag(todo_id: str, flag_index: int, body: RedFlagResolve) 
     """Toggle a red flag between resolved (green) and unresolved (red)."""
     def _do():
         with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    if flag_index < 0 or flag_index >= len(t.red_flags):
-                        return "flag_not_found"
-                    t.red_flags[flag_index]["resolved"] = body.resolved
-                    if body.resolved:
-                        t.red_flags[flag_index]["resolved_at"] = _now()
-                    else:
-                        t.red_flags[flag_index].pop("resolved_at", None)
-                    return t
-        return None
+            t = ctx.get_todo(todo_id)
+            if t is None:
+                return None
+            if flag_index < 0 or flag_index >= len(t.red_flags):
+                return "flag_not_found"
+            t.red_flags[flag_index]["resolved"] = body.resolved
+            if body.resolved:
+                t.red_flags[flag_index]["resolved_at"] = _now()
+            else:
+                t.red_flags[flag_index].pop("resolved_at", None)
+            return t
     result = await run_in_thread(_do)
     if result == "flag_not_found":
         raise HTTPException(status_code=404, detail="Red flag not found")
@@ -487,13 +512,13 @@ async def dismiss_red_flag(todo_id: str, flag_index: int) -> Todo:
     """Remove a red flag entirely (user dismissal — flag was irrelevant)."""
     def _do():
         with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    if flag_index < 0 or flag_index >= len(t.red_flags):
-                        return "flag_not_found"
-                    t.red_flags.pop(flag_index)
-                    return t
-        return None
+            t = ctx.get_todo(todo_id)
+            if t is None:
+                return None
+            if flag_index < 0 or flag_index >= len(t.red_flags):
+                return "flag_not_found"
+            t.red_flags.pop(flag_index)
+            return t
     result = await run_in_thread(_do)
     if result == "flag_not_found":
         raise HTTPException(status_code=404, detail="Red flag not found")
@@ -506,42 +531,26 @@ async def dismiss_red_flag(todo_id: str, flag_index: int) -> Todo:
 async def delete_todo(todo_id: str) -> None:
     def _do():
         with StorageContext() as ctx:
-            # Find the todo and collect its image filenames before removing
-            image_filenames = []
-            found = False
-            remaining = []
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    found = True
-                    image_filenames = [img.filename for img in t.images]
-                else:
-                    remaining.append(t)
-            if not found:
+            t = ctx.get_todo(todo_id)
+            if t is None:
                 return None
-            ctx.store.todos = remaining
+            image_filenames = [img.filename for img in t.images]
+            ctx.store.todos = [x for x in ctx.store.todos if x.id != todo_id]
         return image_filenames
     result = await run_in_thread(_do)
     if result is None:
         raise HTTPException(status_code=404, detail="Todo not found")
     # Delete associated image files outside the lock
-    if result:
-        delete_image_files(result)
+    delete_image_files(result)
     bus.emit_event_sync(EventType.TODO_DELETED, todo_id=todo_id)
 
 
-@router.post("/{todo_id}/stop")
+@router.post("/{todo_id}/stop", dependencies=[Depends(_require_not_demo)])
 async def stop_todo(todo_id: str) -> dict:
     """Stop a running Claude Code session for a todo."""
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     def _do():
         with StorageContext() as ctx:
-            todo = None
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    todo = t
-                    break
+            todo = ctx.get_todo(todo_id)
             if todo is None:
                 return {"error": "not_found"}
             if todo.run_status != "running":
@@ -608,23 +617,26 @@ async def stop_todo(todo_id: str) -> dict:
 
 class RunRequest(BaseModel):
     plan_only: Optional[bool] = None
+    effort: Optional[str] = None  # Per-run --effort override; persists on the todo
 
 
-@router.post("/{todo_id}/run")
+@router.post("/{todo_id}/run", dependencies=[Depends(_require_not_demo)])
 async def run_todo(todo_id: str, body: RunRequest = RunRequest()) -> dict:
     """Kick off a Claude Code session to complete a todo, or queue it if the project is busy."""
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+    _validate_effort(body.effort)
 
-    # If plan_only is explicitly set, update the todo before running
-    if body.plan_only is not None:
-        def _update_plan():
+    # If plan_only or effort is explicitly set, update the todo before running
+    if body.plan_only is not None or body.effort is not None:
+        def _update_pre_run():
             with StorageContext() as ctx:
-                for t in ctx.store.todos:
-                    if t.id == todo_id:
-                        t.plan_only = body.plan_only
-                        break
-        await run_in_thread(_update_plan)
+                t = ctx.get_todo(todo_id)
+                if t is None:
+                    return
+                if body.plan_only is not None:
+                    t.plan_only = body.plan_only
+                if body.effort is not None:
+                    t.run_effort = body.effort if body.effort else None
+        await run_in_thread(_update_pre_run)
 
     err = await run_in_thread(start_todo_run, todo_id)
     if err == "manual task":
@@ -649,12 +661,9 @@ async def run_todo(todo_id: str, body: RunRequest = RunRequest()) -> dict:
     return {"status": "started"}
 
 
-@router.post("/{todo_id}/dequeue")
+@router.post("/{todo_id}/dequeue", dependencies=[Depends(_require_not_demo)])
 async def dequeue_todo(todo_id: str) -> dict:
     """Remove a todo from the run queue."""
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     err = await run_in_thread(dequeue_todo_run, todo_id)
     if err == "not queued":
         raise HTTPException(status_code=409, detail="This todo is not queued")
@@ -666,12 +675,9 @@ async def dequeue_todo(todo_id: str) -> dict:
     return {"status": "dequeued"}
 
 
-@router.post("/{todo_id}/run-now")
+@router.post("/{todo_id}/run-now", dependencies=[Depends(_require_not_demo)])
 async def run_now(todo_id: str) -> dict:
     """Bump a queued todo to run immediately, pausing the currently running task."""
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     err = await run_in_thread(run_queued_now, todo_id)
     if err == "not queued":
         raise HTTPException(status_code=409, detail="This todo is not queued")
@@ -691,39 +697,36 @@ class FollowupRequest(BaseModel):
     message: str
     images: List[str] = []
     plan_only: Optional[bool] = None  # None = inherit from todo.plan_only
+    effort: Optional[str] = None  # Per-followup --effort override; persists on the todo for subsequent follow-ups
 
 
 class EditFollowupRequest(BaseModel):
     message: str
 
 
-@router.patch("/{todo_id}/followup")
+@router.patch("/{todo_id}/followup", dependencies=[Depends(_require_not_demo)])
 async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
     """Edit a queued follow-up message before it starts running."""
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     new_msg = body.message.strip()
     if not new_msg:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     def _do():
         with StorageContext() as ctx:
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    if not t.pending_followup:
-                        return {"error": "not_queued"}
-                    old_msg = t.pending_followup
-                    t.pending_followup = new_msg
-                    # Update the displayed message in run_output
-                    if t.run_output:
-                        # Compute image suffix from pending images
-                        old_suffix = format_image_suffix(t.pending_followup_images)
-                        old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{old_suffix}\n<<END_USER_MSG>>\n"
-                        new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{old_suffix}\n<<END_USER_MSG>>\n"
-                        t.run_output = t.run_output.replace(old_line, new_line)
-                    return {"status": "updated"}
-            return {"error": "not_found"}
+            t = ctx.get_todo(todo_id)
+            if t is None:
+                return {"error": "not_found"}
+            if not t.pending_followup:
+                return {"error": "not_queued"}
+            old_msg = t.pending_followup
+            t.pending_followup = new_msg
+            # Update the displayed message in run_output
+            if t.run_output:
+                suffix = format_image_suffix(t.pending_followup_images)
+                old_line = f"\n\n--- Follow-up (queued) ---\n**You:** {old_msg}{suffix}\n<<END_USER_MSG>>\n"
+                new_line = f"\n\n--- Follow-up (queued) ---\n**You:** {new_msg}{suffix}\n<<END_USER_MSG>>\n"
+                t.run_output = t.run_output.replace(old_line, new_line)
+            return {"status": "updated"}
 
     info = await run_in_thread(_do)
     if info.get("error") == "not_found":
@@ -733,21 +736,24 @@ async def edit_queued_followup(todo_id: str, body: EditFollowupRequest) -> dict:
     return info
 
 
-@router.delete("/{todo_id}/followup")
+@router.delete("/{todo_id}/followup", dependencies=[Depends(_require_not_demo)])
 async def cancel_followup(todo_id: str) -> dict:
     """Cancel a queued follow-up message."""
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
-    err = cancel_pending_followup(todo_id)
+    # Run in thread: cancel_pending_followup does sync disk I/O under the
+    # global storage lock — calling it directly would block the event loop
+    # for the full read+write of todos.json + metadata.json.
+    err = await run_in_thread(cancel_pending_followup, todo_id)
     if err == "todo not found":
         raise HTTPException(status_code=404, detail="Todo not found")
     if err == "no pending followup":
         raise HTTPException(status_code=409, detail="No pending follow-up to cancel")
+    # Emit so the frontend refreshes immediately instead of waiting for the
+    # 30s polling tick — the user just took an action and expects feedback.
+    bus.emit_event_sync(EventType.TODO_UPDATED, todo_id=todo_id)
     return {"status": "cancelled"}
 
 
-@router.post("/{todo_id}/followup")
+@router.post("/{todo_id}/followup", dependencies=[Depends(_require_not_demo)])
 async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
     """Send a follow-up message to a Claude session.
 
@@ -756,17 +762,11 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
     If another todo in the same project is currently running, the follow-up
     is queued and will auto-start when the project becomes free.
     """
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
+    _validate_effort(body.effort)
 
     def _do():
         with StorageContext() as ctx:
-            todo = None
-            source_path = None
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    todo = t
-                    break
+            todo = ctx.get_todo(todo_id)
             if todo is None:
                 return {"error": "not_found"}
             if todo.manual:
@@ -780,6 +780,12 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
             # set plan_only, inherit from the todo's own plan_only value so that
             # resuming a failed plan_only run doesn't silently grant full tool access.
             resolved_plan_only = body.plan_only if body.plan_only is not None else todo.plan_only
+
+            # If a per-follow-up effort override was supplied, persist it on the
+            # todo so subsequent follow-ups inherit the same effort level until
+            # the user changes it (matches the CLI's session-persistent /effort).
+            if body.effort is not None:
+                todo.run_effort = body.effort if body.effort else None
 
             # If this todo is currently running, queue the follow-up to auto-start when it finishes.
             # Plan-only follow-ups queue too — they're part of the main planning
@@ -799,10 +805,8 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
             session_id = todo.session_id
 
-            for p in ctx.store.projects:
-                if p.id == todo.project_id:
-                    source_path = p.source_path
-                    break
+            project_obj = ctx.get_project(todo.project_id)
+            source_path = project_obj.source_path if project_obj else None
             if not source_path:
                 return {"error": "no_source_path"}
 
@@ -843,18 +847,16 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
             # Immediately show the user's follow-up message in the output
             todo.run_output = (todo.run_output or "") + f"\n\n--- Follow-up ---\n**You:** {body.message}{img_suffix}\n<<END_USER_MSG>>\n"
             # Resolve model: per-project override > global setting
-            project_obj = None
-            for p in ctx.store.projects:
-                if p.id == todo.project_id:
-                    project_obj = p
-                    break
             resolved_model = (project_obj.run_model if project_obj and project_obj.run_model else None) or ctx.metadata.run_model
+            from ..run_manager import _resolve_effort
+            resolved_effort = _resolve_effort(todo, project_obj, ctx.metadata)
             return {
                 "status": "started",
                 "session_id": session_id,
                 "source_path": source_path,
                 "proj_id": todo.project_id,
                 "run_model": resolved_model,
+                "run_effort": resolved_effort,
                 "followup_images": list(body.images),
                 "plan_only": resolved_plan_only,
             }
@@ -876,7 +878,7 @@ async def followup_todo(todo_id: str, body: FollowupRequest) -> dict:
 
     process_manager.spawn_thread(
         todo_id, _followup_claude_for_todo,
-        (todo_id, body.message, info["session_id"], info["source_path"], info["run_model"], info["proj_id"], info["followup_images"], info.get("plan_only", False)),
+        (todo_id, body.message, info["session_id"], info["source_path"], info["run_model"], info["proj_id"], info["followup_images"], info.get("plan_only", False), info.get("run_effort")),
     )
     return {"status": "started"}
 
@@ -885,7 +887,7 @@ class BtwRequest(BaseModel):
     message: str
 
 
-@router.post("/{todo_id}/btw")
+@router.post("/{todo_id}/btw", dependencies=[Depends(_require_not_demo)])
 async def btw_todo(todo_id: str, body: BtwRequest) -> dict:
     """Send a /btw message as a concurrent side-channel Claude session.
 
@@ -893,9 +895,6 @@ async def btw_todo(todo_id: str, body: BtwRequest) -> dict:
     run. Output is stored separately in btw_output/btw_status fields and
     displayed in a tab UI next to the main run output.
     """
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     if is_btw_running(todo_id):
         raise HTTPException(status_code=409, detail="A /btw session is already running — wait for it to finish")
 
@@ -920,7 +919,7 @@ class SessionAutopilotRequest(BaseModel):
     quota: int = 0  # 0 to disable
 
 
-@router.post("/{todo_id}/session-autopilot")
+@router.post("/{todo_id}/session-autopilot", dependencies=[Depends(_require_not_demo)])
 async def set_session_autopilot(todo_id: str, body: SessionAutopilotRequest) -> dict:
     """Enable or disable session-scoped autopilot on a todo's session.
 
@@ -928,16 +927,9 @@ async def set_session_autopilot(todo_id: str, body: SessionAutopilotRequest) -> 
     (if it hasn't) as the autopilot key. Descendants of that session
     will be auto-run until the quota is exhausted.
     """
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     def _do():
         with StorageContext() as ctx:
-            todo = None
-            for t in ctx.store.todos:
-                if t.id == todo_id:
-                    todo = t
-                    break
+            todo = ctx.get_todo(todo_id)
             if todo is None:
                 return {"error": "not_found"}
 
@@ -970,7 +962,7 @@ class AutopilotRequest(BaseModel):
     enabled: bool
 
 
-@router.post("/{todo_id}/autopilot")
+@router.post("/{todo_id}/autopilot", dependencies=[Depends(_require_not_demo)])
 async def set_autopilot(todo_id: str, body: AutopilotRequest) -> dict:
     """Toggle the autopilot flag on a todo.
 
@@ -978,9 +970,6 @@ async def set_autopilot(todo_id: str, body: AutopilotRequest) -> dict:
     run to keep the session alive. When disabled, suggestions are stored
     on the todo but not sent — the user can review and send manually.
     """
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     def _do():
         with StorageContext() as ctx:
             t = ctx.get_todo(todo_id)
@@ -997,12 +986,9 @@ async def set_autopilot(todo_id: str, body: AutopilotRequest) -> dict:
     return result
 
 
-@router.delete("/{todo_id}/suggested-followup")
+@router.delete("/{todo_id}/suggested-followup", dependencies=[Depends(_require_not_demo)])
 async def dismiss_suggested_followup(todo_id: str) -> dict:
     """Dismiss the analyzer-suggested follow-up on a todo without sending it."""
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     def _do():
         with StorageContext() as ctx:
             t = ctx.get_todo(todo_id)
@@ -1023,16 +1009,13 @@ class ScheduleTodoRequest(BaseModel):
     run_after: Optional[str] = None  # ISO-8601 timestamp; null to clear
 
 
-@router.post("/{todo_id}/schedule")
+@router.post("/{todo_id}/schedule", dependencies=[Depends(_require_not_demo)])
 async def schedule_todo(todo_id: str, body: ScheduleTodoRequest) -> dict:
     """Schedule a todo to become eligible for running after a specific time.
 
     When run_after is set, autopilot will skip this todo until the time passes.
     Manual runs are not blocked. Pass null to clear the schedule.
     """
-    if _DEMO_MODE:
-        raise HTTPException(status_code=403, detail="Disabled in demo mode")
-
     def _do():
         with StorageContext() as ctx:
             todo = ctx.get_todo(todo_id)
